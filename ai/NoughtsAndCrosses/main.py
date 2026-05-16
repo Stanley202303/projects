@@ -1,4 +1,4 @@
-import random, json, noughts_and_crosses
+import random, json, noughts_and_crosses, os
 
 def winner(board):
     wins = [
@@ -130,7 +130,10 @@ def mprint(*args, **kwargs):
     if p == True:
         print(*args, **kwargs)
 errors = 0
-for y in range(0, 2):
+computer_wins = 0
+other_wins = 0
+draws = 0
+for y in range(0, 2000):
     game = noughts_and_crosses.Game()
     a = True
     computer_moves = []
@@ -182,7 +185,7 @@ for y in range(0, 2):
             last_move = c
             if b == -1:
                 mprint('Other computer won')
-                computer_won = 'false'
+                computer_won = 'lose'
                 a = False
                 break
 
@@ -190,6 +193,7 @@ for y in range(0, 2):
 
     if computer_won == '':
         computer_won = 'draw'
+        draws += 1
 
     mprint(computer_moves)
     #TRAIN:
@@ -204,7 +208,10 @@ for y in range(0, 2):
                 data[computer2_moves[i][1]].append(computer2_moves[i][0])
             if computer_won == 'lose':
                 if i == len(computer2_moves) - 1:
-                    data[computer2_moves[i][1]] = [reverse_convert.index(eval(last_move))]
+                    if isinstance(last_move, int):
+                        last_move = convert[last_move]
+
+                    data[computer2_moves[i][1]] = [reverse_convert.index(last_move)]
                 else:
                     for i in range(0, i * 2):
                         try:
@@ -226,7 +233,7 @@ for y in range(0, 2):
                 data[computer_moves[i][1]].append(computer_moves[i][0])
             if computer_won == 'lose':
                 if i == len(computer_moves) - 1:
-                    data[computer_moves[i][1]] = [reverse_convert.index(eval(last_move))]
+                    data[computer_moves[i][1]] = [reverse_convert.index(last_move)]
                 else:
                     for i in range(0, i * 2):
                         try:
@@ -236,7 +243,15 @@ for y in range(0, 2):
     with open("ai/NoughtsAndCrosses/data.json", 'w') as x:
         json.dump(data, x, indent=4)
         mprint(data == x, '/', computer_won)
+    if computer_won == 'win':
+        computer_wins += 1
+    elif computer_won == 'lose':
+        other_wins += 1
+    else:
+        draws += 1
     mprint("trained", y)
+    os.system("clear")
+    print(f'Computer wins: {str(computer_wins).ljust(10)} Other Computer wins: {str(other_wins).ljust(10)} Draws: {str(draws).ljust(10)}')
 mprint('Errors: ', errors)
 
 
