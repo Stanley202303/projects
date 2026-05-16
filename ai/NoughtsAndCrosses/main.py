@@ -237,7 +237,6 @@ for y in range(0, 2):
         json.dump(data, x, indent=4)
         mprint(data == x, '/', computer_won)
     mprint("trained", y)
-    print()
 mprint('Errors: ', errors)
 
 
