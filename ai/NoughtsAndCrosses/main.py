@@ -1,4 +1,5 @@
 import random, json, noughts_and_crosses, os
+from testssssss import best_move
 
 def winner(board):
     wins = [
@@ -37,30 +38,30 @@ def generate_reachable_states():
     return [list(state) for state in states]
 
 #not op
-with open("ai/NoughtsAndCrosses/data2.json", "r") as data:
-    def n(combination):
-        '''-1 -> 1, 1 -> -1'''
-        combination = combination.split(',')
-        combination = [str(int(k) * -1) for k in combination]
-        return ''.join(k + ',' for k in combination)[:-1]
-    keys = []
-    values = []
-    data = json.load(data)
-    for i in data.keys():
-        keys.append(n(i))
-        values.append(data[i])
-    out = dict(zip(keys, values))
+# with open("ai/NoughtsAndCrosses/data2.json", "r") as data:
+#     def n(combination):
+#         '''-1 -> 1, 1 -> -1'''
+#         combination = combination.split(',')
+#         combination = [str(int(k) * -1) for k in combination]
+#         return ''.join(k + ',' for k in combination)[:-1]
+#     keys = []
+#     values = []
+#     data = json.load(data)
+#     for i in data.keys():
+#         keys.append(n(i))
+#         values.append(data[i])
+#     out = dict(zip(keys, values))
 # with open("ai/NoughtsAndCrosses/data2.json", 'w') as data:
 #     json.dump(out, data, indent=4)
 
 boards = generate_reachable_states()
 
-to_write = {
-    ",".join(map(str, board)): [
-        i for i in range(9) if board[i] == 0 for _ in range(3)
-    ]
-    for board in boards
-}
+# to_write = {
+#     ",".join(map(str, board)): [
+#         i for i in range(9) if board[i] == 0 for _ in range(3)
+#     ]
+#     for board in boards
+# }
 
 # with open("ai/NoughtsAndCrosses/data.json", "a") as data:
 #     json.dump(to_write, data, indent=4)
@@ -74,8 +75,7 @@ def get_computer_move(combination) -> int:
         return random.choice(moves)
     except IndexError:
         return -1
-    except:
-        return -2
+
 
 
 def get_computer2_move(combination) -> int:
@@ -87,8 +87,7 @@ def get_computer2_move(combination) -> int:
         return random.choice(moves)
     except IndexError:
         return -1
-    except:
-        return -2
+    
 
 def help1(a: list[list[int]]) -> str:
     '''converts board to string format in json'''
@@ -113,15 +112,15 @@ convert = {
     8: [2, 2],
 }
 reverse_convert = [
-    [0, 0],
-    [0, 1],
-    [0, 2],
-    [1, 0],
-    [1, 1],
-    [1, 2],
-    [2, 0],
-    [2, 1],
-    [2, 2]
+    '[0, 0]',
+    '[0, 1]',
+    '[0, 2]',
+    '[1, 0]',
+    '[1, 1]',
+    '[1, 2]',
+    '[2, 0]',
+    '[2, 1]',
+    '[2, 2]'
 ]
 global p #########################################################################################################
 p = False
@@ -133,7 +132,8 @@ errors = 0
 computer_wins = 0
 other_wins = 0
 draws = 0
-for y in range(0, 2000):
+pvc = False
+for y in range(0, 1000):
     game = noughts_and_crosses.Game()
     a = True
     computer_moves = []
@@ -163,31 +163,38 @@ for y in range(0, 2000):
                 break
 
         if game.turn == -1:
-            # mprint(*[k for k in game.board], game.turn, sep='\n')
-            # mprint('Your turn')
-            # last_move = input("enter the coords of the square which you want to place: ")
-            # if game.play(eval(last_move)) == -1:
-            #     mprint("you win")
-            #     computer_won = 'lose'
-            #     a = False
-            #     break
-            mprint(*[k for k in game.board], game.turn, sep='\n')
-            mprint('Other computer\'s turn')
-            c = get_computer2_move(game.board)
-            d = help1(game.board)
-            if c == -1:
-                computer_won = 'draw'
-                break
-            if c == -2:
-                errors += 1
-            b = game.play(convert[int(c)])
-            computer2_moves.append((c, d))
-            last_move = c
-            if b == -1:
-                mprint('Other computer won')
-                computer_won = 'lose'
-                a = False
-                break
+            if pvc == True:
+                if count == 9:
+                    break
+                mprint(*[k for k in game.board], game.turn, sep='\n')
+                mprint('Your turn')
+                last_move = input("enter the coords of the square which you want to place: ")
+                if game.play(eval(last_move)) == -1:
+                    mprint("you win")
+                    computer_won = 'lose'
+                    a = False
+                    break
+            else:
+                if count != 9:
+                    mprint(*[k for k in game.board], game.turn, sep='\n')
+                    mprint('Other computer\'s turn')
+                    c = best_move(help1(game.board))
+                    d = help1(game.board)
+                    if c == -1:
+                        computer_won = 'draw'
+                        break
+                    if c == -2:
+                        errors += 1
+                    if c == None:
+                        break
+                    b = game.play(convert[int(c)])
+                    computer2_moves.append((c, d))
+                    last_move = c
+                    if b == -1:
+                        mprint('Other computer won')
+                        computer_won = 'lose'
+                        a = False
+                        break
 
         count += 1
 
@@ -210,14 +217,23 @@ for y in range(0, 2000):
                 if i == len(computer2_moves) - 1:
                     if isinstance(last_move, int):
                         last_move = convert[last_move]
+                    if isinstance(last_move, list):
+                        data[computer2_moves[i][1]] = [reverse_convert.index(str(last_move))]
+                    else:
+                        data[computer2_moves[i][1]] = [reverse_convert.index(str(last_move))]
 
-                    data[computer2_moves[i][1]] = [reverse_convert.index(last_move)]
+                    
                 else:
                     for i in range(0, i * 2):
                         try:
                             data[computer2_moves[i][i]].remove(computer2_moves[i][0])
                         except:
                             pass
+    for i in data.keys():
+        if isinstance(data[i], int) == True:
+            data[i] = [data[i]]
+        if len(set(data[i])) == 1:
+               data[i] = [data[i][0]]
     with open("ai/NoughtsAndCrosses/data2.json", 'w') as x:
         json.dump(data, x, indent=4)
 
@@ -232,14 +248,25 @@ for y in range(0, 2000):
             if computer_won == 'draw':
                 data[computer_moves[i][1]].append(computer_moves[i][0])
             if computer_won == 'lose':
-                if i == len(computer_moves) - 1:
-                    data[computer_moves[i][1]] = [reverse_convert.index(last_move)]
+                if i == len(computer2_moves) - 1:
+                    if isinstance(last_move, int):
+                        last_move = convert[last_move]
+                    if isinstance(last_move, list):
+                        data[computer_moves[i][1]] = [reverse_convert.index(str(last_move))]
+                    else:
+                        data[computer_moves[i][1]] = [reverse_convert.index(str(last_move))]
                 else:
                     for i in range(0, i * 2):
                         try:
                             data[computer_moves[i][i]].remove(computer_moves[i][0])
                         except:
                             pass
+    #clean up files
+    for i in data.keys():
+        if isinstance(data[i], int) == True:
+            data[i] = [data[i]]
+        if len(set(data[i])) == 1:
+               data[i] = [data[i][0]]
     with open("ai/NoughtsAndCrosses/data.json", 'w') as x:
         json.dump(data, x, indent=4)
         mprint(data == x, '/', computer_won)
@@ -251,7 +278,9 @@ for y in range(0, 2000):
         draws += 1
     mprint("trained", y)
     os.system("clear")
+
     print(f'Computer wins: {str(computer_wins).ljust(10)} Other Computer wins: {str(other_wins).ljust(10)} Draws: {str(draws).ljust(10)}')
+
 mprint('Errors: ', errors)
 
 
