@@ -1,55 +1,65 @@
-import numpy as np
-import matplotlib.pyplot as plt
+# import requests, time
+# GROQ_API_KEY = "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"
 
-# Parameters
-m_lego = 0.18  # kg
-r_wheel = 0.024  # m
-mu = 3  # high-µ tires
-g = 9.81  # m/s²
+# def get(board):
+#     SYSTEM_PROMPT = f'''You are a noughts and crosses bot. Keep the reply as one digit between 0 and 8 inclusive, which is your move. Here is the board:
+# 0 1 2
+# 3 4 5
+# 6 7 8
+# The current state of you will be given in a format like this: '1,1,0,-1,-1,1,-1,1,0', starting from (0, 0) on the board (top left) and ending at bottom right (2, 2)
+# In the example I gave you, the board would therefore be:
+#  1  1  0
+# -1 -1  1
+# -1  1  0
+# Make the best decision. You are -1 on the board and your opponent is 1. 
+# The state of the board right now is {board}. What is the best move?
+# '''
+#     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+#     response = requests.post(
+#                 "https://api.groq.com/openai/v1/chat/completions",
+#                 headers={
+#                     "Authorization": f"Bearer {GROQ_API_KEY}",
+#                     "Content-Type": "application/json",
+#                 },
+#                 json={
+#                     "model": "llama-3.1-8b-instant",
+#                     "messages": messages,
+#                     "temperature": 0,
+#                     "max_tokens": 50,
+#                 },
+#                 timeout=20,
+#             )
+#     data = response.json()
+#     if "choices" not in data:
+#         return "Groq error."
+#     reply = data["choices"][0]["message"]["content"]
+#     reply = reply.replace("\n", " ").replace("\r", " ").strip()
+#     time.sleep(2.05)
+#     return reply
+# print(get("1,1,0,-1,-1,1,-1,1,0"))
+def best_move(board):
+    board = list(map(int, board.split(",")))
+    wins = [
+        (0,1,2), (3,4,5), (6,7,8),
+        (0,3,6), (1,4,7), (2,5,8),
+        (0,4,8), (2,4,6)
+    ]
 
-# Motor parameters
-V_motor = 11.1  # V
-I_motor = 3  # A per motor, 2 motors
-P_motor = V_motor * I_motor * 2  # total power in Watts
+    # Win if possible
+    for a, b, c in wins:
+        line = [board[a], board[b], board[c]]
+        if line.count(-1) == 2 and line.count(0) == 1:
+            return [a, b, c][line.index(0)]
 
-# Abarth parameters
-m_abarth = 1000  # kg
-P_abarth = 134000  # W
+    # Block opponent if needed
+    for a, b, c in wins:
+        line = [board[a], board[b], board[c]]
+        if line.count(1) == 2 and line.count(0) == 1:
+            return [a, b, c][line.index(0)]
 
-# Time array for plotting (up to 3 seconds for 0-60 km/h)
-t = np.linspace(0, 3, 500)
+    # Otherwise pick center, corner, then side
+    for i in [4, 0, 2, 6, 8, 1, 3, 5, 7]:
+        if board[i] == 0:
+            return i
 
-# LEGO car acceleration: combine torque-limited at very low speed, then traction-limited
-v_lego = np.zeros_like(t)
-v_max = 16.67  # 60 km/h in m/s
-a_traction = mu * g
-
-for i in range(1, len(t)):
-    v_prev = v_lego[i-1]
-    # Power-limited acceleration (avoid division by zero)
-    a_power = P_motor / (m_lego * max(v_prev, 0.01))
-    # Limit by traction
-    a = min(a_power, a_traction)
-    v_lego[i] = v_prev + a * (t[i] - t[i-1])
-    if v_lego[i] >= v_max:
-        v_lego[i:] = v_max
-        break
-
-# Abarth acceleration: power-limited
-v_abarth = np.sqrt(2 * P_abarth / m_abarth * t)
-v_abarth = np.minimum(v_abarth, v_max)
-
-# Convert to km/h
-v_lego_kmh = v_lego * 3.6
-v_abarth_kmh = v_abarth * 3.6
-
-# Plot
-plt.figure(figsize=(10,6))
-plt.plot(t, v_lego_kmh, label='LEGO Car (high-µ tires, modded)', linewidth=2, color='red')
-plt.plot(t, v_abarth_kmh, label='Abarth 695', linewidth=2, color='blue')
-plt.xlabel('Time (s)', fontsize=12)
-plt.ylabel('Speed (km/h)', fontsize=12)
-plt.title('0-60 km/h Acceleration Curves: LEGO Car vs Abarth 695', fontsize=14)
-plt.grid(True)
-plt.legend(fontsize=12)
-plt.show()
+print(best_move("1,1,0,-1,-1,1,-1,1,0"))
