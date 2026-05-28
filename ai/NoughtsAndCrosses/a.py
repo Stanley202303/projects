@@ -2,7 +2,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import requests
 
-GROQ_API_KEY = ""
+GROQ_API_KEY = "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"
 SYSTEM_PROMPT = "Keep replies clear and under 500 characters. Use plain text only."
 
 
