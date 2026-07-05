@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rephrase"
+  short_description: "Restate requests before acting"
+  default_prompt: "Use $rephrase to restate my request precisely, list key constraints, and wait for my confirmation before doing any work."
