@@ -76,6 +76,8 @@ class SinglyLinkedList:
                 b(node.next)
             b(self.head)
         self.length -= 1
+    def __str__(self):
+        return f'{self.ll_to_list()}'
 
             
 
@@ -157,7 +159,10 @@ class DoublyLinkedList:
                     _append(head.next, val)
         _append(self.head, val)
     
-b = DoublyLinkedList([1, 2, 3])
-print(b.dll_to_list())
-b.append(4)
-print(b.dll_to_list(), b.head.next.next.next.val, b.head.next.next.next.prev.val)
+    def __str__(self):
+        return f'{self.dll_to_list()}'
+    
+# b = DoublyLinkedList([1, 2, 3])
+# print(b)
+# b.append(4)
+# print(b, b.head.next.next.next.val, b.head.next.next.next.prev.val)

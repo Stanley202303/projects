@@ -1,0 +1,22 @@
+{
+  "name": "rephrase",
+  "version": "0.1.0",
+  "description": "Alignment-first request restatement for discussion and confirmation before work begins.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Rephrase",
+    "shortDescription": "Restate requests before acting.",
+    "longDescription": "Rephrase helps Codex restate the user's request in accurate technical language, surface constraints and assumptions, and wait for explicit confirmation before implementation or execution.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive"
+    ],
+    "defaultPrompt": [
+      "Restate my request precisely and wait for my confirmation before doing any work."
+    ]
+  }
+}

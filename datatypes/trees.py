@@ -1,5 +1,5 @@
 import tree_visualiser, random
-class BSTNode:
+class TreeNode:
     def __init__(self, val: int, left=None, right=None, depth=None):
         self.val = val
         self.left = left
@@ -11,7 +11,7 @@ class BSTNode:
 
 class BinaryTree:
     def __init__(self, nums):
-        self.root = BSTNode(nums[0])
+        self.root = TreeNode(nums[0])
         for i in nums[1:]:
             self.insert(self.root, i)
         self.update_balance_factor(self.root)
@@ -24,8 +24,8 @@ class BinaryTree:
     def is_leaf(self, node):
         return node != None and node.left == None and node.right == None
         
-    def remove(self, item: BSTNode):
-        def find(head: BSTNode, item):
+    def remove(self, item: TreeNode):
+        def find(head: TreeNode, item):
             if head:
                 if head.val > item:
                     find(head.left, item)
@@ -34,13 +34,13 @@ class BinaryTree:
                 else:
                     pass
     
-    def insert(self, root: BSTNode, val, depth=0):
-        if self.is_leaf(root) and isinstance(root, BSTNode):
+    def insert(self, root: TreeNode, val, depth=0):
+        if self.is_leaf(root) and isinstance(root, TreeNode):
             if root.val > val:
-                root.left = BSTNode(val, None, None, depth + 1)
+                root.left = TreeNode(val, None, None, depth + 1)
                 self.root = self.balance_tree()
             if root.val < val:
-                root.right = BSTNode(val, depth=depth + 1)
+                root.right = TreeNode(val, depth=depth + 1)
                 self.root = self.balance_tree()
             if root.val == val:
                 raise ValueError(f"{val} already exists in the BST")
@@ -50,13 +50,13 @@ class BinaryTree:
                 if root.right:
                     self.insert(root.right, val, depth + 1)
                 else:
-                    root.right = BSTNode(val=val, depth = depth + 1)
+                    root.right = TreeNode(val=val, depth = depth + 1)
                     self.root = self.balance_tree()
             elif root.val > val:
                 if root.left:
                     self.insert(root.left, val, depth + 1)
                 else:
-                    root.left = BSTNode(val=val, depth=depth + 1)
+                    root.left = TreeNode(val=val, depth=depth + 1)
                     self.root = self.balance_tree()
             else:
                 raise ValueError(f"{val} already exists in the BST")
@@ -68,7 +68,7 @@ class BinaryTree:
         return 1 + max(self.height(node.left), self.height(node.right))
 
 
-    def update_balance_factor(self, node:BSTNode):
+    def update_balance_factor(self, node:TreeNode):
         node.balance = self.height(node.left) - self.height(node.right)
         if node.left:
             self.update_balance_factor(node.left)
@@ -107,7 +107,7 @@ class BinaryTree:
         return out
 
     def balance_tree(self):
-        def rotate_right(node: BSTNode):
+        def rotate_right(node: TreeNode):
             x = node.left
             t2 = x.right
             x.right = node
@@ -118,7 +118,7 @@ class BinaryTree:
             self.update_balance_factor(x)
             return x
         
-        def rotate_left(node: BSTNode):
+        def rotate_left(node: TreeNode):
             y = node.right
             t2 = y.left
             y.left = node
@@ -129,7 +129,7 @@ class BinaryTree:
             self.update_balance_factor(y)
             return y
 
-        def balance(root: BSTNode): #balance subtree
+        def balance(root: TreeNode): #balance subtree
             self.update_balance_factor(root)
             if root.balance == 0:
                 return root
@@ -157,7 +157,7 @@ class BinaryTree:
                 return 0
 
             return 1 + max(height(node.left), height(node.right))
-        def recurse(node: BSTNode):
+        def recurse(node: TreeNode):
             if node:
                 node.left = recurse(node.left)
                 node.right = recurse(node.right)
