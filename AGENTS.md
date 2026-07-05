@@ -38,3 +38,11 @@ Coding style should always focus on readability.
 Avoid scattering logic across multiple locations when it can be kept coherent in one place.
 
 Be pedantic about naming conventions.
+
+## Python Inheritance
+
+Standing rule for this project: in Python, allow a maximum of one level of inheritance.
+
+For example, a base class `A` may have a class `B` that inherits from `A`.
+
+A class `C` that inherits from `B` is not allowed, because that would create a second level of inheritance from `A`.

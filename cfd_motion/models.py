@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+import base64
+import email.utils
+import hashlib
+import hmac
+import json
+import math
+import os
+import re
+import secrets
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+from .config import *
+
+Vec3 = Tuple[float, float, float]
+Triangle = Tuple[Vec3, Vec3, Vec3, Vec3]  # normal, v1, v2, v3
+Matrix4 = Tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class OnshapeRef:
+    base_url: str
+    did: str
+    wvm: str
+    wvmid: str
+    eid: str
+    configuration: Optional[str] = None
+
+
+@dataclass
+class MotionFreedom:
+    translate_axes: List[Vec3] = field(default_factory=list)
+    rotate_axes: List[Vec3] = field(default_factory=list)
+    mate_type: str = "FREE"
+    source: str = "unmated"
+    limits: Dict[str, Tuple[Optional[float], Optional[float]]] = field(default_factory=dict)
+
+
+@dataclass
+class MaterialProperties:
+    material_name: str = DEFAULT_MATERIAL_NAME
+    density_kg_m3: float = DEFAULT_MATERIAL_DENSITY_KG_M3
+    mass_kg: Optional[float] = None
+    volume_m3: Optional[float] = None
+    source: str = "default"
+    linear_damping_per_kg: float = DEFAULT_LINEAR_DAMPING_PER_KG
+    angular_damping_per_kg: float = DEFAULT_ANGULAR_DAMPING_PER_KG
+
+
+@dataclass
+class AeroComponent:
+    name: str
+    patch: str
+    triangles: List[Triangle]
+    cofr: Vec3
+    lref: float
+    aref: float
+    freedom: MotionFreedom = field(default_factory=MotionFreedom)
+    material: MaterialProperties = field(default_factory=MaterialProperties)
+    mass: float = DEFAULT_PART_MASS_KG
+    inertia: float = DEFAULT_PART_INERTIA_KGM2
+    linear_velocity: Vec3 = (0.0, 0.0, 0.0)
+    angular_velocity: Vec3 = (0.0, 0.0, 0.0)
+    total_translation: Vec3 = (0.0, 0.0, 0.0)
+    total_rotation: Vec3 = (0.0, 0.0, 0.0)
+    source_occurrence: Optional[str] = None
+    motion_origin: Optional[Vec3] = None
+    is_assembly_anchor: bool = False
+
+
+# ------------------------- small math helpers -------------------------
+
+
