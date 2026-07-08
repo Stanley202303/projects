@@ -217,6 +217,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                         f"{xmin:.8g}\t{xmax:.8g}\t{ymin:.8g}\t{ymax:.8g}\t{zmin:.8g}\t{zmax:.8g}\n"
                     )
 
+            enforce_attachment_constraints(components)
             collision_lines = resolve_part_collisions(components, step, collision_log)
             if collision_lines:
                 print(f"Collision resolution: {len(collision_lines)} contact event(s) handled at step {step}.")
@@ -375,15 +376,7 @@ def copy_if_exists(source: Path, destination: Path) -> None:
         shutil.copy2(source, destination)
 
 
-def main() -> int:
-    if len(sys.argv) != 2:
-        print("Usage:")
-        print("  python3 one_click_actual_cfd_assembly_motion_v29.py '<ONSHAPE_PART_STUDIO_OR_ASSEMBLY_URL>'")
-        print("or:")
-        print("  python3 one_click_actual_cfd_assembly_motion_v29.py model.stl")
-        return 2
-
-    source = sys.argv[1]
+def run_source(source: str) -> int:
     case = Path.cwd() / CASE_NAME
 
     try:
@@ -448,3 +441,12 @@ def main() -> int:
     except Exception as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
         return 1
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print("Usage:")
+        print("  python -m cfd_motion '<ONSHAPE_PART_STUDIO_OR_ASSEMBLY_URL>'")
+        print("  python -m cfd_motion model.stl")
+        return 2
+    return run_source(sys.argv[1])

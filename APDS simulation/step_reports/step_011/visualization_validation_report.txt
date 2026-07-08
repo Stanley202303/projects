@@ -1,0 +1,20 @@
+# Visualization validation report
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case2_step_work_5p_xnqyz/step_work
+numeric_time_dirs=['0', '60']
+selected_latest_time=60
+sampled_surface_vtk_count=6
+foamToVTK_vtk_count=6
+
+field	min	max	range	file
+p	-6567.7554	4963.5738	11531.3292	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case2_step_work_5p_xnqyz/step_work/60/p
+pPa	-8045.500365	6080.377905	14125.87827	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case2_step_work_5p_xnqyz/step_work/60/pPa
+Cp	-1.31355108	0.99271476	2.30626584	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case2_step_work_5p_xnqyz/step_work/60/Cp
+k	16.84089	725.15489	708.314	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case2_step_work_5p_xnqyz/step_work/60/k
+omega	174.69547	53507.564	53332.86853	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case2_step_work_5p_xnqyz/step_work/60/omega
+nut	0.00022247306	0.10828642	0.1080639469	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case2_step_work_5p_xnqyz/step_work/60/nut
+
+Interpretation:
+- If selected_latest_time is 0, you are still looking at startup fields, not solved CFD.
+- If p/pPa/Cp range is zero, pressure colouring will be one solid colour.
+- If sampled_surface_vtk_count is zero, the accurate surface-colouring PVD cannot be built from sampled wall fields.
+- For moving remeshed geometry, prefer paraview_motion_timeseries.pvd over case.foam.

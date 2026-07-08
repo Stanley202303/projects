@@ -46,6 +46,67 @@ def aerodynamic_coeffs_present(coeffs: Dict[str, float]) -> bool:
     return any(abs(coeffs.get(k, 0.0)) > 1e-12 for k in keys)
 
 
+def component_world_velocity_at_point(component: AeroComponent, point: Vec3) -> Vec3:
+    velocity = component_world_velocity(component)
+    if not AERO_USE_LOCAL_POINT_VELOCITY or v_norm(component.angular_velocity) <= 1e-12:
+        return velocity
+    origin = infer_motion_origin(component)
+    return v_add(velocity, v_cross(component.angular_velocity, v_sub(point, origin)))
+
+
+def relative_air_velocity_at_point(component: AeroComponent, point: Vec3) -> Vec3:
+    return v_sub(freestream_air_velocity(), component_world_velocity_at_point(component, point))
+
+
+def local_air_speed_and_unit(component: AeroComponent, point: Vec3) -> Tuple[float, Vec3]:
+    rel = relative_air_velocity_at_point(component, point)
+    speed = v_norm(rel)
+    if speed <= 1e-9:
+        return 0.0, flow_unit_vector()
+    return speed, v_mul(rel, 1.0 / speed)
+
+
+def filter_aerodynamic_load(component: AeroComponent, force: Vec3, moment: Vec3) -> Tuple[Vec3, Vec3]:
+    if (not component.aerodynamic_load_initialized) or AERO_LOAD_RELAXATION >= 1.0:
+        component.filtered_force = force
+        component.filtered_moment = moment
+        component.aerodynamic_load_initialized = True
+        return force, moment
+
+    keep = 1.0 - AERO_LOAD_RELAXATION
+    filtered_force = v_add(
+        v_mul(component.filtered_force, keep),
+        v_mul(force, AERO_LOAD_RELAXATION),
+    )
+    filtered_moment = v_add(
+        v_mul(component.filtered_moment, keep),
+        v_mul(moment, AERO_LOAD_RELAXATION),
+    )
+    component.filtered_force = filtered_force
+    component.filtered_moment = filtered_moment
+    return filtered_force, filtered_moment
+
+
+def rotational_inertia_about_axis(component: AeroComponent, axis: Vec3) -> float:
+    u = v_unit(axis)
+    ixx, iyy, izz = estimate_box_inertia_diagonal(component.mass, component.triangles)
+    return max(
+        ixx * u[0] * u[0] + iyy * u[1] * u[1] + izz * u[2] * u[2],
+        1e-12,
+    )
+
+
+def angular_acceleration_from_moment(component: AeroComponent, moment: Vec3, axes: Sequence[Vec3]) -> Vec3:
+    if not axes:
+        return (0.0, 0.0, 0.0)
+    accel = (0.0, 0.0, 0.0)
+    for axis in axes:
+        u = v_unit(axis)
+        inertia = rotational_inertia_about_axis(component, u)
+        accel = v_add(accel, v_mul(u, v_dot(moment, u) / inertia))
+    return accel
+
+
 def surface_pressure_load(component: AeroComponent) -> Tuple[Vec3, Vec3]:
     """Panel-style aerodynamic fallback load from the current STL geometry.
 
@@ -60,9 +121,6 @@ def surface_pressure_load(component: AeroComponent) -> Tuple[Vec3, Vec3]:
     hinge/mate origin so parts can move relative to each other even if the Docker
     OpenFOAM image fails to write force function-object files.
     """
-    rel_speed, flow_unit = relative_air_speed_and_unit(component)
-    q = 0.5 * RHO * rel_speed ** 2
-    incoming_dir = v_mul(flow_unit, -1.0)
     origin = infer_motion_origin(component)
     total_force = (0.0, 0.0, 0.0)
     total_moment = (0.0, 0.0, 0.0)
@@ -70,6 +128,7 @@ def surface_pressure_load(component: AeroComponent) -> Tuple[Vec3, Vec3]:
     # Flat-plate turbulent/laminar skin-friction estimate. It is deliberately
     # small compared with pressure drag but prevents perfectly edge-on plates from
     # receiving exactly zero aerodynamic load.
+    rel_speed, component_flow_unit = relative_air_speed_and_unit(component)
     re = max(rel_speed * max(component.lref, 1e-6) / max(NU, 1e-12), 1.0)
     if re < 5e5:
         cf = 1.328 / math.sqrt(re)
@@ -81,6 +140,11 @@ def surface_pressure_load(component: AeroComponent) -> Tuple[Vec3, Vec3]:
         area, centroid, normal = triangle_area_centroid_normal(tri)
         if area <= 1e-18:
             continue
+        rel_speed, flow_unit = local_air_speed_and_unit(component, centroid)
+        if rel_speed <= 1e-9:
+            continue
+        q = 0.5 * RHO * rel_speed ** 2
+        incoming_dir = v_mul(flow_unit, -1.0)
 
         # Pressure side. The projected exposure term behaves like a simple Cp
         # model: face-on triangles get near-stagnation pressure, edge-on triangles
@@ -123,7 +187,7 @@ def surface_pressure_load(component: AeroComponent) -> Tuple[Vec3, Vec3]:
         total_moment = v_add(total_moment, v_cross(v_sub(centroid, origin), tri_force))
 
     if SURFACE_LOAD_MIN_FORCE_N > 0 and v_norm(total_force) < SURFACE_LOAD_MIN_FORCE_N:
-        total_force = v_mul(flow_unit, SURFACE_LOAD_MIN_FORCE_N)
+        total_force = v_mul(component_flow_unit, SURFACE_LOAD_MIN_FORCE_N)
         total_moment = v_cross(v_sub(component.cofr, origin), total_force)
 
     return total_force, total_moment
@@ -153,19 +217,24 @@ def hinge_torque_fallback(component: AeroComponent, current_moment: Vec3) -> Vec
 
 
 def force_from_coefficients(component: AeroComponent, coeffs: Dict[str, float]) -> Vec3:
-    q = 0.5 * RHO * abs(VELOCITY) ** 2
+    rel_speed, flow_unit = relative_air_speed_and_unit(component)
+    q = 0.5 * RHO * rel_speed ** 2
     cd = coeffs.get("Cd", 0.0)
     cs = coeffs.get("Cs", 0.0)
     cl = coeffs.get("Cl", 0.0)
+    drag_dir = v_unit(flow_unit, flow_unit_vector())
+    side_dir = (0.0, 1.0, 0.0)
+    lift_dir = (0.0, 0.0, 1.0)
     return (
-        cd * q * component.aref,
-        cs * q * component.aref,
-        cl * q * component.aref,
+        drag_dir[0] * cd * q * component.aref + side_dir[0] * cs * q * component.aref + lift_dir[0] * cl * q * component.aref,
+        drag_dir[1] * cd * q * component.aref + side_dir[1] * cs * q * component.aref + lift_dir[1] * cl * q * component.aref,
+        drag_dir[2] * cd * q * component.aref + side_dir[2] * cs * q * component.aref + lift_dir[2] * cl * q * component.aref,
     )
 
 
 def moment_from_coefficients(component: AeroComponent, coeffs: Dict[str, float]) -> Vec3:
-    q = 0.5 * RHO * abs(VELOCITY) ** 2
+    rel_speed, _flow_unit = relative_air_speed_and_unit(component)
+    q = 0.5 * RHO * rel_speed ** 2
     scale = q * component.aref * component.lref
     return (
         coeffs.get("CmRoll", 0.0) * scale,
@@ -174,12 +243,223 @@ def moment_from_coefficients(component: AeroComponent, coeffs: Dict[str, float])
     )
 
 
+def move_component_rigidly(
+    component: AeroComponent,
+    translation: Vec3,
+    rotation_axis: Optional[Vec3],
+    rotation_angle: float,
+    origin: Vec3,
+) -> None:
+    component.triangles = move_triangles(component.triangles, translation, rotation_axis, rotation_angle, origin)
+    component.cofr = v_add(component.cofr, translation)
+    if rotation_axis is not None:
+        component.cofr = rotate_point_around_axis(component.cofr, origin, rotation_axis, rotation_angle)
+
+    if component.mate_origin is not None:
+        component.mate_origin = v_add(component.mate_origin, translation)
+        if rotation_axis is not None:
+            component.mate_origin = rotate_point_around_axis(component.mate_origin, origin, rotation_axis, rotation_angle)
+        component.motion_origin = component.mate_origin
+    if rotation_axis is not None:
+        for attr in ("mate_x_axis", "mate_y_axis", "mate_z_axis"):
+            axis_value = getattr(component, attr)
+            if axis_value is not None:
+                rotated = rotate_point_around_axis(axis_value, (0.0, 0.0, 0.0), rotation_axis, rotation_angle)
+                setattr(component, attr, v_unit(rotated))
+
+
+def attachment_target_origin(
+    component: AeroComponent,
+    components_by_occurrence: Optional[Dict[str, AeroComponent]] = None,
+) -> Optional[Vec3]:
+    return component.mate_reference_origin
+
+
+def attachment_target_axes(
+    component: AeroComponent,
+    components_by_occurrence: Optional[Dict[str, AeroComponent]] = None,
+) -> Tuple[Optional[Vec3], Optional[Vec3], Optional[Vec3]]:
+    return component.mate_reference_x_axis, component.mate_reference_y_axis, component.mate_reference_z_axis
+
+
+def _rotate_component_about_mate_origin(component: AeroComponent, axis: Vec3, angle: float) -> None:
+    if v_norm(axis) <= 1e-12 or abs(angle) <= 1e-12 or component.mate_origin is None:
+        return
+    move_component_rigidly(component, (0.0, 0.0, 0.0), axis, angle, component.mate_origin)
+
+
+def _align_vector_with_target(component: AeroComponent, current: Optional[Vec3], target: Optional[Vec3]) -> None:
+    if current is None or target is None or component.mate_origin is None:
+        return
+    cu = v_unit(current)
+    tu = v_unit(target)
+    axis = v_cross(cu, tu)
+    axis_norm = v_norm(axis)
+    dot = max(-1.0, min(1.0, v_dot(cu, tu)))
+    if axis_norm <= 1e-12:
+        if dot < 0.0:
+            fallback = component.mate_x_axis or component.mate_y_axis or (1.0, 0.0, 0.0)
+            axis = v_cross(cu, fallback)
+            if v_norm(axis) <= 1e-12:
+                axis = v_cross(cu, (0.0, 1.0, 0.0))
+            _rotate_component_about_mate_origin(component, v_unit(axis), math.pi)
+        return
+    _rotate_component_about_mate_origin(component, v_unit(axis), math.acos(dot))
+
+
+def _signed_angle_about_axis(current: Vec3, target: Vec3, axis: Vec3) -> float:
+    au = v_unit(axis)
+    c_proj = v_sub(current, v_mul(au, v_dot(current, au)))
+    t_proj = v_sub(target, v_mul(au, v_dot(target, au)))
+    if v_norm(c_proj) <= 1e-12 or v_norm(t_proj) <= 1e-12:
+        return 0.0
+    cu = v_unit(c_proj)
+    tu = v_unit(t_proj)
+    sine = v_dot(v_cross(cu, tu), au)
+    cosine = max(-1.0, min(1.0, v_dot(cu, tu)))
+    return math.atan2(sine, cosine)
+
+
+def enforce_component_orientation_constraint(
+    component: AeroComponent,
+    components_by_occurrence: Optional[Dict[str, AeroComponent]] = None,
+) -> None:
+    # Runtime connector-frame alignment proved too aggressive for real Onshape
+    # mates because the imported connector bases can be opposite-handed or already
+    # include mating transforms. A conservative world-space origin constraint is
+    # much more stable than forcing connector axes to match during the solve.
+    return
+
+
+def enforce_component_attachment_constraint(
+    component: AeroComponent,
+    components_by_occurrence: Optional[Dict[str, AeroComponent]] = None,
+) -> Vec3:
+    if component.is_assembly_anchor or component.mate_origin is None:
+        return (0.0, 0.0, 0.0)
+
+    target_origin = attachment_target_origin(component, components_by_occurrence)
+    if target_origin is None:
+        return (0.0, 0.0, 0.0)
+
+    current_offset = v_sub(component.mate_origin, target_origin)
+    allowed_offset = project_vector_on_axes(current_offset, component.freedom.translate_axes)
+    desired_origin = v_add(target_origin, allowed_offset)
+    correction = v_sub(desired_origin, component.mate_origin)
+    if v_norm(correction) <= 1e-12:
+        return (0.0, 0.0, 0.0)
+
+    move_component_rigidly(component, correction, None, 0.0, infer_motion_origin(component))
+    return correction
+
+
+def enforce_attachment_constraints(components: Sequence[AeroComponent]) -> Dict[str, Vec3]:
+    components_by_occurrence = {
+        component.source_occurrence: component
+        for component in components
+        if component.source_occurrence
+    }
+    corrections: Dict[str, Vec3] = {}
+    for _ in range(4):
+        changed = False
+        for component in components:
+            correction = enforce_component_attachment_constraint(component, components_by_occurrence)
+            if v_norm(correction) > 1e-12:
+                corrections[component.patch] = v_add(corrections.get(component.patch, (0.0, 0.0, 0.0)), correction)
+                changed = True
+        if not changed:
+            break
+    return corrections
+
+
+def primary_limit_kind_and_axis(component: AeroComponent) -> Tuple[Optional[str], Optional[Vec3], Tuple[Optional[float], Optional[float]]]:
+    limits = component.freedom.limits.get("primary")
+    if limits is None:
+        return None, None, (None, None)
+
+    mate_type = component.freedom.mate_type.upper()
+    if mate_type in {"REVOLUTE", "BALL", "PARALLEL"} and component.freedom.rotate_axes:
+        return "rotation", component.freedom.rotate_axes[0], limits
+    if component.freedom.translate_axes:
+        return "translation", component.freedom.translate_axes[0], limits
+    if component.freedom.rotate_axes:
+        return "rotation", component.freedom.rotate_axes[0], limits
+    return None, None, limits
+
+
+def translation_coordinate_along_axis(component: AeroComponent, axis: Vec3) -> float:
+    u = v_unit(axis)
+    if component.mate_origin is not None and component.mate_reference_origin is not None:
+        return v_dot(v_sub(component.mate_origin, component.mate_reference_origin), u)
+    return v_dot(component.total_translation, u)
+
+
+def damp_velocity_against_limit(component: AeroComponent, axis: Vec3, kind: str, moving_positive: bool) -> None:
+    u = v_unit(axis)
+    if kind == "translation":
+        along = v_dot(component.linear_velocity, u)
+        if (moving_positive and along > 0.0) or ((not moving_positive) and along < 0.0):
+            tangential = v_sub(component.linear_velocity, v_mul(u, along))
+            component.linear_velocity = v_add(tangential, v_mul(u, -along * JOINT_LIMIT_RESTITUTION))
+        return
+
+    along = v_dot(component.angular_velocity, u)
+    if (moving_positive and along > 0.0) or ((not moving_positive) and along < 0.0):
+        tangential = v_sub(component.angular_velocity, v_mul(u, along))
+        component.angular_velocity = v_add(tangential, v_mul(u, -along * JOINT_LIMIT_RESTITUTION))
+
+
+def enforce_primary_motion_limit(component: AeroComponent) -> Tuple[Vec3, Vec3]:
+    kind, axis, (lower, upper) = primary_limit_kind_and_axis(component)
+    if kind is None or axis is None:
+        return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+
+    u = v_unit(axis)
+    if kind == "translation":
+        coordinate = translation_coordinate_along_axis(component, u)
+        target = coordinate
+        moving_positive = False
+        if lower is not None and coordinate < lower:
+            target = lower
+            moving_positive = False
+        elif upper is not None and coordinate > upper:
+            target = upper
+            moving_positive = True
+        correction_mag = target - coordinate
+        if abs(correction_mag) <= 1e-12:
+            return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+        translation = v_mul(u, correction_mag)
+        move_component_rigidly(component, translation, None, 0.0, infer_motion_origin(component))
+        component.total_translation = v_add(component.total_translation, translation)
+        damp_velocity_against_limit(component, u, kind, moving_positive)
+        return translation, (0.0, 0.0, 0.0)
+
+    coordinate = v_dot(component.total_rotation, u)
+    target = coordinate
+    moving_positive = False
+    if lower is not None and coordinate < lower:
+        target = lower
+        moving_positive = False
+    elif upper is not None and coordinate > upper:
+        target = upper
+        moving_positive = True
+    correction_angle = target - coordinate
+    if abs(correction_angle) <= 1e-12:
+        return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+    move_component_rigidly(component, (0.0, 0.0, 0.0), u, correction_angle, infer_motion_origin(component))
+    rotation_step = v_mul(u, correction_angle)
+    component.total_rotation = v_add(component.total_rotation, rotation_step)
+    damp_velocity_against_limit(component, u, kind, moving_positive)
+    return (0.0, 0.0, 0.0), rotation_step
+
+
 def update_component_motion(component: AeroComponent, coeffs: Dict[str, float], dt: float, load_override: Optional[Tuple[Vec3, Vec3]] = None) -> Tuple[Vec3, Vec3, Vec3, Vec3]:
     if load_override is not None:
         force, foam_moment = load_override
     else:
         force = v_mul(force_from_coefficients(component, coeffs), MOTION_FORCE_GAIN)
         foam_moment = v_mul(moment_from_coefficients(component, coeffs), MOTION_MOMENT_GAIN)
+    force, foam_moment = filter_aerodynamic_load(component, force, foam_moment)
     free = component.freedom
 
     # Anchored/root/grounded/fastened components still get force and moment logged,
@@ -214,7 +494,7 @@ def update_component_motion(component: AeroComponent, coeffs: Dict[str, float], 
         total_moment = hinge_torque_fallback(component, total_moment)
 
     allowed_moment = project_vector_on_axes(total_moment, free.rotate_axes)
-    angular_accel = v_mul(allowed_moment, 1.0 / max(component.inertia, 1e-12))
+    angular_accel = angular_acceleration_from_moment(component, allowed_moment, free.rotate_axes)
     new_av = v_add(component.angular_velocity, v_mul(angular_accel, dt))
     angular_decay = math.exp(-max(component.material.angular_damping_per_kg, 0.0) * dt / max(component.mass, 1e-9))
     new_av = v_mul(new_av, angular_decay)
@@ -223,17 +503,26 @@ def update_component_motion(component: AeroComponent, coeffs: Dict[str, float], 
     rotation_angle = v_norm(rotation_vector_step)
     rotation_axis = v_unit(rotation_vector_step) if rotation_angle > 1e-12 else None
 
-    component.triangles = move_triangles(component.triangles, translation_step, rotation_axis, rotation_angle, motion_origin)
-    component.cofr = v_add(component.cofr, translation_step)
-    # If the component rotated about an off-centre hinge, update CofR by rotating it too.
-    if rotation_axis is not None:
-        component.cofr = rotate_point_around_axis(component.cofr, motion_origin, rotation_axis, rotation_angle)
+    move_component_rigidly(component, translation_step, rotation_axis, rotation_angle, motion_origin)
     component.linear_velocity = new_lv
     component.angular_velocity = new_av
     component.total_translation = v_add(component.total_translation, translation_step)
     component.total_rotation = v_add(component.total_rotation, rotation_vector_step)
+    correction = enforce_component_attachment_constraint(component)
+    if v_norm(correction) > 1e-12:
+        component.total_translation = v_add(component.total_translation, correction)
+    limit_dpos, limit_drot = enforce_primary_motion_limit(component)
+    if v_norm(limit_dpos) > 1e-12 or v_norm(limit_drot) > 1e-12:
+        correction = enforce_component_attachment_constraint(component)
+        if v_norm(correction) > 1e-12:
+            component.total_translation = v_add(component.total_translation, correction)
 
-    return force, total_moment, translation_step, rotation_vector_step
+    return (
+        force,
+        total_moment,
+        v_add(translation_step, limit_dpos),
+        v_add(rotation_vector_step, limit_drot),
+    )
 
 
 def component_has_translation_freedom(component: AeroComponent) -> bool:
@@ -258,8 +547,7 @@ def translate_component_for_collision(component: AeroComponent, translation: Vec
         translation = project_vector_on_axes(translation, component.freedom.translate_axes)
     if v_norm(translation) <= 1e-14:
         return (0.0, 0.0, 0.0)
-    component.triangles = move_triangles(component.triangles, translation, None, 0.0, component.cofr)
-    component.cofr = v_add(component.cofr, translation)
+    move_component_rigidly(component, translation, None, 0.0, component.cofr)
     component.total_translation = v_add(component.total_translation, translation)
     return translation
 
@@ -296,8 +584,7 @@ def rotate_component_for_collision(component: AeroComponent, normal: Vec3, conta
             return (0.0, 0.0, 0.0)
         sign = 1.0 if v_dot(torque_dir, best_axis) >= 0.0 else -1.0
     angle = sign * min(MAX_ROTATION_PER_STEP_RAD, max(depth, COLLISION_MIN_OVERLAP_M) / max(component.lref, 1e-6))
-    component.triangles = move_triangles(component.triangles, (0.0, 0.0, 0.0), best_axis, angle, origin)
-    component.cofr = rotate_point_around_axis(component.cofr, origin, best_axis, angle)
+    move_component_rigidly(component, (0.0, 0.0, 0.0), best_axis, angle, origin)
     drot = v_mul(best_axis, angle)
     component.total_rotation = v_add(component.total_rotation, drot)
     component.angular_velocity = clamp_vector_magnitude(v_add(component.angular_velocity, v_mul(drot, 1.0 / max(MOTION_DT, 1e-9))), COLLISION_MAX_ANGULAR_SPEED_RAD_S)
@@ -314,7 +601,8 @@ def apply_collision_impulse(component: AeroComponent, impulse: Vec3, contact_poi
         origin = infer_motion_origin(component)
         angular_impulse = v_cross(v_sub(contact_point, origin), impulse)
         angular_impulse = project_vector_on_axes(angular_impulse, component.freedom.rotate_axes)
-        component.angular_velocity = clamp_vector_magnitude(v_add(component.angular_velocity, v_mul(angular_impulse, 1.0 / max(component.inertia, 1e-12))), COLLISION_MAX_ANGULAR_SPEED_RAD_S)
+        delta_av = angular_acceleration_from_moment(component, angular_impulse, component.freedom.rotate_axes)
+        component.angular_velocity = clamp_vector_magnitude(v_add(component.angular_velocity, delta_av), COLLISION_MAX_ANGULAR_SPEED_RAD_S)
 
 
 def aabb_overlap_with_normal(a: AeroComponent, b: AeroComponent) -> Optional[Tuple[float, Vec3, Vec3]]:
@@ -415,6 +703,7 @@ def resolve_part_collisions(components: List[AeroComponent], step: int, log_path
                 lines.append(line)
         if not any_collision:
             break
+    enforce_attachment_constraints(components)
     if lines:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a") as f:
@@ -571,7 +860,3 @@ def append_motion_log(path: Path, step: int, component: AeroComponent, coeffs: D
             f"{drot[0]:.8g}", f"{drot[1]:.8g}", f"{drot[2]:.8g}",
             f"{component.total_translation[0]:.8g}", f"{component.total_translation[1]:.8g}", f"{component.total_translation[2]:.8g}",
         ]) + "\n")
-
-
-
-

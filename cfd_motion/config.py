@@ -54,17 +54,17 @@ CFD_PRESETS = {
         "RESIDUAL_CONTROL_TURB": "1e-3",
     },
     "fast": {
-        "CFD_ITERATIONS": "70",
-        "CFD_WRITE_INTERVAL": "10",
+        "CFD_ITERATIONS": "60",
+        "CFD_WRITE_INTERVAL": "20",
         "SOLVER_TIMEOUT_SECONDS": "1500",
-        "ASSEMBLY_DYNAMIC_STEPS": "2",
+        "ASSEMBLY_DYNAMIC_STEPS": "",
         "BASE_CELLS_PER_LENGTH": "5.5",
         "MIN_CELLS": "40,28,28",
         "SURFACE_REFINEMENT_MIN": "2",
         "SURFACE_REFINEMENT_MAX": "3",
         "REGION_REFINEMENT": "3",
-        "MAX_LOCAL_CELLS": "1200000",
-        "MAX_GLOBAL_CELLS": "1800000",
+        "MAX_LOCAL_CELLS": "2000000",
+        "MAX_GLOBAL_CELLS": "3000000",
         "ADD_BOUNDARY_LAYERS": "0",
         "U_SOLVER": "PBiCGStab",
         "U_PRECONDITIONER": "DILU",
@@ -86,7 +86,7 @@ CFD_PRESETS = {
         "CFD_ITERATIONS": "140",
         "CFD_WRITE_INTERVAL": "20",
         "SOLVER_TIMEOUT_SECONDS": "3000",
-        "ASSEMBLY_DYNAMIC_STEPS": "8",
+        "ASSEMBLY_DYNAMIC_STEPS": "2",
         "BASE_CELLS_PER_LENGTH": "7.0",
         "MIN_CELLS": "48,32,32",
         "SURFACE_REFINEMENT_MIN": "4",
@@ -142,7 +142,7 @@ CFD_PRESETS = {
     },
 }
 
-CFD_CONFIG = os.environ.get("CFD_CONFIG", os.environ.get("CFD_PRESET", "balanced")).strip().lower() or "balanced"
+CFD_CONFIG = os.environ.get("CFD_CONFIG", os.environ.get("CFD_PRESET", "fast")).strip().lower() or "fast"
 ALLOW_CFD_ENV_OVERRIDES = os.environ.get("ALLOW_CFD_ENV_OVERRIDES", "0").strip().lower() in {"1", "true", "yes", "on"}
 if CFD_CONFIG == "custom":
     # Custom mode deliberately restores the old behaviour: individual CFD_*/solver
@@ -163,8 +163,13 @@ def cfg_default(name: str, fallback: str) -> str:
     per-variable environment overrides.
     """
     preset_value = CFD_PRESETS[CFD_CONFIG].get(name, fallback)
+    if str(preset_value).strip() == "":
+        preset_value = fallback
     if CFD_CONFIG == "custom" or ALLOW_CFD_ENV_OVERRIDES:
-        return os.environ.get(name, preset_value)
+        value = os.environ.get(name, preset_value)
+        if str(value).strip() == "":
+            return fallback
+        return value
     return preset_value
 
 
@@ -183,10 +188,10 @@ def cfg_int(name: str, fallback: str) -> int:
 
 # ------------------------- simple settings -------------------------
 
-CASE_NAME = "actual_model_case"
+CASE_NAME = os.environ.get("CASE_NAME", "actual_model_case").strip() or "actual_model_case"
 DOCKER_IMAGE = "microfluidica/openfoam:11"
 
-VELOCITY = float(os.environ.get("VELOCITY", "100.0"))  # m/s, flow is nominally along X. Magnitude is used for coefficients.
+VELOCITY = float(os.environ.get("VELOCITY", "-100.0"))  # m/s, flow is nominally along X. Magnitude is used for coefficients.
 RHO = float(os.environ.get("RHO", "1.225"))                # kg/m^3
 NU = float(os.environ.get("NU", "1.5e-5"))                # m^2/s, air-ish
 # Accuracy-first default: simpleFoam needs enough SIMPLE iterations for pressure/force convergence.
@@ -355,6 +360,8 @@ DEFAULT_PART_MASS_KG = float(os.environ.get("DEFAULT_PART_MASS_KG", "0.05"))
 DEFAULT_PART_INERTIA_KGM2 = float(os.environ.get("DEFAULT_PART_INERTIA_KGM2", "1e-4"))
 MAX_TRANSLATION_PER_STEP = float(os.environ.get("MAX_TRANSLATION_PER_STEP", "0.02"))
 MAX_ROTATION_PER_STEP_RAD = math.radians(float(os.environ.get("MAX_ROTATION_PER_STEP_DEG", "10")))
+AERO_LOAD_RELAXATION = max(0.0, min(1.0, float(os.environ.get("AERO_LOAD_RELAXATION", "0.35"))))
+AERO_USE_LOCAL_POINT_VELOCITY = os.environ.get("AERO_USE_LOCAL_POINT_VELOCITY", "1").strip().lower() not in {"0", "false", "no", "off"}
 # Motion gains are deliberately explicit.  Keep them at 1 for physics-like runs;
 # increase them to make very small aerodynamic movements visible in early tests.
 MOTION_FORCE_GAIN = float(os.environ.get("MOTION_FORCE_GAIN", "1.0"))
@@ -383,6 +390,7 @@ COLLISION_LOG_NAME = "assembly_collision_log.txt"
 USE_FORCE_LEVER_ARM_TORQUE = os.environ.get("USE_FORCE_LEVER_ARM_TORQUE", "1").strip().lower() not in {"0", "false", "no", "off"}
 AUTO_HINGE_ORIGINS = os.environ.get("AUTO_HINGE_ORIGINS", "1").strip().lower() not in {"0", "false", "no", "off"}
 USE_ALL_COEFFS_FALLBACK = os.environ.get("USE_ALL_COEFFS_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}
+JOINT_LIMIT_RESTITUTION = max(0.0, min(1.0, float(os.environ.get("JOINT_LIMIT_RESTITUTION", "0.0"))))
 # v8 fallback: if OpenFOAM forceCoeffs are absent or all zero, estimate aerodynamic
 # force directly from STL triangle projected area. This is much cruder than CFD,
 # but it guarantees the motion loop has non-zero loads for hinge/mate testing.
@@ -519,4 +527,3 @@ NEAR_BODY_REFINEMENT_LENGTHS = 0.5
 
 JSON_CONTENT_TYPE = "application/json;charset=UTF-8; qs=0.09"
 JSON_ACCEPT = "application/json;charset=UTF-8; qs=0.09"
-

@@ -129,6 +129,17 @@ def mat_apply(m: Sequence[float], p: Vec3) -> Vec3:
     return p
 
 
+def mat_apply_direction(m: Sequence[float], direction: Vec3) -> Vec3:
+    # Apply only the rotation block of a row-major 4x4 transform.
+    if len(m) >= 16:
+        return (
+            m[0] * direction[0] + m[1] * direction[1] + m[2] * direction[2],
+            m[4] * direction[0] + m[5] * direction[1] + m[6] * direction[2],
+            m[8] * direction[0] + m[9] * direction[1] + m[10] * direction[2],
+        )
+    return direction
+
+
 def rotate_point_around_axis(point: Vec3, origin: Vec3, axis: Vec3, angle: float) -> Vec3:
     if abs(angle) <= 1e-14:
         return point
@@ -167,5 +178,4 @@ def move_triangles(triangles: Iterable[Triangle], translation: Vec3, rotation_ax
 
 
 # ------------------------- OpenFOAM writers -------------------------
-
 

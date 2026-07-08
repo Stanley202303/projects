@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">
+  <Collection>
+    <DataSet timestep="0" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_000_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="1" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_001_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="2" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_002_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="3" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_003_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="4" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_004_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="5" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_005_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="6" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_006_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="7" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_007_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="8" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_008_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="9" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_009_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="10" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_010_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="11" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_011_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="12" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_012_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="13" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_013_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="14" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_014_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="15" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_015_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="16" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_016_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="17" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_017_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="18" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_018_combined_cfd_sampled_surfaces.vtp"/>
+    <DataSet timestep="19" group="sampled_cfd_surfaces" part="0" file="cfd_sampled_surface_timeseries/frame_019_combined_cfd_sampled_surfaces.vtp"/>
+  </Collection>
+</VTKFile>

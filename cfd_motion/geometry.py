@@ -237,9 +237,18 @@ def estimate_closed_mesh_volume(triangles: Sequence[Triangle]) -> float:
 
 
 def estimate_scalar_inertia(mass: float, triangles: Sequence[Triangle]) -> float:
+    ixx, iyy, izz = estimate_box_inertia_diagonal(mass, triangles)
+    return max((ixx + iyy + izz) / 3.0, 1e-9)
+
+
+def estimate_box_inertia_diagonal(mass: float, triangles: Sequence[Triangle]) -> Tuple[float, float, float]:
     pts = stl_points(triangles)
     if not pts:
-        return DEFAULT_PART_INERTIA_KGM2
+        return (
+            DEFAULT_PART_INERTIA_KGM2,
+            DEFAULT_PART_INERTIA_KGM2,
+            DEFAULT_PART_INERTIA_KGM2,
+        )
     xmin, xmax, ymin, ymax, zmin, zmax = bounds(pts, 1.0)
     dx = max(xmax - xmin, 1e-6)
     dy = max(ymax - ymin, 1e-6)
@@ -247,7 +256,11 @@ def estimate_scalar_inertia(mass: float, triangles: Sequence[Triangle]) -> float
     ixx = mass * (dy * dy + dz * dz) / 12.0
     iyy = mass * (dx * dx + dz * dz) / 12.0
     izz = mass * (dx * dx + dy * dy) / 12.0
-    return max((ixx + iyy + izz) / 3.0, 1e-9)
+    return (
+        max(ixx, 1e-9),
+        max(iyy, 1e-9),
+        max(izz, 1e-9),
+    )
 
 
 BASE_MATERIAL_DENSITIES_KG_M3: Dict[str, float] = {
@@ -624,5 +637,4 @@ def write_ascii_stl_triangles(destination: Path, solid_name: str, triangles: Seq
 
 def write_scaled_ascii_stl(source: Path, destination: Path, scale: float) -> None:
     write_ascii_stl_triangles(destination, "obstacle", read_stl_triangles(source), scale)
-
 

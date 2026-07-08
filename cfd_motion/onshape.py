@@ -79,9 +79,11 @@ class OnshapeClient:
     def __init__(self, access_key: str, secret_key: str) -> None:
         if not access_key or not secret_key:
             raise ValueError(
-                "Missing Onshape credentials. Run:\n"
+                "Missing Onshape credentials. Either run:\n"
                 "  export ONSHAPE_ACCESS_KEY='your_access_key'\n"
-                "  export ONSHAPE_SECRET_KEY='your_secret_key'"
+                "  export ONSHAPE_SECRET_KEY='your_secret_key'\n"
+                "or create ~/.config/cfd_motion/onshape_credentials.json with:\n"
+                '  {"access_key": "your_access_key", "secret_key": "your_secret_key"}'
             )
         self.access_key = access_key
         self.secret_key = secret_key
@@ -169,11 +171,44 @@ def api_base_candidates(ref: OnshapeRef) -> List[str]:
     return [api_base_for_version(ref, v) for v in versions]
 
 
+def onshape_credentials_file() -> Path:
+    configured = os.environ.get("ONSHAPE_CREDENTIALS_FILE", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".config" / "cfd_motion" / "onshape_credentials.json"
+
+
+def read_onshape_credentials_file(path: Path) -> Tuple[str, str]:
+    if not path.exists():
+        return "", ""
+    try:
+        payload = json.loads(path.read_text())
+    except Exception as exc:
+        raise ValueError(f"Could not read Onshape credentials file {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Onshape credentials file {path} must contain a JSON object")
+    access_key = str(payload.get("access_key") or payload.get("ONSHAPE_ACCESS_KEY") or "").strip()
+    secret_key = str(payload.get("secret_key") or payload.get("ONSHAPE_SECRET_KEY") or "").strip()
+    return access_key, secret_key
+
+
 def get_onshape_client() -> OnshapeClient:
-    return OnshapeClient(
-        os.environ.get("ONSHAPE_ACCESS_KEY", ""),
-        os.environ.get("ONSHAPE_SECRET_KEY", ""),
-    )
+    access_key = os.environ.get("ONSHAPE_ACCESS_KEY", "").strip()
+    secret_key = os.environ.get("ONSHAPE_SECRET_KEY", "").strip()
+    if not access_key or not secret_key:
+        file_access_key, file_secret_key = read_onshape_credentials_file(onshape_credentials_file())
+        access_key = access_key or file_access_key
+        secret_key = secret_key or file_secret_key
+    return OnshapeClient(access_key, secret_key)
+
+
+def write_onshape_credentials_template(path: Optional[Path] = None) -> Path:
+    destination = path or onshape_credentials_file()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.exists():
+        destination.write_text('{\n  "access_key": "your_access_key",\n  "secret_key": "your_secret_key"\n}\n')
+        destination.chmod(0o600)
+    return destination
 
 
 def detect_onshape_element_type(ref: OnshapeRef, client: OnshapeClient) -> str:
@@ -738,18 +773,51 @@ def extract_mate_paths(feature: Dict[str, Any]) -> List[str]:
             key = path_to_key(path)
             if key and key not in paths:
                 paths.append(key)
+        mated_occurrence = d.get("matedOccurrence")
+        if isinstance(mated_occurrence, list):
+            key = path_to_key(mated_occurrence)
+            if key and key not in paths:
+                paths.append(key)
         fpas = d.get("fullPathAsString")
         if isinstance(fpas, str) and fpas and fpas not in paths:
             paths.append(fpas)
     return paths
 
 
+def vector3_from_value(value: Any) -> Optional[Vec3]:
+    if isinstance(value, list) and len(value) >= 3:
+        try:
+            return (float(value[0]), float(value[1]), float(value[2]))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def connector_basis_from_entity(entity: Dict[str, Any]) -> Tuple[Optional[Vec3], Optional[Vec3], Optional[Vec3], Optional[Vec3]]:
+    connector = entity.get("mateConnectorCS") or entity.get("matedCS") or entity.get("coordinateSystem")
+    if isinstance(connector, dict):
+        x_axis = vector3_from_value(connector.get("xAxis"))
+        y_axis = vector3_from_value(connector.get("yAxis"))
+        z_axis = vector3_from_value(connector.get("zAxis"))
+        origin = vector3_from_value(connector.get("origin"))
+        return x_axis, y_axis, z_axis, origin
+
+    transform = entity.get("transform")
+    if isinstance(transform, list) and len(transform) >= 12 and all(isinstance(x, (int, float)) for x in transform[:12]):
+        x_axis = (float(transform[0]), float(transform[4]), float(transform[8]))
+        y_axis = (float(transform[1]), float(transform[5]), float(transform[9]))
+        z_axis = (float(transform[2]), float(transform[6]), float(transform[10]))
+        origin = (float(transform[3]), float(transform[7]), float(transform[11]))
+        return x_axis, y_axis, z_axis, origin
+
+    return None, None, None, None
+
+
 def extract_axis_from_feature(feature: Dict[str, Any]) -> Vec3:
-    # Try a transform-like matrix from a mate connector. Local Z is usually the connector axis.
     for d in walk_dicts(feature):
-        transform = d.get("transform") or d.get("mateConnectorCS") or d.get("coordinateSystem")
-        if isinstance(transform, list) and len(transform) >= 11 and all(isinstance(x, (int, float)) for x in transform[:12]):
-            return v_unit((float(transform[2]), float(transform[6]), float(transform[10])))
+        z_axis = connector_basis_from_entity(d)[2]
+        if z_axis is not None:
+            return v_unit(z_axis)
     return (0.0, 0.0, 1.0)
 
 
@@ -771,36 +839,107 @@ def extract_numeric_limits(feature: Dict[str, Any]) -> Dict[str, Tuple[Optional[
     return limits
 
 
-def freedom_for_mate_type(mate_type: str, axis: Vec3, limits: Optional[Dict[str, Tuple[Optional[float], Optional[float]]]] = None) -> MotionFreedom:
+def freedom_for_mate_type(
+    mate_type: str,
+    axis: Vec3,
+    limits: Optional[Dict[str, Tuple[Optional[float], Optional[float]]]] = None,
+    x_axis: Optional[Vec3] = None,
+    y_axis: Optional[Vec3] = None,
+    z_axis: Optional[Vec3] = None,
+    mate_origin: Optional[Vec3] = None,
+    mate_reference_origin: Optional[Vec3] = None,
+    mate_reference_occurrence: Optional[str] = None,
+    mate_reference_x_axis: Optional[Vec3] = None,
+    mate_reference_y_axis: Optional[Vec3] = None,
+    mate_reference_z_axis: Optional[Vec3] = None,
+    source: str = "mate",
+) -> MotionFreedom:
     axis = v_unit(axis)
-    x_axis: Vec3 = (1.0, 0.0, 0.0)
-    y_axis: Vec3 = (0.0, 1.0, 0.0)
-    z_axis: Vec3 = (0.0, 0.0, 1.0)
+    x_axis = v_unit(x_axis or (1.0, 0.0, 0.0))
+    y_axis = v_unit(y_axis or (0.0, 1.0, 0.0))
+    z_axis = v_unit(z_axis or axis)
     mate_type = mate_type.upper()
     limits = limits or {}
+    common_kwargs = dict(
+        limits=limits,
+        mate_origin=mate_origin,
+        mate_reference_origin=mate_reference_origin,
+        mate_reference_occurrence=mate_reference_occurrence,
+        mate_x_axis=x_axis,
+        mate_y_axis=y_axis,
+        mate_z_axis=z_axis,
+        mate_reference_x_axis=mate_reference_x_axis,
+        mate_reference_y_axis=mate_reference_y_axis,
+        mate_reference_z_axis=mate_reference_z_axis,
+    )
 
     if mate_type == "FASTENED":
-        return MotionFreedom([], [], mate_type, "mate", limits)
+        return MotionFreedom([], [], mate_type, source, **common_kwargs)
     if mate_type == "SLIDER":
-        return MotionFreedom([axis], [], mate_type, "mate", limits)
+        return MotionFreedom([axis], [], mate_type, source, **common_kwargs)
     if mate_type == "REVOLUTE":
-        return MotionFreedom([], [axis], mate_type, "mate", limits)
+        return MotionFreedom([], [axis], mate_type, source, **common_kwargs)
     if mate_type == "CYLINDRICAL":
-        return MotionFreedom([axis], [axis], mate_type, "mate", limits)
+        return MotionFreedom([axis], [axis], mate_type, source, **common_kwargs)
     if mate_type == "PIN_SLOT":
-        return MotionFreedom([axis], [axis], mate_type, "mate", limits)
+        return MotionFreedom([axis], [axis], mate_type, source, **common_kwargs)
     if mate_type == "PLANAR":
-        # Approximate the plane as perpendicular to the mate connector Z axis.
-        a = axis
-        ref = x_axis if abs(v_dot(a, x_axis)) < 0.9 else y_axis
-        t1 = v_unit(v_cross(a, ref), x_axis)
-        t2 = v_unit(v_cross(a, t1), y_axis)
-        return MotionFreedom([t1, t2], [axis], mate_type, "mate", limits)
+        return MotionFreedom([x_axis, y_axis], [z_axis], mate_type, source, **common_kwargs)
     if mate_type == "BALL":
-        return MotionFreedom([], [x_axis, y_axis, z_axis], mate_type, "mate", limits)
+        return MotionFreedom([], [x_axis, y_axis, z_axis], mate_type, source, **common_kwargs)
     if mate_type == "PARALLEL":
-        return MotionFreedom([x_axis, y_axis, z_axis], [axis], mate_type, "mate", limits)
-    return MotionFreedom([x_axis, y_axis, z_axis], [x_axis, y_axis, z_axis], mate_type or "FREE", "mate", limits)
+        return MotionFreedom([x_axis, y_axis, z_axis], [axis], mate_type, source, **common_kwargs)
+    return MotionFreedom([x_axis, y_axis, z_axis], [x_axis, y_axis, z_axis], mate_type or "FREE", source, **common_kwargs)
+
+
+def extract_mated_entities(feature: Dict[str, Any]) -> List[Dict[str, Any]]:
+    candidates = feature.get("featureData") if isinstance(feature.get("featureData"), dict) else feature
+    entities = candidates.get("matedEntities") if isinstance(candidates, dict) else None
+    if isinstance(entities, list):
+        return [entity for entity in entities if isinstance(entity, dict)]
+    return []
+
+
+def choose_more_constrained_freedom(existing: MotionFreedom, candidate: MotionFreedom) -> MotionFreedom:
+    if existing.source == "grounded" or existing.mate_type.upper() == "GROUNDED":
+        return existing
+    if candidate.source == "grounded" or candidate.mate_type.upper() == "GROUNDED":
+        return candidate
+
+    # If two mates constrain the same pair, prefer the later decoded mate.
+    # This preserves the existing "explicit revolute overrides broad fastened"
+    # behaviour for duplicate/superseded mate definitions on the same pair.
+    if (
+        existing.mate_reference_occurrence
+        and candidate.mate_reference_occurrence
+        and existing.mate_reference_occurrence == candidate.mate_reference_occurrence
+    ):
+        return candidate
+
+    existing_dofs = len(existing.translate_axes) + len(existing.rotate_axes)
+    candidate_dofs = len(candidate.translate_axes) + len(candidate.rotate_axes)
+    if candidate_dofs < existing_dofs:
+        return candidate
+    if candidate_dofs > existing_dofs:
+        return existing
+    return candidate
+
+
+def iter_mate_features(assembly_def: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+    seen: set[int] = set()
+    for d in walk_dicts(assembly_def):
+        features = d.get("features")
+        if not isinstance(features, list):
+            continue
+        for feature in features:
+            if not isinstance(feature, dict):
+                continue
+            if id(feature) in seen:
+                continue
+            seen.add(id(feature))
+            feature_text = str(get_first(feature, ["featureType", "btType", "type"], "")).lower()
+            if "mate" in feature_text or extract_mate_type(feature) is not None:
+                yield feature
 
 
 def deduce_component_freedoms(assembly_def: Dict[str, Any], occurrences: Sequence[Dict[str, Any]]) -> Tuple[Dict[str, MotionFreedom], List[str]]:
@@ -818,29 +957,46 @@ def deduce_component_freedoms(assembly_def: Dict[str, Any], occurrences: Sequenc
             freedoms[key] = MotionFreedom([], [], "GROUNDED", "grounded")
             report.append(f"{key or '<unknown>'}: grounded/fixed -> no motion")
 
-    mate_features: List[Dict[str, Any]] = []
-    for d in walk_dicts(assembly_def):
-        feature_text = str(get_first(d, ["featureType", "btType", "type"], "")).lower()
-        maybe_mate = "mate" in feature_text or extract_mate_type(d) is not None
-        if maybe_mate:
-            mt = extract_mate_type(d)
-            if mt:
-                mate_features.append(d)
-
-    for feature in mate_features:
+    for feature in iter_mate_features(assembly_def):
         mt = extract_mate_type(feature) or "UNKNOWN"
-        axis = extract_axis_from_feature(feature)
         limits = extract_numeric_limits(feature)
-        mate_paths = extract_mate_paths(feature)
-        mf = freedom_for_mate_type(mt, axis, limits)
+        entities = extract_mated_entities(feature)
+        mate_paths = [path_to_key(entity.get("matedOccurrence")) for entity in entities if path_to_key(entity.get("matedOccurrence"))]
+        axis = extract_axis_from_feature(feature)
         report.append(
             f"Mate {get_first(feature, ['name', 'id', 'featureId'], '<unnamed>')}: "
             f"type={mt}, axis=({axis[0]:.4g},{axis[1]:.4g},{axis[2]:.4g}), paths={mate_paths or '[not decoded]'}"
         )
-        for key in occurrence_keys:
-            if key and any(key == p or key in p or p in key for p in mate_paths):
-                if key not in freedoms or freedoms[key].source != "grounded":
-                    freedoms[key] = mf
+        for entity_index, entity in enumerate(entities):
+            key = path_to_key(entity.get("matedOccurrence"))
+            if not key:
+                continue
+            x_axis, y_axis, z_axis, mate_origin = connector_basis_from_entity(entity)
+            if z_axis is None:
+                z_axis = axis
+            other_entity = next((candidate for i, candidate in enumerate(entities) if i != entity_index), None)
+            other_key = path_to_key(other_entity.get("matedOccurrence")) if isinstance(other_entity, dict) else None
+            other_x_axis, other_y_axis, other_z_axis, other_origin = connector_basis_from_entity(other_entity) if isinstance(other_entity, dict) else (None, None, None, None)
+            source = f"mate:{get_first(feature, ['name', 'id', 'featureId'], '<unnamed>')}"
+            mf = freedom_for_mate_type(
+                mt,
+                z_axis,
+                limits,
+                x_axis=x_axis,
+                y_axis=y_axis,
+                z_axis=z_axis,
+                mate_origin=mate_origin,
+                mate_reference_origin=other_origin,
+                mate_reference_occurrence=other_key,
+                mate_reference_x_axis=other_x_axis,
+                mate_reference_y_axis=other_y_axis,
+                mate_reference_z_axis=other_z_axis,
+                source=source,
+            )
+            if key in freedoms:
+                freedoms[key] = choose_more_constrained_freedom(freedoms[key], mf)
+            else:
+                freedoms[key] = mf
 
     free6 = MotionFreedom(
         translate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
@@ -886,6 +1042,56 @@ def occurrence_source_ids(ref: OnshapeRef, occ: Dict[str, Any]) -> Tuple[str, st
     return source_did, ref.wvm, ref.wvmid, source_eid, part_id, configuration
 
 
+def transform_motion_freedom_to_world(
+    freedom: MotionFreedom,
+    occurrence_transform: Sequence[float],
+    occurrence_by_key: Dict[str, Dict[str, Any]],
+) -> MotionFreedom:
+    def transform_axes(axes: Sequence[Vec3]) -> List[Vec3]:
+        return [v_unit(mat_apply_direction(occurrence_transform, axis)) for axis in axes]
+
+    mate_origin = freedom.mate_origin
+    if mate_origin is not None:
+        mate_origin = mat_apply(occurrence_transform, mate_origin)
+
+    mate_reference_origin = freedom.mate_reference_origin
+    if mate_reference_origin is not None and freedom.mate_reference_occurrence:
+        reference_occ = occurrence_by_key.get(freedom.mate_reference_occurrence)
+        if reference_occ is not None:
+            reference_transform = reference_occ.get("transform") if isinstance(reference_occ.get("transform"), list) else list(mat_identity())
+            mate_reference_origin = mat_apply(reference_transform, mate_reference_origin)
+
+    mate_reference_transform = None
+    if freedom.mate_reference_occurrence:
+        reference_occ = occurrence_by_key.get(freedom.mate_reference_occurrence)
+        if reference_occ is not None:
+            mate_reference_transform = reference_occ.get("transform") if isinstance(reference_occ.get("transform"), list) else list(mat_identity())
+
+    def transform_reference_axis(axis: Optional[Vec3]) -> Optional[Vec3]:
+        if axis is None:
+            return None
+        if mate_reference_transform is None:
+            return v_unit(axis)
+        return v_unit(mat_apply_direction(mate_reference_transform, axis))
+
+    return MotionFreedom(
+        translate_axes=transform_axes(freedom.translate_axes),
+        rotate_axes=transform_axes(freedom.rotate_axes),
+        mate_type=freedom.mate_type,
+        source=freedom.source,
+        limits=dict(freedom.limits),
+        mate_origin=mate_origin,
+        mate_reference_origin=mate_reference_origin,
+        mate_reference_occurrence=freedom.mate_reference_occurrence,
+        mate_x_axis=v_unit(mat_apply_direction(occurrence_transform, freedom.mate_x_axis)) if freedom.mate_x_axis is not None else None,
+        mate_y_axis=v_unit(mat_apply_direction(occurrence_transform, freedom.mate_y_axis)) if freedom.mate_y_axis is not None else None,
+        mate_z_axis=v_unit(mat_apply_direction(occurrence_transform, freedom.mate_z_axis)) if freedom.mate_z_axis is not None else None,
+        mate_reference_x_axis=transform_reference_axis(freedom.mate_reference_x_axis),
+        mate_reference_y_axis=transform_reference_axis(freedom.mate_reference_y_axis),
+        mate_reference_z_axis=transform_reference_axis(freedom.mate_reference_z_axis),
+    )
+
+
 def components_from_occurrence_exports(ref: OnshapeRef, client: OnshapeClient, assembly_def: Dict[str, Any], bom_payload: Optional[Dict[str, Any]], workdir: Path) -> Optional[List[AeroComponent]]:
     occurrences, export_report = resolve_exportable_occurrences(ref, client, assembly_def)
     if not occurrences:
@@ -893,6 +1099,11 @@ def components_from_occurrence_exports(ref: OnshapeRef, client: OnshapeClient, a
         return None
 
     freedoms, mate_report = deduce_component_freedoms(assembly_def, occurrences)
+    occurrence_by_key: Dict[str, Dict[str, Any]] = {}
+    for occ in occurrences:
+        key = path_to_key(occ.get("path")) or str(get_first(occ, ["fullPathAsString", "_sourceInstanceId", "instanceId", "partId"], ""))
+        if key:
+            occurrence_by_key[key] = occ
     raw_names = [str(get_first(o, ["name", "occurrenceName", "partName", "fullPathAsString", "partId", "instanceId"], f"part_{i+1}")) for i, o in enumerate(occurrences)]
     patches = unique_patch_names(raw_names)
     components: List[AeroComponent] = []
@@ -911,6 +1122,11 @@ def components_from_occurrence_exports(ref: OnshapeRef, client: OnshapeClient, a
             tris = transform_triangles(tris, transform)
             aref, lref, cofr = component_references(tris)
             key = path_to_key(occ.get("path")) or str(get_first(occ, ["fullPathAsString", "_sourceInstanceId", "instanceId", "partId"], ""))
+            world_freedom = transform_motion_freedom_to_world(
+                freedoms.get(key, MotionFreedom()),
+                transform,
+                occurrence_by_key,
+            )
             components.append(AeroComponent(
                 name=raw_names[i],
                 patch=patch,
@@ -918,8 +1134,18 @@ def components_from_occurrence_exports(ref: OnshapeRef, client: OnshapeClient, a
                 cofr=cofr,
                 lref=lref,
                 aref=aref,
-                freedom=freedoms.get(key, MotionFreedom()),
+                freedom=world_freedom,
                 source_occurrence=key,
+                motion_origin=world_freedom.mate_origin,
+                mate_origin=world_freedom.mate_origin,
+                mate_reference_origin=world_freedom.mate_reference_origin,
+                mate_reference_occurrence=world_freedom.mate_reference_occurrence,
+                mate_x_axis=world_freedom.mate_x_axis,
+                mate_y_axis=world_freedom.mate_y_axis,
+                mate_z_axis=world_freedom.mate_z_axis,
+                mate_reference_x_axis=world_freedom.mate_reference_x_axis,
+                mate_reference_y_axis=world_freedom.mate_reference_y_axis,
+                mate_reference_z_axis=world_freedom.mate_reference_z_axis,
             ))
             export_report.append(
                 f"EXPORTED {patch}: partId={part_id!r}, source={source_did}/{source_wvm}/{source_wvmid}/e/{source_eid}, "
@@ -1046,5 +1272,3 @@ def build_assembly_components(ref: OnshapeRef, client: OnshapeClient, workdir: P
 
 
 # ------------------------- quasi-dynamic assembly motion -------------------------
-
-

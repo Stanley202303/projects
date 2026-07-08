@@ -439,6 +439,7 @@ simulationType laminar;
 def force_coeff_function(name: str, patches: Sequence[str], aref: float, lref: float, cofr: Vec3) -> str:
     patch_list = " ".join(patches)
     cx, cy, cz = cofr
+    drag_x, drag_y, drag_z = flow_unit_vector()
     return f"""    forceCoeffs_{safe_patch_name(name)}
     {{
         type            forceCoeffs;
@@ -453,7 +454,7 @@ def force_coeff_function(name: str, patches: Sequence[str], aref: float, lref: f
 
         CofR            ({cx:g} {cy:g} {cz:g});
 
-        dragDir         (1 0 0);
+        dragDir         ({drag_x:g} {drag_y:g} {drag_z:g});
         liftDir         (0 0 1);
         pitchAxis       (0 1 0);
 
@@ -1504,5 +1505,4 @@ def write_force_load_debug_report(case: Path, loads_by_patch: Dict[str, Tuple[Ve
 
 
 # ------------------------- Onshape client -------------------------
-
 

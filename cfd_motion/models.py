@@ -47,6 +47,15 @@ class MotionFreedom:
     mate_type: str = "FREE"
     source: str = "unmated"
     limits: Dict[str, Tuple[Optional[float], Optional[float]]] = field(default_factory=dict)
+    mate_origin: Optional[Vec3] = None
+    mate_reference_origin: Optional[Vec3] = None
+    mate_reference_occurrence: Optional[str] = None
+    mate_x_axis: Optional[Vec3] = None
+    mate_y_axis: Optional[Vec3] = None
+    mate_z_axis: Optional[Vec3] = None
+    mate_reference_x_axis: Optional[Vec3] = None
+    mate_reference_y_axis: Optional[Vec3] = None
+    mate_reference_z_axis: Optional[Vec3] = None
 
 
 @dataclass
@@ -76,11 +85,21 @@ class AeroComponent:
     angular_velocity: Vec3 = (0.0, 0.0, 0.0)
     total_translation: Vec3 = (0.0, 0.0, 0.0)
     total_rotation: Vec3 = (0.0, 0.0, 0.0)
+    filtered_force: Vec3 = (0.0, 0.0, 0.0)
+    filtered_moment: Vec3 = (0.0, 0.0, 0.0)
+    aerodynamic_load_initialized: bool = False
     source_occurrence: Optional[str] = None
     motion_origin: Optional[Vec3] = None
+    mate_origin: Optional[Vec3] = None
+    mate_reference_origin: Optional[Vec3] = None
+    mate_reference_occurrence: Optional[str] = None
+    mate_x_axis: Optional[Vec3] = None
+    mate_y_axis: Optional[Vec3] = None
+    mate_z_axis: Optional[Vec3] = None
+    mate_reference_x_axis: Optional[Vec3] = None
+    mate_reference_y_axis: Optional[Vec3] = None
+    mate_reference_z_axis: Optional[Vec3] = None
     is_assembly_anchor: bool = False
 
 
 # ------------------------- small math helpers -------------------------
-
-

@@ -1,0 +1,137 @@
+# OpenFOAM dimensional load debug report
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case2_step_work_5p_xnqyz/step_work
+use_openfoam_forces_dat=True
+run_postprocess_force_objects=False
+openfoam_force_zero_tol=1e-12
+
+Detected force/moment loads by patch:
+- Part_1_1: F=(-1.04257778, -0.0165796073, -0.0186665955) N, M=(-0.242466905, 0.000439629078, 0.000129750179) N*m
+- Part_1_2: F=(-25.1830922, -0.146014843, -1.0167421) N, M=(-0.0261569669, -0.00501017712, -0.00243715111) N*m
+- Part_1_3: F=(-3.85859207, -0.374912094, 2.17456539) N, M=(-0.15784006, -0.00301332917, -0.00216074846) N*m
+- Part_1_4: F=(-3.8113854, 2.13536884, 0.428873708) N, M=(-0.158275925, -0.00126756674, 0.00277563959) N*m
+- Part_1_5: F=(-3.83947976, 0.528365796, -1.93490801) N, M=(-0.158550658, 0.00248342086, 0.000798043838) N*m
+- Part_1_6: F=(-3.91726977, -2.05373552, -0.500404039) N, M=(-0.157767232, 0.00125462266, -0.00242841843) N*m
+- all: F=(-41.652397, 0.0724925738, -0.867281649) N, M=(-0.901057747, -0.00511340042, -0.00332288439) N*m
+
+Recovered loads from log.simpleFoam/log.postProcess:
+- Part_1_1: F=(-1.2850447100000002, -0.01613997792, -0.018536844820000002) N, M=(6.7306223e-07, -1.1415595100000001e-05, 0.0002706979634) N*m
+- Part_1_2: F=(-25.209248966999997, -0.15102501710000002, -1.0191792511000002) N, M=(-0.000669835597, 0.061063132269, 0.02746259509) N*m
+- Part_1_3: F=(-4.01643216, -0.3779254192, 2.1724046515) N, M=(-0.07007086606, -0.152223523, -0.14417497810000002) N*m
+- Part_1_4: F=(-3.9696613299999997, 2.1341012333, 0.4316493496) N, M=(-0.06393033826, -0.13925716789999998, 0.152553012) N*m
+- Part_1_5: F=(-3.99803046, 0.5308492209, -1.9341099561600001) N, M=(-0.05025185989, 0.167788502, 0.1317295713) N*m
+- Part_1_6: F=(-4.07503703, -2.0524808773000003, -0.5028324584) N, M=(-0.05561241216, 0.138875737, -0.16330292000000002) N*m
+- all: F=(-42.55345475, 0.06737917360000001, -0.8706045344) N, M=(-0.36271871159999997, 0.056562469506, 0.010371227140000001) N*m
+
+postProcessing force .dat files:
+- postProcessing/forces_Part_1_1/0/forces.dat
+    20              	((-1.50435607e+00 8.87335227e-02 1.80160105e-02) (-2.50467373e-01 3.57528082e-04 2.02189046e-04)) ((2.40054879e-07 2.08492591e-05 -1.09708032e-03) (4.16239972e-07 -3.39400499e-06 1.49123194e-05))
+    40              	((-1.01750407e+00 -1.75145891e-02 -1.08152532e-02) (-2.45080608e-01 4.65566055e-04 1.68410637e-04)) ((2.66828999e-07 7.19786977e-05 3.63314490e-04) (4.07415444e-07 -4.66800746e-06 7.33799177e-06))
+    60              	((-1.04257778e+00 -1.65796073e-02 -1.86665955e-02) (-2.42466905e-01 4.39629078e-04 1.29750179e-04)) ((2.60141595e-07 -6.55853738e-06 2.62888138e-04) (4.12920630e-07 -4.85705773e-06 7.80982338e-06))
+- postProcessing/forces_Part_1_2/0/forces.dat
+    20              	((-4.06643172e+01 -2.17418698e-01 -1.60517378e+00) (-2.38183930e-02 -1.19768576e-03 -4.22302174e-03)) ((-5.71059857e-04 1.78535695e-02 3.50448911e-02) (-1.30262797e-05 -2.81310282e-04 1.21688313e-04))
+    40              	((-2.91602995e+01 -1.65490402e-01 -1.19001140e+00) (-2.42628629e-02 -2.95846357e-03 -3.85086568e-03)) ((-7.08783823e-04 5.48750176e-02 2.96965331e-02) (-1.78231128e-05 -1.95257735e-04 2.66191350e-04))
+    60              	((-2.51830922e+01 -1.46014843e-01 -1.01674210e+00) (-2.61569669e-02 -5.01017712e-03 -2.43715111e-03)) ((-6.50900200e-04 6.11287031e-02 2.70267685e-02) (-1.89353966e-05 -6.55707306e-05 4.35827093e-04))
+- postProcessing/forces_Part_1_3/0/forces.dat
+    20              	((-4.41487650e+00 -3.60374628e-01 2.19262600e+00) (-1.64412639e-01 -1.81165366e-03 -3.11358756e-03)) ((-7.15637335e-02 -1.74910390e-01 -1.62863472e-01) (2.24994326e-04 -1.06966099e-02 -7.12512019e-03))
+    40              	((-3.88311701e+00 -3.75712865e-01 2.14613728e+00) (-1.59967150e-01 -2.75302934e-03 -2.43245485e-03)) ((-6.89962619e-02 -1.44704495e-01 -1.38356603e-01) (2.57732855e-04 -1.03646952e-02 -6.86249981e-03))
+    60              	((-3.85859207e+00 -3.74912094e-01 2.17456539e+00) (-1.57840060e-01 -3.01332917e-03 -2.16074846e-03)) ((-7.03343631e-02 -1.42014407e-01 -1.37430884e-01) (2.63496942e-04 -1.02091130e-02 -6.74409809e-03))
+- postProcessing/forces_Part_1_4/0/forces.dat
+    20              	((-4.29946278e+00 2.06555377e+00 4.47566913e-01) (-1.64691892e-01 -2.14298870e-03 1.48074273e-03)) ((-5.90116834e-02 -1.52371695e-01 1.77356234e-01) (1.47845276e-04 -7.14277961e-03 1.06242232e-02))
+    40              	((-3.82868465e+00 2.09620050e+00 4.34031257e-01) (-1.60237685e-01 -1.56915896e-03 2.50385893e-03)) ((-6.19435562e-02 -1.32731284e-01 1.45367732e-01) (1.92140848e-04 -6.87404682e-03 1.03008782e-02))
+    60              	((-3.81138540e+00 2.13536884e+00 4.28873708e-01) (-1.58275925e-01 -1.26756674e-03 2.77563959e-03)) ((-6.41277756e-02 -1.32492605e-01 1.42400391e-01) (1.97437744e-04 -6.76456791e-03 1.01526222e-02))
+- postProcessing/forces_Part_1_5/0/forces.dat
+    20              	((-4.38848225e+00 5.41084375e-01 -1.95268857e+00) (-1.65241120e-01 1.34229390e-03 1.52744225e-03)) ((-4.96388604e-02 1.90448314e-01 1.47791924e-01) (1.25135219e-04 1.05827118e-02 7.21070382e-03))
+    40              	((-3.85879384e+00 5.27805898e-01 -1.90771820e+00) (-1.60510865e-01 2.21894234e-03 1.03865642e-03)) ((-4.92066477e-02 1.60071213e-01 1.25521472e-01) (1.62057235e-04 1.02498760e-02 6.94319908e-03))
+    60              	((-3.83947976e+00 5.28365796e-01 -1.93490801e+00) (-1.58550658e-01 2.48342086e-03 7.98043838e-04)) ((-5.04211533e-02 1.57682037e-01 1.24894490e-01) (1.69293113e-04 1.01064622e-02 6.83508129e-03))
+- postProcessing/forces_Part_1_6/0/forces.dat
+    20              	((-4.40215160e+00 -2.06074242e+00 -5.31012645e-01) (-1.64138372e-01 2.03389626e-03 -1.05537026e-03)) ((-5.35348607e-02 1.50788386e-01 -1.82482293e-01) (1.16889342e-04 7.22045270e-03 -1.05589789e-02))
+    40              	((-3.93731785e+00 -2.02476781e+00 -5.08922424e-01) (-1.59661736e-01 1.50887908e-03 -2.14037931e-03)) ((-5.38765801e-02 1.32161247e-01 -1.55683579e-01) (1.67378697e-04 6.95046905e-03 -1.02361887e-02))
+    60              	((-3.91726977e+00 -2.05373552e+00 -5.00404039e-01) (-1.57767232e-01 1.25462266e-03 -2.42841843e-03)) ((-5.57879301e-02 1.32033514e-01 -1.53207014e-01) (1.75517843e-04 6.84222701e-03 -1.00959102e-02))
+- postProcessing/forces_all/0/forces.dat
+    20              	((-5.96736464e+01 5.68359212e-02 -1.43066608e+00) (-9.32769789e-01 -1.41860988e-03 -5.18160553e-03)) ((-3.55349825e-01 1.61685574e-03 2.20035078e-02) (8.77941174e-04 -2.95044165e-04 2.45297265e-04))
+    40              	((-4.56857169e+01 4.05207246e-02 -1.03729874e+00) (-9.09720907e-01 -3.08726440e-03 -4.71277386e-03)) ((-3.54598561e-01 4.70618628e-02 1.20058065e-02) (1.06899926e-03 -2.17200618e-04 4.08380363e-04))
+    60              	((-4.16523970e+01 7.24925738e-02 -8.67281649e-01) (-9.01057747e-01 -5.11340042e-03 -3.32288439e-03)) ((-3.63813149e-01 5.66074261e-02 9.75171034e-03) (1.09443844e-03 -4.49564944e-05 6.19516844e-04))
+
+log.simpleFoam exists: True
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_4 write:
+  forces forces_Part_1_1 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_1 write:
+  forces forces_Part_1_2 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_2 write:
+  forces forces_Part_1_3 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_3 write:
+  forces forces_Part_1_6 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_6 write:
+  forces forces_all write:
+      sum of forces:
+  forceCoeffs forceCoeffs_all write:
+  forces forces_Part_1_5 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_5 write:
+  forces forces_Part_1_4 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_4 write:
+  forces forces_Part_1_1 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_1 write:
+  forces forces_Part_1_2 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_2 write:
+  forces forces_Part_1_3 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_3 write:
+  forces forces_Part_1_6 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_6 write:
+  forces forces_all write:
+      sum of forces:
+  forceCoeffs forceCoeffs_all write:
+  forces forces_Part_1_5 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_5 write:
+  forces forces_Part_1_4 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_4 write:
+  forces forces_Part_1_1 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_1 write:
+  forces forces_Part_1_2 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_2 write:
+  forces forces_Part_1_3 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_3 write:
+  forces forces_Part_1_6 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_6 write:
+  forces forces_all write:
+      sum of forces:
+  forceCoeffs forceCoeffs_all write:
+  forces forces_Part_1_5 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_5 write:
+  forces forces_Part_1_4 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_4 write:
+  forces forces_Part_1_1 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_1 write:
+  forces forces_Part_1_2 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_2 write:
+  forces forces_Part_1_3 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_3 write:
+  forces forces_Part_1_6 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_Part_1_6 write:
+  forces forces_all write:
+      sum of forces:
+  forceCoeffs forceCoeffs_all write:
+
+log.postProcess exists: False
