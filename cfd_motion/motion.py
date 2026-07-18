@@ -46,6 +46,27 @@ def aerodynamic_coeffs_present(coeffs: Dict[str, float]) -> bool:
     return any(abs(coeffs.get(k, 0.0)) > 1e-12 for k in keys)
 
 
+def six_dof_motion_freedom(source: str = "free-body") -> MotionFreedom:
+    axes = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)]
+    return MotionFreedom(
+        translate_axes=list(axes),
+        rotate_axes=list(axes),
+        mate_type="FREE",
+        source=source,
+    )
+
+
+def component_has_motion_freedom(component: AeroComponent) -> bool:
+    return bool(component.freedom.translate_axes or component.freedom.rotate_axes)
+
+
+def assembly_rigid_body_root(components: Sequence[AeroComponent]) -> Optional[AeroComponent]:
+    for component in components:
+        if component.freedom.source == "assembly-rigid-body-root":
+            return component
+    return None
+
+
 def component_world_velocity_at_point(component: AeroComponent, point: Vec3) -> Vec3:
     velocity = component_world_velocity(component)
     if not AERO_USE_LOCAL_POINT_VELOCITY or v_norm(component.angular_velocity) <= 1e-12:
@@ -85,6 +106,19 @@ def filter_aerodynamic_load(component: AeroComponent, force: Vec3, moment: Vec3)
     component.filtered_force = filtered_force
     component.filtered_moment = filtered_moment
     return filtered_force, filtered_moment
+
+
+def resolve_aerodynamic_load(
+    component: AeroComponent,
+    coeffs: Dict[str, float],
+    load_override: Optional[Tuple[Vec3, Vec3]] = None,
+) -> Tuple[Vec3, Vec3]:
+    if load_override is not None:
+        force, source_moment = load_override
+    else:
+        force = v_mul(force_from_coefficients(component, coeffs), MOTION_FORCE_GAIN)
+        source_moment = v_mul(moment_from_coefficients(component, coeffs), MOTION_MOMENT_GAIN)
+    return filter_aerodynamic_load(component, force, source_moment)
 
 
 def rotational_inertia_about_axis(component: AeroComponent, axis: Vec3) -> float:
@@ -214,6 +248,17 @@ def hinge_torque_fallback(component: AeroComponent, current_moment: Vec3) -> Vec
         sign = 1.0 if v_dot(bias, u) >= 0.0 else -1.0
         extra = v_add(extra, v_mul(u, sign * nominal / max(len(component.freedom.rotate_axes), 1)))
     return v_add(current_moment, extra)
+
+
+def total_aerodynamic_moment_about_origin(
+    component: AeroComponent,
+    force: Vec3,
+    source_moment: Vec3,
+    reference_origin: Vec3,
+    load_override_used: bool,
+) -> Vec3:
+    source_origin = infer_motion_origin(component) if load_override_used else component.cofr
+    return v_add(source_moment, v_cross(v_sub(source_origin, reference_origin), force))
 
 
 def force_from_coefficients(component: AeroComponent, coeffs: Dict[str, float]) -> Vec3:
@@ -454,12 +499,7 @@ def enforce_primary_motion_limit(component: AeroComponent) -> Tuple[Vec3, Vec3]:
 
 
 def update_component_motion(component: AeroComponent, coeffs: Dict[str, float], dt: float, load_override: Optional[Tuple[Vec3, Vec3]] = None) -> Tuple[Vec3, Vec3, Vec3, Vec3]:
-    if load_override is not None:
-        force, foam_moment = load_override
-    else:
-        force = v_mul(force_from_coefficients(component, coeffs), MOTION_FORCE_GAIN)
-        foam_moment = v_mul(moment_from_coefficients(component, coeffs), MOTION_MOMENT_GAIN)
-    force, foam_moment = filter_aerodynamic_load(component, force, foam_moment)
+    force, foam_moment = resolve_aerodynamic_load(component, coeffs, load_override)
     free = component.freedom
 
     # Anchored/root/grounded/fastened components still get force and moment logged,
@@ -483,13 +523,13 @@ def update_component_motion(component: AeroComponent, coeffs: Dict[str, float], 
     # a distance from the hinge, not because OpenFOAM reports a large free moment
     # about the part centre.  Add torque = r x F about a decoded/inferred pivot.
     motion_origin = infer_motion_origin(component)
-    lever_arm = v_sub(component.cofr, motion_origin)
-    if load_override is not None:
-        # surface_pressure_load already integrates moment about the motion origin
-        lever_moment = (0.0, 0.0, 0.0)
-    else:
-        lever_moment = v_cross(lever_arm, force) if USE_FORCE_LEVER_ARM_TORQUE else (0.0, 0.0, 0.0)
-    total_moment = v_add(foam_moment, lever_moment)
+    total_moment = total_aerodynamic_moment_about_origin(
+        component,
+        force,
+        foam_moment,
+        motion_origin,
+        load_override is not None,
+    )
     if load_override is not None:
         total_moment = hinge_torque_fallback(component, total_moment)
 
@@ -523,6 +563,51 @@ def update_component_motion(component: AeroComponent, coeffs: Dict[str, float], 
         v_add(translation_step, limit_dpos),
         v_add(rotation_vector_step, limit_drot),
     )
+
+
+def build_rigid_body_state(components: Sequence[AeroComponent], root: AeroComponent) -> AeroComponent:
+    combined_triangles = [triangle for component in components for triangle in component.triangles]
+    if combined_triangles:
+        aref, lref, cofr = component_references(combined_triangles)
+    else:
+        aref, lref, cofr = root.aref, root.lref, root.cofr
+    total_mass = sum(max(component.mass, 0.0) for component in components) or max(root.mass, 1e-9)
+    return AeroComponent(
+        name="assembly-rigid-body",
+        patch=root.patch,
+        triangles=combined_triangles,
+        cofr=cofr,
+        lref=lref,
+        aref=aref,
+        freedom=six_dof_motion_freedom("assembly-rigid-body-state"),
+        material=root.material,
+        mass=total_mass,
+        linear_velocity=root.linear_velocity,
+        angular_velocity=root.angular_velocity,
+        total_translation=root.total_translation,
+        total_rotation=root.total_rotation,
+        motion_origin=cofr,
+    )
+
+
+def apply_rigid_body_motion(
+    components: Sequence[AeroComponent],
+    translation_step: Vec3,
+    rotation_step: Vec3,
+    rotation_origin: Vec3,
+    linear_velocity: Vec3,
+    angular_velocity: Vec3,
+    total_translation: Vec3,
+    total_rotation: Vec3,
+) -> None:
+    rotation_angle = v_norm(rotation_step)
+    rotation_axis = v_unit(rotation_step) if rotation_angle > 1e-12 else None
+    for component in components:
+        move_component_rigidly(component, translation_step, rotation_axis, rotation_angle, rotation_origin)
+        component.linear_velocity = linear_velocity
+        component.angular_velocity = angular_velocity
+        component.total_translation = total_translation
+        component.total_rotation = total_rotation
 
 
 def component_has_translation_freedom(component: AeroComponent) -> bool:
@@ -780,14 +865,45 @@ def apply_relative_motion_policy(components: List[AeroComponent], root_case: Pat
             "WARNING: only one aerodynamic component/patch was created. Relative assembly motion is impossible unless the script can export or split separate parts."
         )
 
-    if not ANCHOR_ASSEMBLY_ROOT:
-        lines.append("Root anchoring disabled. The whole assembly may accelerate/decelerate as one free body.")
+    root = select_assembly_root_component(components)
+    if root is None:
+        lines.append("No root component could be selected; no assembly motion policy applied.")
         (root_case / MOTION_POLICY_REPORT_NAME).write_text("\n".join(lines) + "\n")
         return lines
 
-    root = select_assembly_root_component(components)
-    if root is None:
-        lines.append("No root component could be selected; no anchor applied.")
+    if not any(component_has_motion_freedom(component) for component in components):
+        lines.append(
+            "No relative motion freedoms were decoded. Treating the imported assembly as one rigid free body so net fin/body loads can still spin it."
+        )
+        rigid_followers = 0
+        root.freedom = six_dof_motion_freedom("assembly-rigid-body-root")
+        root.is_assembly_anchor = False
+        root.motion_origin = root.cofr
+        for component in components:
+            component.linear_velocity = (0.0, 0.0, 0.0)
+            component.angular_velocity = (0.0, 0.0, 0.0)
+            if component is root:
+                continue
+            component.is_assembly_anchor = False
+            component.freedom = MotionFreedom([], [], "FASTENED", "assembly-rigid-body-follower")
+            rigid_followers += 1
+        lines.append(
+            f"Rigid-body root component: patch={root.patch!r}, name={root.name!r}, follower_count={rigid_followers}"
+        )
+        lines.append("")
+        lines.append("Movable components after policy:")
+        for c in components:
+            axes = f"translate_axes={c.freedom.translate_axes}, rotate_axes={c.freedom.rotate_axes}"
+            basis = motion_basis_debug(c)
+            if c is root:
+                lines.append(f"- {c.patch}: rigid-body root, mate_type={c.freedom.mate_type}, source={c.freedom.source}, {axes}, {basis}")
+            else:
+                lines.append(f"- {c.patch}: rigid-body follower, mate_type={c.freedom.mate_type}, source={c.freedom.source}, {axes}, {basis}")
+        (root_case / MOTION_POLICY_REPORT_NAME).write_text("\n".join(lines) + "\n")
+        return lines
+
+    if not ANCHOR_ASSEMBLY_ROOT:
+        lines.append("Root anchoring disabled. The whole assembly may accelerate/decelerate as one free body.")
         (root_case / MOTION_POLICY_REPORT_NAME).write_text("\n".join(lines) + "\n")
         return lines
 

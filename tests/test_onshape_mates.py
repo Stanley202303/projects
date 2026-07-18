@@ -1,7 +1,11 @@
+import math
+
 import pytest
 
 from cfd_motion.onshape import deduce_component_freedoms, transform_motion_freedom_to_world
 from cfd_motion.motion import (
+    apply_relative_motion_policy,
+    apply_rigid_body_motion,
     enforce_attachment_constraints,
     enforce_component_attachment_constraint,
     surface_pressure_load,
@@ -363,6 +367,139 @@ def test_update_component_motion_clamps_revolute_primary_limit() -> None:
 
     assert component.total_rotation[2] == pytest.approx(0.1)
     assert component.angular_velocity[2] == pytest.approx(0.0)
+
+
+def test_free_body_aerodynamic_moment_spins_about_its_own_center() -> None:
+    component = AeroComponent(
+        name="free-body",
+        patch="free-body",
+        triangles=[],
+        cofr=(1.0, 0.0, 0.0),
+        lref=1.0,
+        aref=1.0,
+        freedom=MotionFreedom(
+            translate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+            rotate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+            mate_type="FREE",
+            source="unmated",
+        ),
+    )
+
+    _force, moment, _dpos, drot = update_component_motion(
+        component,
+        {},
+        0.1,
+        load_override=((0.0, 0.0, 0.0), (0.0, 0.0, 5.0)),
+    )
+
+    assert moment[2] == pytest.approx(5.0)
+    assert drot[2] > 0.0
+    assert component.cofr == pytest.approx((1.0, 0.0, 0.0))
+
+
+def test_propeller_like_revolute_part_spins_from_aerodynamic_moment() -> None:
+    component = AeroComponent(
+        name="propeller",
+        patch="propeller",
+        triangles=[],
+        cofr=(0.0, 0.0, 0.0),
+        lref=0.4,
+        aref=0.2,
+        freedom=MotionFreedom(
+            translate_axes=[],
+            rotate_axes=[(1.0, 0.0, 0.0)],
+            mate_type="REVOLUTE",
+            source="mate:prop-shaft",
+        ),
+        motion_origin=(0.0, 0.0, 0.0),
+        mate_origin=(0.0, 0.0, 0.0),
+        mate_reference_origin=(0.0, 0.0, 0.0),
+    )
+
+    _force, moment, _dpos, drot = update_component_motion(
+        component,
+        {},
+        0.1,
+        load_override=((0.0, 0.0, 0.0), (3.0, 0.0, 0.0)),
+    )
+
+    assert moment[0] == pytest.approx(3.0)
+    assert drot[0] > 0.0
+    assert component.angular_velocity[0] > 0.0
+    assert component.total_rotation[0] > 0.0
+    assert component.total_rotation[1] == pytest.approx(0.0)
+    assert component.total_rotation[2] == pytest.approx(0.0)
+
+
+def test_all_fastened_assembly_falls_back_to_rigid_body_motion(tmp_path) -> None:
+    root = AeroComponent(
+        name="body",
+        patch="body",
+        triangles=[],
+        cofr=(0.0, 0.0, 0.0),
+        lref=1.0,
+        aref=1.0,
+        mass=2.0,
+    )
+    fin = AeroComponent(
+        name="fin",
+        patch="fin",
+        triangles=[],
+        cofr=(0.0, 1.0, 0.0),
+        lref=0.5,
+        aref=0.2,
+        mass=0.2,
+    )
+    root.freedom.mate_type = "FASTENED"
+    root.freedom.source = "mate:root"
+    fin.freedom.mate_type = "FASTENED"
+    fin.freedom.source = "mate:fin"
+
+    apply_relative_motion_policy([root, fin], tmp_path)
+
+    assert root.is_assembly_anchor is False
+    assert root.freedom.source == "assembly-rigid-body-root"
+    assert len(root.freedom.translate_axes) == 3
+    assert len(root.freedom.rotate_axes) == 3
+    assert fin.freedom.source == "assembly-rigid-body-follower"
+    assert fin.freedom.translate_axes == []
+    assert fin.freedom.rotate_axes == []
+
+
+def test_apply_rigid_body_motion_moves_followers_with_root_rotation() -> None:
+    root = AeroComponent(
+        name="body",
+        patch="body",
+        triangles=[],
+        cofr=(0.0, 0.0, 0.0),
+        lref=1.0,
+        aref=1.0,
+    )
+    fin = AeroComponent(
+        name="fin",
+        patch="fin",
+        triangles=[],
+        cofr=(0.0, 1.0, 0.0),
+        lref=0.5,
+        aref=0.2,
+    )
+
+    apply_rigid_body_motion(
+        [root, fin],
+        (1.0, 0.0, 0.0),
+        (0.0, 0.0, math.pi / 2.0),
+        (0.0, 0.0, 0.0),
+        (3.0, 0.0, 0.0),
+        (0.0, 0.0, 2.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 0.0, math.pi / 2.0),
+    )
+
+    assert root.cofr == pytest.approx((0.0, 1.0, 0.0))
+    assert fin.cofr == pytest.approx((-1.0, 1.0, 0.0))
+    assert root.linear_velocity == pytest.approx((3.0, 0.0, 0.0))
+    assert fin.angular_velocity == pytest.approx((0.0, 0.0, 2.0))
+    assert fin.total_rotation == pytest.approx((0.0, 0.0, math.pi / 2.0))
 
 
 def test_fastened_to_root_beats_unrelated_revolutes() -> None:

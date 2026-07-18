@@ -1,0 +1,8 @@
+# Edit this path to the dataset root.
+path: ./dataset
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: tennis_ball

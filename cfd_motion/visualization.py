@@ -266,7 +266,13 @@ def _xml_attr(value: str) -> str:
     )
 
 
-def _write_ascii_polydata_vtk(path: Path, points: List[Vec3], triangles: List[Tuple[int, int, int]], cell_scalars: Dict[str, List[float]]) -> None:
+def _write_ascii_polydata_vtk(
+    path: Path,
+    points: List[Vec3],
+    triangles: List[Tuple[int, int, int]],
+    cell_scalars: Dict[str, List[float]],
+    cell_vectors: Optional[Dict[str, List[Vec3]]] = None,
+) -> None:
     """Write XML VTK PolyData (.vtp) for ParaView PVD time series.
 
     Important v21 fix: ParaView's .pvd reader is vtkXMLCollectionReader.  It
@@ -277,10 +283,11 @@ def _write_ascii_polydata_vtk(path: Path, points: List[Vec3], triangles: List[Tu
         Could not determine the data type for the first dataset
 
     This function keeps the old name so the rest of the script needs minimal
-    changes, but it now writes a proper .vtp XML PolyData file.  Scalar arrays
-    are written as both CellData and PointData.  Each triangle owns duplicate
-    vertices, so copying one cell pressure value to its 3 points preserves sharp
-    face-to-face differences and makes ParaView colouring reliable.
+    changes, but it now writes a proper .vtp XML PolyData file.  Scalar and
+    vector arrays are written as both CellData and PointData.  Each triangle owns
+    duplicate vertices, so copying one cell value to its 3 points preserves sharp
+    face-to-face differences and makes ParaView colouring reliable.  Writing U as
+    a 3-component PointData vector is also what ParaView's Stream Tracer expects.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() != ".vtp":
@@ -300,6 +307,26 @@ def _write_ascii_polydata_vtk(path: Path, points: List[Vec3], triangles: List[Tu
                 fv = 0.0
             cleaned.append(fv)
         valid_scalars[name] = cleaned
+
+    def clean_vec3(value: Vec3) -> Vec3:
+        cleaned: List[float] = []
+        for component in value[:3]:
+            try:
+                fv = float(component)
+            except Exception:
+                fv = 0.0
+            if not math.isfinite(fv):
+                fv = 0.0
+            cleaned.append(fv)
+        while len(cleaned) < 3:
+            cleaned.append(0.0)
+        return (cleaned[0], cleaned[1], cleaned[2])
+
+    valid_vectors: Dict[str, List[Vec3]] = {}
+    for name, vals in (cell_vectors or {}).items():
+        if len(vals) != len(triangles):
+            continue
+        valid_vectors[name] = [clean_vec3(v) for v in vals]
 
     connectivity: List[str] = []
     offsets: List[str] = []
@@ -327,16 +354,30 @@ def _write_ascii_polydata_vtk(path: Path, points: List[Vec3], triangles: List[Tu
             out.append("          " + " ".join(row))
         return out
 
+    def vector_values_text(vals: Sequence[Vec3], per_line: int = 3) -> List[str]:
+        flat: List[float] = []
+        for x, y, z in vals:
+            flat.extend([x, y, z])
+        return values_text(flat, per_line * 3)
+
     point_values: List[float] = []
     for x, y, z in points:
         point_values.extend([x, y, z])
+
+    active_vectors = "U" if "U" in valid_vectors else (next(iter(valid_vectors)) if valid_vectors else "")
+    point_data_attrs = 'Scalars="pressureCoeff"'
+    cell_data_attrs = 'Scalars="pressureCoeff"'
+    if active_vectors:
+        escaped_vectors = _xml_attr(active_vectors)
+        point_data_attrs += f' Vectors="{escaped_vectors}"'
+        cell_data_attrs += f' Vectors="{escaped_vectors}"'
 
     lines: List[str] = [
         '<?xml version="1.0"?>',
         '<VTKFile type="PolyData" version="0.1" byte_order="LittleEndian">',
         '  <PolyData>',
         f'    <Piece NumberOfPoints="{len(points)}" NumberOfPolys="{len(triangles)}">',
-        '      <PointData Scalars="pressureCoeff">',
+        f'      <PointData {point_data_attrs}>',
     ]
 
     # Point arrays: ParaView often defaults to point arrays for colouring.
@@ -349,13 +390,28 @@ def _write_ascii_polydata_vtk(path: Path, points: List[Vec3], triangles: List[Tu
         lines.extend(values_text(point_vals))
         lines.append('        </DataArray>')
 
+    for name, vals in valid_vectors.items():
+        escaped = _xml_attr(name)
+        point_vals: List[Vec3] = []
+        for v in vals:
+            point_vals.extend([v, v, v])
+        lines.append(f'        <DataArray type="Float32" Name="{escaped}" NumberOfComponents="3" format="ascii">')
+        lines.extend(vector_values_text(point_vals))
+        lines.append('        </DataArray>')
+
     lines.append('      </PointData>')
-    lines.append('      <CellData Scalars="pressureCoeff">')
+    lines.append(f'      <CellData {cell_data_attrs}>')
 
     for name, vals in valid_scalars.items():
         escaped = _xml_attr(name)
         lines.append(f'        <DataArray type="Float32" Name="{escaped}" format="ascii">')
         lines.extend(values_text(vals))
+        lines.append('        </DataArray>')
+
+    for name, vals in valid_vectors.items():
+        escaped = _xml_attr(name)
+        lines.append(f'        <DataArray type="Float32" Name="{escaped}" NumberOfComponents="3" format="ascii">')
+        lines.extend(vector_values_text(vals))
         lines.append('        </DataArray>')
 
     lines.extend([
@@ -461,6 +517,7 @@ def enforce_case_storage_budget(root_case: Path, context: str) -> None:
         f"current={human_bytes(current)}\n"
         f"root_openfoam_timeseries={int(ROOT_OPENFOAM_TIMESERIES)}\n"
         f"run_full_vtk_export={int(RUN_FULL_VTK_EXPORT)}\n"
+        f"minimal_stream_tracer_export={int(PARAVIEW_MINIMAL_STREAM_TRACER_EXPORT)}\n"
         f"storage_saver_mode={int(STORAGE_SAVER_MODE)}\n"
     )
 
@@ -599,6 +656,8 @@ def _read_legacy_polydata_vtk(path: Path) -> Optional[Dict[str, Any]]:
     polys: List[List[int]] = []
     point_arrays: Dict[str, List[float]] = {}
     cell_arrays: Dict[str, List[float]] = {}
+    point_vectors: Dict[str, List[Vec3]] = {}
+    cell_vectors: Dict[str, List[Vec3]] = {}
     i = 0
 
     major_keys = {"POINTS", "POLYGONS", "CELLS", "CELL_TYPES", "POINT_DATA", "CELL_DATA", "VERTICES", "LINES", "TRIANGLE_STRIPS"}
@@ -664,7 +723,14 @@ def _read_legacy_polydata_vtk(path: Path) -> Optional[Dict[str, Any]]:
                 parsed.append(poly)
         return parsed
 
-    def set_vector_arrays(target: Dict[str, List[float]], name: str, vals: Sequence[float], ntuples: int, ncomp: int) -> None:
+    def set_vector_arrays(
+        target: Dict[str, List[float]],
+        vector_target: Dict[str, List[Vec3]],
+        name: str,
+        vals: Sequence[float],
+        ntuples: int,
+        ncomp: int,
+    ) -> None:
         rows: List[List[float]] = []
         for row_i in range(max(0, ntuples)):
             row: List[float] = []
@@ -672,6 +738,13 @@ def _read_legacy_polydata_vtk(path: Path) -> Optional[Dict[str, Any]]:
                 idx = row_i * max(1, ncomp) + comp_i
                 row.append(float(vals[idx]) if idx < len(vals) and math.isfinite(float(vals[idx])) else 0.0)
             rows.append(row)
+        vector_rows: List[Vec3] = []
+        for row in rows:
+            x = row[0] if len(row) > 0 else 0.0
+            y = row[1] if len(row) > 1 else 0.0
+            z = row[2] if len(row) > 2 else 0.0
+            vector_rows.append((x, y, z))
+        vector_target[name] = vector_rows
         target[name + "_mag"] = [math.sqrt(sum(float(c) * float(c) for c in row)) for row in rows]
         if name == "U":
             target["U_mag"] = target[name + "_mag"]
@@ -725,6 +798,7 @@ def _read_legacy_polydata_vtk(path: Path) -> Optional[Dict[str, Any]]:
             mode = key
             count = safe_int(parts[1])
             target = point_arrays if mode == "POINT_DATA" else cell_arrays
+            vector_target = point_vectors if mode == "POINT_DATA" else cell_vectors
             i += 1
             while i < len(lines):
                 p2 = lines[i].strip().split()
@@ -753,7 +827,7 @@ def _read_legacy_polydata_vtk(path: Path) -> Optional[Dict[str, Any]]:
                             arr = [float(vals[j]) if j < len(vals) and math.isfinite(float(vals[j])) else 0.0 for j in range(ntuples)]
                             target[name] = arr
                         else:
-                            set_vector_arrays(target, name, vals, ntuples, ncomp)
+                            set_vector_arrays(target, vector_target, name, vals, ntuples, ncomp)
                     continue
 
                 if k2 == "SCALARS" and len(p2) >= 2:
@@ -768,13 +842,13 @@ def _read_legacy_polydata_vtk(path: Path) -> Optional[Dict[str, Any]]:
                     if ncomp == 1:
                         target[name] = [float(vals[j]) if j < len(vals) and math.isfinite(float(vals[j])) else 0.0 for j in range(count)]
                     else:
-                        set_vector_arrays(target, name, vals, count, ncomp)
+                        set_vector_arrays(target, vector_target, name, vals, count, ncomp)
                     continue
 
                 if k2 == "VECTORS" and len(p2) >= 2:
                     name = p2[1]
                     vals, i = collect_numbers(i + 1, count * 3)
-                    set_vector_arrays(target, name, vals, count, 3)
+                    set_vector_arrays(target, vector_target, name, vals, count, 3)
                     continue
 
                 # Unknown attribute type; skip one line to avoid infinite loops.
@@ -785,7 +859,14 @@ def _read_legacy_polydata_vtk(path: Path) -> Optional[Dict[str, Any]]:
 
     if not points or not polys:
         return None
-    return {"points": points, "polys": polys, "point_arrays": point_arrays, "cell_arrays": cell_arrays}
+    return {
+        "points": points,
+        "polys": polys,
+        "point_arrays": point_arrays,
+        "cell_arrays": cell_arrays,
+        "point_vectors": point_vectors,
+        "cell_vectors": cell_vectors,
+    }
 
 def _vtk_sample_candidates(step_case: Path) -> List[Path]:
     roots = [step_case / "postProcessing", step_case / "surfaces", step_case / "VTK"]
@@ -824,10 +905,14 @@ def write_cfd_sampled_surface_preview_for_step(step_case: Path, step: int) -> Op
     combined_pts: List[Vec3] = []
     combined_polys: List[Tuple[int, int, int]] = []
     combined_scalars: Dict[str, List[float]] = {}
+    combined_vectors: Dict[str, List[Vec3]] = {}
     used_files: List[str] = []
 
     def add_scalar(name: str, value: float) -> None:
         combined_scalars.setdefault(name, []).append(value)
+
+    def add_vector(name: str, value: Vec3) -> None:
+        combined_vectors.setdefault(name, []).append(value)
 
     for vf in candidates:
         vf_lower = str(vf).lower()
@@ -842,6 +927,8 @@ def write_cfd_sampled_surface_preview_for_step(step_case: Path, step: int) -> Op
         polys: List[List[int]] = data["polys"]
         p_arrays: Dict[str, List[float]] = data["point_arrays"]
         c_arrays: Dict[str, List[float]] = data["cell_arrays"]
+        p_vectors: Dict[str, List[Vec3]] = data.get("point_vectors", {})
+        c_vectors: Dict[str, List[Vec3]] = data.get("cell_vectors", {})
         if not pts or not polys:
             continue
         used_files.append(str(vf.relative_to(step_case)) if vf.is_relative_to(step_case) else str(vf))
@@ -855,7 +942,22 @@ def write_cfd_sampled_surface_preview_for_step(step_case: Path, step: int) -> Op
                     return sum(vals) / len(vals)
             return None
 
+        def vector_for_poly(name: str, poly_index: int, tri_indices: Sequence[int]) -> Optional[Vec3]:
+            if name in c_vectors and poly_index < len(c_vectors[name]):
+                return c_vectors[name][poly_index]
+            if name in p_vectors:
+                vals = [p_vectors[name][idx] for idx in tri_indices if idx < len(p_vectors[name])]
+                if vals:
+                    inv_n = 1.0 / len(vals)
+                    return (
+                        sum(v[0] for v in vals) * inv_n,
+                        sum(v[1] for v in vals) * inv_n,
+                        sum(v[2] for v in vals) * inv_n,
+                    )
+            return None
+
         all_names = set(c_arrays) | set(p_arrays)
+        all_vector_names = set(c_vectors) | set(p_vectors)
         for pi, poly in enumerate(polys):
             if len(poly) < 3:
                 continue
@@ -888,6 +990,11 @@ def write_cfd_sampled_surface_preview_for_step(step_case: Path, step: int) -> Op
                 add_scalar("pressureCoeffAbs", abs(float(cp or 0.0)))
                 add_scalar("pressurePa", float(ppa or 0.0))
                 add_scalar("pressurePaAbs", abs(float(ppa or 0.0)))
+                for name in all_vector_names:
+                    vec = vector_for_poly(name, pi, tri_idx)
+                    if vec is None:
+                        vec = (0.0, 0.0, 0.0)
+                    add_vector(name, vec)
 
     if not combined_polys:
         return None
@@ -896,7 +1003,7 @@ def write_cfd_sampled_surface_preview_for_step(step_case: Path, step: int) -> Op
     out_dir = step_case / CFD_SAMPLED_PREVIEW_DIR_NAME
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / CFD_SAMPLED_SURFACE_VTP_NAME
-    _write_ascii_polydata_vtk(out, combined_pts, combined_polys, combined_scalars)
+    _write_ascii_polydata_vtk(out, combined_pts, combined_polys, combined_scalars, combined_vectors)
     _write_pressure_preview_report(out_dir / "cfd_sampled_pressure_report.txt", combined_scalars)
     (out_dir / "source_sampled_vtk_files.txt").write_text("\n".join(used_files) + "\n")
     return out
@@ -1376,6 +1483,7 @@ def _clear_root_view_outputs_for_streaming(root_case: Path) -> None:
         remove = False
         if child.name in {
             "constant", "system", "VTK", "postProcessing",
+            STREAM_TRACER_CASE_DIR_NAME,
             ROOT_PANEL_PREVIEW_DIR_NAME,
             ROOT_CFD_SAMPLED_DIR_NAME,
             STEP_DEBUG_REPORT_DIR_NAME,
@@ -1393,6 +1501,7 @@ def _clear_root_view_outputs_for_streaming(root_case: Path) -> None:
             "paraview_pvd_manifest.txt",
             "paraview_raw_cfd_pvd_manifest.txt",
             "paraview_panel_preview_manifest.txt",
+            "paraview_stream_tracer_manifest.txt",
             "paraview_timeseries_manifest.txt",
             "OPEN_THIS_IN_PARAVIEW.txt",
         }:
@@ -1462,6 +1571,78 @@ def copy_step_to_root_timeseries(root_case: Path, step_case: Path, step: int) ->
 
     (root_case / "case.foam").write_text("")
     return True
+
+
+def copy_minimal_stream_tracer_case_to_root(root_case: Path, step_case: Path, step: int) -> Optional[Path]:
+    """Keep one storage-light volume case for ParaView Stream Tracer.
+
+    The compact .pvd/.vtp animation is surface-only.  ParaView's Stream Tracer is
+    most useful on a volume mesh with a 3-component velocity field.  Keeping the
+    full OpenFOAM time series or full VTK export is expensive, so this function
+    overwrites one small root-level case each step:
+
+      - constant/polyMesh
+      - small top-level files directly under constant/
+      - system/
+      - latest solved time directory containing only U
+
+    This is the minimum practical data ParaView needs to open a real volume field
+    while still allowing the temporary per-step case to be deleted.
+    """
+    if not PARAVIEW_MINIMAL_STREAM_TRACER_EXPORT:
+        return None
+
+    latest = _latest_solver_time_dir(step_case)
+    if latest is None:
+        return None
+
+    field_src = latest / STREAM_TRACER_FIELD_NAME
+    mesh_src = step_case / "constant" / "polyMesh"
+    if not field_src.exists() or not mesh_src.exists():
+        return None
+
+    out_case = root_case / STREAM_TRACER_CASE_DIR_NAME
+    if out_case.exists():
+        shutil.rmtree(out_case)
+    out_case.mkdir(parents=True, exist_ok=True)
+
+    system_src = step_case / "system"
+    if system_src.exists():
+        shutil.copytree(system_src, out_case / "system", ignore=shutil.ignore_patterns("*.log"))
+
+    constant_out = out_case / "constant"
+    constant_out.mkdir(parents=True, exist_ok=True)
+    constant_src = step_case / "constant"
+    if constant_src.exists():
+        for child in constant_src.iterdir():
+            if child.is_file():
+                shutil.copy2(child, constant_out / child.name)
+    shutil.copytree(mesh_src, constant_out / "polyMesh")
+
+    time_out = out_case / latest.name
+    time_out.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(field_src, time_out / STREAM_TRACER_FIELD_NAME)
+
+    foam_path = out_case / "case.foam"
+    foam_path.write_text("")
+
+    manifest = [
+        "Minimal ParaView Stream Tracer volume case",
+        "",
+        "Open this file in ParaView for real 3D streamlines:",
+        f"  {foam_path}",
+        "",
+        f"source_step=step_{step:03d}",
+        f"source_solver_time={latest.name}",
+        f"field={STREAM_TRACER_FIELD_NAME}",
+        "retained_data=constant/polyMesh, system, latest U only",
+        "",
+        "Use ParaView Stream Tracer with vector field U.",
+        "This is intentionally a single latest-frame volume export, not a full time series.",
+    ]
+    (out_case / "OPEN_THIS_FOR_STREAM_TRACER.txt").write_text("\n".join(manifest) + "\n")
+    (root_case / "paraview_stream_tracer_manifest.txt").write_text("\n".join(manifest) + "\n")
+    return foam_path
 
 
 def copy_step_panel_preview_to_root(root_case: Path, step_case: Path, step: int) -> Optional[Path]:
@@ -1641,4 +1822,3 @@ def initial_eta_seconds(total_steps: int) -> Tuple[float, str]:
     if isinstance(calibrated, (int, float)) and calibrated > 0:
         return float(calibrated) * total_steps, f"calibrated from {int(cal.get('samples', 1))} previous step(s)"
     return ETA_DEFAULT_STEP_SECONDS * total_steps, "rough default; will recalibrate after step 1"
-

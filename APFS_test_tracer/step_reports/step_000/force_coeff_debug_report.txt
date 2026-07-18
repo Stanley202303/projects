@@ -1,0 +1,108 @@
+# forceCoeffs debug report
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/APFS_test_tracer_step_work_zub69reg/step_work
+
+Detected coefficient data by patch:
+- Part_1_1: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 20.0, 'Cm': -0.000119731646, 'Cd': 0.0752683143, 'Cl': -0.000848183145, 'Cl(f)': -0.000543823218, 'Cl(r)': -0.000304359927}
+- Part_1_2: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 20.0, 'Cm': 0.00123689616, 'Cd': 0.128100296, 'Cl': 0.000589770296, 'Cl(f)': 0.00153178131, 'Cl(r)': -0.00094201101}
+- Part_1_3: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 20.0, 'Cm': 0.0204613604, 'Cd': 0.399928945, 'Cl': 0.0185718298, 'Cl(f)': 0.0297472753, 'Cl(r)': -0.0111754454}
+- Part_1_4: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 20.0, 'Cm': -0.0199194339, 'Cd': 0.397919411, 'Cl': -0.0294225555, 'Cl(f)': -0.0346307117, 'Cl(r)': 0.00520815614}
+- Part_1_5: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 20.0, 'Cm': -0.0332358799, 'Cd': 0.398950323, 'Cl': 0.819020723, 'Cl(f)': 0.376274482, 'Cl(r)': 0.442746242}
+- Part_1_6: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 20.0, 'Cm': 0.0343987247, 'Cd': 0.398857493, 'Cl': -0.819235101, 'Cl(f)': -0.375218826, 'Cl(r)': -0.444016275}
+- all: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 20.0, 'Cm': -4.9171031e-05, 'Cd': 0.184845687, 'Cl': -0.00125115077, 'Cl(f)': -0.000674746417, 'Cl(r)': -0.000576404355}
+
+postProcessing .dat files:
+- postProcessing/forceCoeffs_Part_1_1/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_Part_1_2/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_Part_1_3/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_Part_1_4/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_Part_1_5/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_Part_1_6/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_all/0/forceCoeffs.dat
+- postProcessing/forces_Part_1_1/0/forces.dat
+- postProcessing/forces_Part_1_2/0/forces.dat
+- postProcessing/forces_Part_1_3/0/forces.dat
+- postProcessing/forces_Part_1_4/0/forces.dat
+- postProcessing/forces_Part_1_5/0/forces.dat
+- postProcessing/forces_Part_1_6/0/forces.dat
+- postProcessing/forces_all/0/forces.dat
+
+OpenFOAM boundary file exists: True
+  /*--------------------------------*- C++ -*----------------------------------*\
+    =========                 |
+    \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+     \\    /   O peration     | Website:  https://openfoam.org
+      \\  /    A nd           | Version:  11
+       \\/     M anipulation  |
+  \*---------------------------------------------------------------------------*/
+  FoamFile
+  {
+      format      ascii;
+      class       polyBoundaryMesh;
+      location    "constant/polyMesh";
+      object      boundary;
+  }
+  // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+  9
+  (
+      inlet
+      {
+          type            patch;
+          nFaces          4356;
+          startFace       2085098;
+      }
+      outlet
+      {
+          type            patch;
+          nFaces          4356;
+          startFace       2089454;
+      }
+      farfield
+      {
+          type            patch;
+          nFaces          30360;
+          startFace       2093810;
+      }
+      Part_1_3
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          127;
+          startFace       2124170;
+      }
+      Part_1_4
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          127;
+          startFace       2124297;
+      }
+      Part_1_1
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          2280;
+          startFace       2124424;
+      }
+      Part_1_6
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          127;
+          startFace       2126704;
+      }
+      Part_1_5
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          127;
+          startFace       2126831;
+      }
+      Part_1_2
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          832;
+          startFace       2126958;
+      }
+  )
+  // ************************************************************************* //

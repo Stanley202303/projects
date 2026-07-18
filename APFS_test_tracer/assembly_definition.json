@@ -1,0 +1,835 @@
+{
+  "rootAssembly": {
+    "occurrences": [
+      {
+        "transform": [
+          0.3428411468931465,
+          -0.9393933936306998,
+          -2.2237792708097166e-15,
+          -0.13592339083721092,
+          -0.9393933936307038,
+          -0.34284114689314577,
+          -8.246055772704482e-17,
+          -0.036019975844972615,
+          -5.263160608575616e-16,
+          2.1321306689021175e-15,
+          -0.9999999999999963,
+          -0.02750695959511963,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "fixed": false,
+        "mateStatuses": null,
+        "hidden": false,
+        "path": [
+          "MQdDX5VuZsdhPW0Bp"
+        ]
+      },
+      {
+        "transform": [
+          0.3411988785971724,
+          0.9399911304071116,
+          -2.182985344155634e-15,
+          -0.03859896311344637,
+          0.9399911304071119,
+          -0.3411988785971726,
+          -1.390188930011381e-16,
+          0.0023685110834942933,
+          -9.377624614428686e-16,
+          -2.0030410126068e-15,
+          -0.9999999999999994,
+          -0.06750695959511976,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "fixed": false,
+        "mateStatuses": null,
+        "hidden": false,
+        "path": [
+          "MbMHipzmgrFF6rxSK"
+        ]
+      },
+      {
+        "transform": [
+          0.9999996182081293,
+          -0.0008738327085081529,
+          2.1982271519006144e-15,
+          0.010312116057267793,
+          0.0008738327085080905,
+          0.9999996182081294,
+          2.8626115775222943e-16,
+          0.000977232480069359,
+          -2.2060156937336383e-15,
+          -3.584784273132423e-16,
+          0.9999999999999994,
+          0.0074477635839665345,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "fixed": false,
+        "mateStatuses": null,
+        "hidden": false,
+        "path": [
+          "MjrnTbsnyy8eJ9ca2"
+        ]
+      },
+      {
+        "transform": [
+          0.3420200127451638,
+          0.9396922620189203,
+          -0.0008738327085052108,
+          -0.03860426376677508,
+          0.0002988683882065465,
+          0.0008211341479862421,
+          0.9999996182081484,
+          0.008434490594517847,
+          0.9396926207859191,
+          -0.3420201433256767,
+          7.146857242381531e-15,
+          -0.05857294142208595,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "fixed": false,
+        "mateStatuses": null,
+        "hidden": false,
+        "path": [
+          "Mlsh0ecWSrPK/Yb5+"
+        ]
+      },
+      {
+        "transform": [
+          0.34202001274514937,
+          -0.9396922620188997,
+          -0.0008738327085070149,
+          -0.135927208969564,
+          0.00029886838820644245,
+          -0.0008211341479869715,
+          0.9999996182081384,
+          -0.03165056868243894,
+          -0.9396926207858926,
+          -0.34202014332565545,
+          -2.2597503571853108e-15,
+          -0.0968763684258571,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "fixed": false,
+        "mateStatuses": null,
+        "hidden": false,
+        "path": [
+          "MrrHxW09Lrw5c8Bf7"
+        ]
+      },
+      {
+        "transform": [
+          -0.9999996182081266,
+          -0.0008738327085078407,
+          -2.227612139342715e-15,
+          -0.0342473331730806,
+          -0.000873832708507799,
+          0.9999996182081263,
+          -2.779581283851346e-16,
+          0.0009382949609927269,
+          2.2278541777626806e-15,
+          -2.760114619137531e-16,
+          -1.0,
+          -0.06000695959511977,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "fixed": false,
+        "mateStatuses": null,
+        "hidden": false,
+        "path": [
+          "Mss5Y7ClRMpGn+uBp"
+        ]
+      }
+    ],
+    "patterns": [],
+    "parametricInstances": [],
+    "features": [
+      {
+        "id": "M5LS52UHhEoPgptzG",
+        "featureType": "mate",
+        "suppressed": false,
+        "featureData": {
+          "mateType": "FASTENED",
+          "matedEntities": [
+            {
+              "mateConnectorCS": {
+                "xAxis": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  0.0,
+                  -1.0
+                ],
+                "zAxis": [
+                  -1.0,
+                  0.0,
+                  0.0
+                ],
+                "origin": [
+                  0.0,
+                  0.0,
+                  4.592425496802574e-19
+                ]
+              },
+              "matedOccurrence": [
+                "Mss5Y7ClRMpGn+uBp"
+              ],
+              "matedCS": {
+                "xAxis": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  0.0,
+                  -1.0
+                ],
+                "zAxis": [
+                  -1.0,
+                  0.0,
+                  0.0
+                ],
+                "origin": [
+                  0.0,
+                  0.0,
+                  4.592425496802574e-19
+                ]
+              }
+            },
+            {
+              "mateConnectorCS": {
+                "xAxis": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  0.0,
+                  -1.0
+                ],
+                "zAxis": [
+                  -1.0,
+                  0.0,
+                  0.0
+                ],
+                "origin": [
+                  -0.044559466242790224,
+                  0.0,
+                  -0.06745472317908645
+                ]
+              },
+              "matedOccurrence": [
+                "MjrnTbsnyy8eJ9ca2"
+              ],
+              "matedCS": {
+                "xAxis": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  -0.0,
+                  1.0
+                ],
+                "zAxis": [
+                  1.0,
+                  -0.0,
+                  -0.0
+                ],
+                "origin": [
+                  -0.044559466242790224,
+                  0.0,
+                  -0.06745472317908645
+                ]
+              }
+            }
+          ],
+          "mateLimits": {},
+          "name": "Fastened 1"
+        }
+      },
+      {
+        "id": "MQ8OyZzY9UZBdDyrI",
+        "featureType": "mate",
+        "suppressed": false,
+        "featureData": {
+          "mateType": "FASTENED",
+          "matedEntities": [
+            {
+              "mateConnectorCS": {
+                "xAxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zAxis": [
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "origin": [
+                  -0.020380827813534112,
+                  -0.0518030755632474,
+                  0.025
+                ]
+              },
+              "matedOccurrence": [
+                "MQdDX5VuZsdhPW0Bp"
+              ],
+              "matedCS": {
+                "xAxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zAxis": [
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "origin": [
+                  -0.020380827813534112,
+                  -0.0518030755632474,
+                  0.025
+                ]
+              }
+            },
+            {
+              "mateConnectorCS": {
+                "xAxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  -1.0,
+                  1.1564823173178715e-16
+                ],
+                "zAxis": [
+                  0.0,
+                  -1.1564823173178715e-16,
+                  -1.0
+                ],
+                "origin": [
+                  0.06,
+                  -5.293955920339377e-19,
+                  -0.007499999999999999
+                ]
+              },
+              "matedOccurrence": [
+                "Mss5Y7ClRMpGn+uBp"
+              ],
+              "matedCS": {
+                "xAxis": [
+                  -0.3420201433256688,
+                  -0.9396926207859085,
+                  1.0867378996529912e-16
+                ],
+                "yAxis": [
+                  0.9396926207859085,
+                  -0.3420201433256688,
+                  3.955402479226599e-17
+                ],
+                "zAxis": [
+                  -1.232595164407831e-32,
+                  1.1564823173178717e-16,
+                  1.0
+                ],
+                "origin": [
+                  0.06,
+                  -5.293955920339377e-19,
+                  -0.007499999999999999
+                ]
+              }
+            }
+          ],
+          "mateLimits": {},
+          "name": "Fastened 2"
+        }
+      },
+      {
+        "id": "M2PbW6JQ9G1NPixtF",
+        "featureType": "mate",
+        "suppressed": false,
+        "featureData": {
+          "mateType": "FASTENED",
+          "matedEntities": [
+            {
+              "mateConnectorCS": {
+                "xAxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zAxis": [
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "origin": [
+                  -0.020380827813534112,
+                  -0.0518030755632474,
+                  0.025
+                ]
+              },
+              "matedOccurrence": [
+                "MrrHxW09Lrw5c8Bf7"
+              ],
+              "matedCS": {
+                "xAxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                "zAxis": [
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "origin": [
+                  -0.020380827813534112,
+                  -0.0518030755632474,
+                  0.025
+                ]
+              }
+            },
+            {
+              "mateConnectorCS": {
+                "xAxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  2.312964634635743e-16,
+                  1.0
+                ],
+                "zAxis": [
+                  0.0,
+                  -1.0,
+                  2.312964634635743e-16
+                ],
+                "origin": [
+                  0.06,
+                  -0.0075,
+                  2.117582368135751e-18
+                ]
+              },
+              "matedOccurrence": [
+                "Mss5Y7ClRMpGn+uBp"
+              ],
+              "matedCS": {
+                "xAxis": [
+                  -0.3420201433256688,
+                  2.1734757993059825e-16,
+                  0.9396926207859085
+                ],
+                "yAxis": [
+                  0.9396926207859085,
+                  7.910804958453198e-17,
+                  0.3420201433256688
+                ],
+                "zAxis": [
+                  -2.465190328815662e-32,
+                  1.0,
+                  -2.3129646346357434e-16
+                ],
+                "origin": [
+                  0.06,
+                  -0.0075,
+                  2.117582368135751e-18
+                ]
+              }
+            }
+          ],
+          "mateLimits": {},
+          "name": "Fastened 3"
+        }
+      },
+      {
+        "id": "M6vHs+aXHzRwi4NFo",
+        "featureType": "mate",
+        "suppressed": false,
+        "featureData": {
+          "mateType": "FASTENED",
+          "matedEntities": [
+            {
+              "mateConnectorCS": {
+                "xAxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  1.0,
+                  -1.1564823173178715e-16
+                ],
+                "zAxis": [
+                  0.0,
+                  1.1564823173178715e-16,
+                  1.0
+                ],
+                "origin": [
+                  0.06,
+                  1.0587911840678754e-18,
+                  0.0075
+                ]
+              },
+              "matedOccurrence": [
+                "Mss5Y7ClRMpGn+uBp"
+              ],
+              "matedCS": {
+                "xAxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  1.0,
+                  -1.1564823173178715e-16
+                ],
+                "zAxis": [
+                  0.0,
+                  1.1564823173178715e-16,
+                  1.0
+                ],
+                "origin": [
+                  0.06,
+                  1.0587911840678754e-18,
+                  0.0075
+                ]
+              }
+            },
+            {
+              "mateConnectorCS": {
+                "xAxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  -1.0,
+                  0.0
+                ],
+                "zAxis": [
+                  0.0,
+                  0.0,
+                  -1.0
+                ],
+                "origin": [
+                  -0.020380827813534112,
+                  -0.0518030755632474,
+                  0.0
+                ]
+              },
+              "matedOccurrence": [
+                "MbMHipzmgrFF6rxSK"
+              ],
+              "matedCS": {
+                "xAxis": [
+                  -0.3420201433256688,
+                  -0.9396926207859085,
+                  0.0
+                ],
+                "yAxis": [
+                  0.9396926207859085,
+                  -0.3420201433256688,
+                  0.0
+                ],
+                "zAxis": [
+                  0.0,
+                  0.0,
+                  1.0
+                ],
+                "origin": [
+                  -0.020380827813534112,
+                  -0.0518030755632474,
+                  0.0
+                ]
+              }
+            }
+          ],
+          "mateLimits": {},
+          "name": "Fastened 4"
+        }
+      },
+      {
+        "id": "M2iRE4lSKGpWK4C9m",
+        "featureType": "mate",
+        "suppressed": false,
+        "featureData": {
+          "mateType": "FASTENED",
+          "matedEntities": [
+            {
+              "mateConnectorCS": {
+                "xAxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  -1.0,
+                  0.0
+                ],
+                "zAxis": [
+                  0.0,
+                  0.0,
+                  -1.0
+                ],
+                "origin": [
+                  -0.020380827813534112,
+                  -0.0518030755632474,
+                  0.0
+                ]
+              },
+              "matedOccurrence": [
+                "Mlsh0ecWSrPK/Yb5+"
+              ],
+              "matedCS": {
+                "xAxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  -1.0,
+                  0.0
+                ],
+                "zAxis": [
+                  0.0,
+                  0.0,
+                  -1.0
+                ],
+                "origin": [
+                  -0.020380827813534112,
+                  -0.0518030755632474,
+                  0.0
+                ]
+              }
+            },
+            {
+              "mateConnectorCS": {
+                "xAxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yAxis": [
+                  0.0,
+                  -2.312964634635743e-16,
+                  -1.0
+                ],
+                "zAxis": [
+                  0.0,
+                  1.0,
+                  -2.312964634635743e-16
+                ],
+                "origin": [
+                  0.06,
+                  0.0075,
+                  -1.5881867761018133e-18
+                ]
+              },
+              "matedOccurrence": [
+                "Mss5Y7ClRMpGn+uBp"
+              ],
+              "matedCS": {
+                "xAxis": [
+                  -0.3420201433256688,
+                  -2.1734757993059825e-16,
+                  -0.9396926207859085
+                ],
+                "yAxis": [
+                  0.9396926207859085,
+                  -7.910804958453198e-17,
+                  -0.3420201433256688
+                ],
+                "zAxis": [
+                  -2.465190328815662e-32,
+                  -1.0,
+                  2.3129646346357434e-16
+                ],
+                "origin": [
+                  0.06,
+                  0.0075,
+                  -1.5881867761018133e-18
+                ]
+              }
+            }
+          ],
+          "mateLimits": {},
+          "name": "Fastened 5"
+        }
+      }
+    ],
+    "instances": [
+      {
+        "isStandardContent": false,
+        "type": "Part",
+        "id": "MjrnTbsnyy8eJ9ca2",
+        "name": "Part 1 <1>",
+        "suppressed": false,
+        "partId": "JHD",
+        "fullConfiguration": "default",
+        "configuration": "default",
+        "documentId": "34b80739d7bf3704beb6bc4b",
+        "elementId": "aafe300d0786f92114e62c83",
+        "documentMicroversion": "51d674daa0c14ca897718399"
+      },
+      {
+        "isStandardContent": false,
+        "type": "Part",
+        "id": "Mss5Y7ClRMpGn+uBp",
+        "name": "Part 1 <2>",
+        "suppressed": false,
+        "partId": "JHD",
+        "fullConfiguration": "default",
+        "configuration": "default",
+        "documentId": "34b80739d7bf3704beb6bc4b",
+        "elementId": "44669ed0bf03530ad6fab97d",
+        "documentMicroversion": "51d674daa0c14ca897718399"
+      },
+      {
+        "isStandardContent": false,
+        "type": "Part",
+        "id": "MQdDX5VuZsdhPW0Bp",
+        "name": "Part 1 <3>",
+        "suppressed": false,
+        "partId": "JHD",
+        "fullConfiguration": "default",
+        "configuration": "default",
+        "documentId": "34b80739d7bf3704beb6bc4b",
+        "elementId": "5be18655354251cc584823fc",
+        "documentMicroversion": "51d674daa0c14ca897718399"
+      },
+      {
+        "isStandardContent": false,
+        "type": "Part",
+        "id": "MbMHipzmgrFF6rxSK",
+        "name": "Part 1 <4>",
+        "suppressed": false,
+        "partId": "JHD",
+        "fullConfiguration": "default",
+        "configuration": "default",
+        "documentId": "34b80739d7bf3704beb6bc4b",
+        "elementId": "5be18655354251cc584823fc",
+        "documentMicroversion": "51d674daa0c14ca897718399"
+      },
+      {
+        "isStandardContent": false,
+        "type": "Part",
+        "id": "MrrHxW09Lrw5c8Bf7",
+        "name": "Part 1 <5>",
+        "suppressed": false,
+        "partId": "JHD",
+        "fullConfiguration": "default",
+        "configuration": "default",
+        "documentId": "34b80739d7bf3704beb6bc4b",
+        "elementId": "5be18655354251cc584823fc",
+        "documentMicroversion": "51d674daa0c14ca897718399"
+      },
+      {
+        "isStandardContent": false,
+        "type": "Part",
+        "id": "Mlsh0ecWSrPK/Yb5+",
+        "name": "Part 1 <6>",
+        "suppressed": false,
+        "partId": "JHD",
+        "fullConfiguration": "default",
+        "configuration": "default",
+        "documentId": "34b80739d7bf3704beb6bc4b",
+        "elementId": "5be18655354251cc584823fc",
+        "documentMicroversion": "51d674daa0c14ca897718399"
+      }
+    ],
+    "fullConfiguration": "default",
+    "configuration": "default",
+    "documentId": "34b80739d7bf3704beb6bc4b",
+    "elementId": "661ae6fbdab56cbe48e1d198",
+    "documentMicroversion": "51d674daa0c14ca897718399"
+  },
+  "subAssemblies": [],
+  "parts": [
+    {
+      "isStandardContent": false,
+      "partId": "JHD",
+      "bodyType": "solid",
+      "fullConfiguration": "default",
+      "configuration": "default",
+      "documentId": "34b80739d7bf3704beb6bc4b",
+      "elementId": "5be18655354251cc584823fc",
+      "documentMicroversion": "51d674daa0c14ca897718399"
+    },
+    {
+      "isStandardContent": false,
+      "partId": "JHD",
+      "bodyType": "solid",
+      "fullConfiguration": "default",
+      "configuration": "default",
+      "documentId": "34b80739d7bf3704beb6bc4b",
+      "elementId": "aafe300d0786f92114e62c83",
+      "documentMicroversion": "51d674daa0c14ca897718399"
+    },
+    {
+      "isStandardContent": false,
+      "partId": "JHD",
+      "bodyType": "solid",
+      "fullConfiguration": "default",
+      "configuration": "default",
+      "documentId": "34b80739d7bf3704beb6bc4b",
+      "elementId": "44669ed0bf03530ad6fab97d",
+      "documentMicroversion": "51d674daa0c14ca897718399"
+    }
+  ],
+  "partStudioFeatures": []
+}

@@ -66,7 +66,10 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
     motion_log = root_case / MOTION_LOG_NAME
     geometry_report = root_case / MOTION_GEOMETRY_REPORT_NAME
     collision_log = root_case / COLLISION_LOG_NAME
+    write_unsteady_fsi_gap_report(root_case, components)
     apply_relative_motion_policy(components, root_case)
+    rigid_body_root = assembly_rigid_body_root(components)
+    rigid_body_state = build_rigid_body_state(components, rigid_body_root) if rigid_body_root is not None else None
     write_motion_log_header(motion_log)
     collision_log.write_text(
         "# Part collision log. Collision method is conservative AABB broad-phase/narrow-phase.\n"
@@ -82,6 +85,8 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
 
     index_lines = [
         "Assembly quasi-dynamic CFD run", "",
+        f"cfd_solver_mode={CFD_SOLVER_MODE}",
+        f"solver_application={solver_application()}",
         f"dynamic_steps={ASSEMBLY_DYNAMIC_STEPS}",
         f"motion_dt={MOTION_DT}",
         f"save_motion_steps={SAVE_MOTION_STEPS}",
@@ -128,6 +133,8 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         print("Storage mode: ROOT_OPENFOAM_TIMESERIES=0; root numeric OpenFOAM time folders will NOT be kept.")
     if not RUN_FULL_VTK_EXPORT:
         print("Storage mode: RUN_FULL_VTK_EXPORT=0; full volume VTK export will be skipped.")
+    if PARAVIEW_MINIMAL_STREAM_TRACER_EXPORT:
+        print("Storage mode: minimal Stream Tracer volume case will keep only latest mesh + U.")
 
     if STORE_START_FINAL_GEOMETRY:
         write_components_geometry_snapshot(root_case, components, START_GEOMETRY_DIR_NAME, "start")
@@ -173,6 +180,11 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
             write_force_coeff_debug_report(step_case, coeffs_by_patch)
             write_force_load_debug_report(step_case, loads_by_patch)
 
+            rigid_component_rows: List[Tuple[AeroComponent, Dict[str, float], str, str, Vec3, Vec3]] = []
+            rigid_net_force = (0.0, 0.0, 0.0)
+            rigid_net_moment = (0.0, 0.0, 0.0)
+            rigid_origin = rigid_body_state.cofr if rigid_body_state is not None else (0.0, 0.0, 0.0)
+
             for component in components:
                 coeffs = coeffs_by_patch.get(component.patch, {})
                 coeff_source = component.patch if coeffs else "none"
@@ -205,6 +217,20 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     load_override = surface_pressure_load(component)
                     load_source = "panel-aero-fallback-after-zero-openfoam" if own_openfoam_load is not None else "panel-aero-fallback"
 
+                if rigid_body_state is not None:
+                    force, source_moment = resolve_aerodynamic_load(component, coeffs, load_override)
+                    component_moment = total_aerodynamic_moment_about_origin(
+                        component,
+                        force,
+                        source_moment,
+                        rigid_origin,
+                        load_override is not None,
+                    )
+                    rigid_component_rows.append((component, coeffs, coeff_source, load_source, force, component_moment))
+                    rigid_net_force = v_add(rigid_net_force, force)
+                    rigid_net_moment = v_add(rigid_net_moment, component_moment)
+                    continue
+
                 force, moment, dpos, drot = update_component_motion(component, coeffs, MOTION_DT, load_override=load_override)
                 append_motion_log(motion_log, step, component, coeffs, force, moment, dpos, drot)
                 xmin, xmax, ymin, ymax, zmin, zmax = component_bounds(component.triangles)
@@ -217,10 +243,42 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                         f"{xmin:.8g}\t{xmax:.8g}\t{ymin:.8g}\t{ymax:.8g}\t{zmin:.8g}\t{zmax:.8g}\n"
                     )
 
-            enforce_attachment_constraints(components)
-            collision_lines = resolve_part_collisions(components, step, collision_log)
-            if collision_lines:
-                print(f"Collision resolution: {len(collision_lines)} contact event(s) handled at step {step}.")
+            if rigid_body_state is not None:
+                rigid_force, rigid_moment, rigid_dpos, rigid_drot = update_component_motion(
+                    rigid_body_state,
+                    {},
+                    MOTION_DT,
+                    load_override=(rigid_net_force, rigid_net_moment),
+                )
+                apply_rigid_body_motion(
+                    components,
+                    rigid_dpos,
+                    rigid_drot,
+                    rigid_origin,
+                    rigid_body_state.linear_velocity,
+                    rigid_body_state.angular_velocity,
+                    rigid_body_state.total_translation,
+                    rigid_body_state.total_rotation,
+                )
+                for component, coeffs, coeff_source, load_source, force, moment in rigid_component_rows:
+                    log_force = rigid_force if component is rigid_body_root else force
+                    log_moment = rigid_moment if component is rigid_body_root else moment
+                    log_load_source = "assembly-rigid-body-net" if component is rigid_body_root else load_source
+                    append_motion_log(motion_log, step, component, coeffs, log_force, log_moment, rigid_dpos, rigid_drot)
+                    xmin, xmax, ymin, ymax, zmin, zmax = component_bounds(component.triangles)
+                    with geometry_report.open("a") as gf:
+                        gf.write(
+                            f"{step}\t{component.patch}\t{coeff_source}\t{log_load_source}\t"
+                            f"{v_norm(log_force):.8g}\t{v_norm(log_moment):.8g}\t"
+                            f"{v_norm(rigid_dpos):.8g}\t{v_norm(rigid_drot):.8g}\t"
+                            f"{component.cofr[0]:.8g}\t{component.cofr[1]:.8g}\t{component.cofr[2]:.8g}\t"
+                            f"{xmin:.8g}\t{xmax:.8g}\t{ymin:.8g}\t{ymax:.8g}\t{zmin:.8g}\t{zmax:.8g}\n"
+                        )
+            else:
+                enforce_attachment_constraints(components)
+                collision_lines = resolve_part_collisions(components, step, collision_log)
+                if collision_lines:
+                    print(f"Collision resolution: {len(collision_lines)} contact event(s) handled at step {step}.")
 
             # Write compact visualisation AFTER the motion and collision update so the frame
             # shows moved, non-interpenetrating geometry.
@@ -231,6 +289,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
             # to keep actual_model_case below the storage budget.
             if ROOT_OPENFOAM_TIMESERIES:
                 copy_step_to_root_timeseries(root_case, step_case, step)
+            copy_minimal_stream_tracer_case_to_root(root_case, step_case, step)
             copy_step_cfd_sampled_preview_to_root(root_case, step_case, step)
             copy_step_panel_preview_to_root(root_case, step_case, step)
             copy_step_debug_reports_to_root(root_case, step_case, step)
@@ -261,11 +320,14 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         (root_case / "OPEN_THIS_IN_PARAVIEW.txt").write_text(
             "Open this compact moving-surface animation first:\n"
             f"  {root_case / PARAVIEW_PVD_NAME}\n\n"
+            "For real 3D Stream Tracer with minimal storage, open this single latest-frame volume case:\n"
+            f"  {root_case / STREAM_TRACER_CASE_DIR_NAME / 'case.foam'}\n\n"
             "Storage-light geometry snapshots:\n"
             f"  start: {root_case / START_GEOMETRY_DIR_NAME / GEOMETRY_SNAPSHOT_FILE_NAME}\n"
             f"  final: {root_case / FINAL_MOVED_GEOMETRY_DIR_NAME / GEOMETRY_SNAPSHOT_FILE_NAME}\n\n"
             "The root OpenFOAM time-series case.foam is not built by default because it copies heavy polyMesh/field folders for every frame.\n"
             "Set ROOT_OPENFOAM_TIMESERIES=1 only if you really need it and have enough disk space.\n"
+            "The Stream Tracer case keeps only the latest mesh and U field; set PARAVIEW_MINIMAL_STREAM_TRACER_EXPORT=0 to disable it.\n"
             "Full per-step OpenFOAM cases were not retained because SAVE_MOTION_STEPS=0.\n"
             "Set SAVE_MOTION_STEPS=1 before running if you need actual_model_case/motion_steps/ for debugging.\n"
         )

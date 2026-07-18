@@ -1,0 +1,2 @@
+# Per-step geometry/movement diagnostic. If dx/drot stay zero, the motion solver is not moving that part.
+step	patch	coeff_source	load_source	force_N	moment_Nm	moved_m	rotated_rad	cofr_x	cofr_y	cofr_z	bbox_xmin	bbox_xmax	bbox_ymin	bbox_ymax	bbox_zmin	bbox_zmax

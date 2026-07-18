@@ -1,0 +1,4 @@
+# Quasi-dynamic assembly motion log
+# dt=0.02 s, default_mass=0.05 kg, default_inertia=0.0001 kg m^2
+# This is a rigid-body approximation driven by OpenFOAM forces.dat/log loads, with panel fallback only if OpenFOAM loads are unavailable.
+step	patch	material	material_source	mass_kg	density_kg_m3	mate_type	freedom_source	Cd	Cs	Cl	CmRoll	CmPitch	CmYaw	Fx_N	Fy_N	Fz_N	Mx_Nm	My_Nm	Mz_Nm	dx_m	dy_m	dz_m	droll_rad	dpitch_rad	dyaw_rad	total_x_m	total_y_m	total_z_m

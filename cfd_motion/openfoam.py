@@ -436,6 +436,20 @@ simulationType laminar;
 """)
 
 
+def solver_application() -> str:
+    return "pimpleFoam" if CFD_SOLVER_MODE == "transient" else "simpleFoam"
+
+
+def solver_log_name() -> str:
+    return f"log.{solver_application()}"
+
+
+def solver_log_names() -> Tuple[str, ...]:
+    primary = solver_log_name()
+    alternates = ("log.simpleFoam", "log.pimpleFoam")
+    return tuple(dict.fromkeys((primary,) + alternates))
+
+
 def force_coeff_function(name: str, patches: Sequence[str], aref: float, lref: float, cofr: Vec3) -> str:
     patch_list = " ".join(patches)
     cx, cy, cz = cofr
@@ -596,6 +610,40 @@ def wall_postprocess_function(components: Sequence[AeroComponent]) -> str:
     }}"""
 
 
+def write_unsteady_fsi_gap_report(case: Path, components: Sequence[AeroComponent]) -> None:
+    movable_components = [c for c in components if c.freedom.translate_axes or c.freedom.rotate_axes]
+    lines = [
+        "# Unsteady / FSI architecture report",
+        f"cfd_solver_mode={CFD_SOLVER_MODE}",
+        f"solver_application={solver_application()}",
+        f"component_count={len(components)}",
+        f"movable_component_count={len(movable_components)}",
+        "",
+        "Implemented in this case:",
+        f"- {'Transient' if CFD_SOLVER_MODE == 'transient' else 'Steady'} fluid solver dictionaries are written directly into the OpenFOAM case.",
+        "- Pressure and dimensional force extraction are handled from OpenFOAM outputs, not guessed from visualization only.",
+        "- The Python side can still update rigid-body state between CFD solves in assembly mode.",
+        "",
+        "Still missing for full unsteady rigid-body FSI:",
+        "- Mesh/body motion is not yet solved inside the OpenFOAM time loop for this generated case.",
+        "- The assembly pipeline still rebuilds and re-runs separate CFD cases instead of continuing one ALE time history.",
+        "- There are no fluid-structure subiterations within each physical time step.",
+        "- Loads are transferred once per outer Python step, not iterated to coupled convergence.",
+        "",
+        "Still missing for deformable full FSI:",
+        "- No structural finite-element solve for elastic deformation.",
+        "- No displacement/traction mapping between CFD and structural meshes.",
+        "- No added-mass stabilization or partitioned coupling acceleration.",
+        "",
+        "Recommended next implementation steps:",
+        "1. Keep transient pimpleFoam as the default unsteady fluid path.",
+        "2. Replace the outer remesh-per-step loop with a persistent moving-mesh case.",
+        "3. Add rigid-body mesh motion inside OpenFOAM for one selected body before tackling multiple independently moving bodies.",
+        "4. Add coupling subiterations and only then consider deformable structural FSI.",
+    ]
+    (case / AERO_SOLVER_REPORT_NAME).write_text("\n".join(lines) + "\n")
+
+
 def write_system(case: Path, components: Sequence[AeroComponent], overall_aref: float, overall_lref: float, overall_cofr: Vec3) -> None:
     functions = []
     wall_fn = wall_postprocess_function(components)
@@ -613,8 +661,82 @@ def write_system(case: Path, components: Sequence[AeroComponent], overall_aref: 
         functions.append(forces_function("all", [c.patch for c in components], overall_cofr))
         functions.append(force_coeff_function("all", [c.patch for c in components], overall_aref, overall_lref, overall_cofr))
 
-    write(case / "system/controlDict", f"""{foam_header("dictionary", "controlDict")}
-application     simpleFoam;
+    if CFD_SOLVER_MODE == "transient":
+        control_dict_text = f"""{foam_header("dictionary", "controlDict")}
+application     {solver_application()};
+
+startFrom       startTime;
+startTime       0;
+
+stopAt          endTime;
+endTime         {AERO_TRANSIENT_END_TIME:g};
+
+deltaT          {AERO_TRANSIENT_DELTA_T:g};
+
+writeControl    adjustableRunTime;
+writeInterval   {AERO_TRANSIENT_WRITE_INTERVAL:g};
+
+purgeWrite      {AERO_TRANSIENT_PURGE_WRITE};
+writeFormat     ascii;
+writePrecision  8;
+writeCompression off;
+timeFormat      general;
+timePrecision   6;
+
+adjustTimeStep  yes;
+maxCo           {AERO_TRANSIENT_MAX_CO:g};
+maxDeltaT       {AERO_TRANSIENT_MAX_DELTA_T:g};
+
+runTimeModifiable true;
+
+functions
+{{
+{chr(10).join(functions)}
+}}
+"""
+        fv_schemes_text = f"""{foam_header("dictionary", "fvSchemes")}
+ddtSchemes
+{{
+    default backward;
+}}
+
+gradSchemes
+{{
+    default Gauss linear;
+}}
+
+divSchemes
+{{
+    default none;
+    div(phi,U) bounded Gauss linearUpwind grad(U);
+    div(phi,k) bounded Gauss upwind;
+    div(phi,omega) bounded Gauss upwind;
+    div((nuEff*dev2(T(grad(U))))) Gauss linear;
+}}
+
+laplacianSchemes
+{{
+    default Gauss linear limited 0.5;
+}}
+
+interpolationSchemes
+{{
+    default linear;
+}}
+
+snGradSchemes
+{{
+    default limited 0.5;
+}}
+
+wallDist
+{{
+    method meshWave;
+}}
+"""
+    else:
+        control_dict_text = f"""{foam_header("dictionary", "controlDict")}
+application     {solver_application()};
 
 startFrom       startTime;
 startTime       0;
@@ -642,9 +764,8 @@ functions
 {{
 {chr(10).join(functions)}
 }}
-""")
-
-    write(case / "system/fvSchemes", f"""{foam_header("dictionary", "fvSchemes")}
+"""
+        fv_schemes_text = f"""{foam_header("dictionary", "fvSchemes")}
 ddtSchemes
 {{
     default steadyState;
@@ -683,7 +804,9 @@ wallDist
 {{
     method meshWave;
 }}
-""")
+"""
+    write(case / "system/controlDict", control_dict_text)
+    write(case / "system/fvSchemes", fv_schemes_text)
 
     p_solver_block = _linear_solver_block("p", "GAMG", P_TOLERANCE, P_REL_TOL, P_MAX_ITER, smoother="GaussSeidel")
     u_solver_block = _linear_solver_block("U", U_SOLVER, U_TOLERANCE, U_REL_TOL, U_MAX_ITER,
@@ -691,6 +814,24 @@ wallDist
     turb_solver_block = _linear_solver_block('"(k|omega)"', "smoothSolver", TURB_TOLERANCE, TURB_REL_TOL,
                                              TURB_MAX_ITER, smoother="symGaussSeidel")
     residual_control = _residual_control_block()
+    coupling_block = f"""PIMPLE
+{{
+    momentumPredictor {'yes' if AERO_TRANSIENT_MOMENTUM_PREDICTOR else 'no'};
+    nOuterCorrectors {AERO_TRANSIENT_OUTER_CORRECTORS};
+    nCorrectors {AERO_TRANSIENT_PRESSURE_CORRECTORS};
+    nNonOrthogonalCorrectors {AERO_TRANSIENT_NON_ORTHOGONAL_CORRECTORS};
+    pRefCell 0;
+    pRefValue 0;
+{residual_control}
+}}""" if CFD_SOLVER_MODE == "transient" else f"""SIMPLE
+{{
+    consistent {'yes' if CONSISTENT_SIMPLE else 'no'};
+    nNonOrthogonalCorrectors {N_NON_ORTHOGONAL_CORRECTORS};
+    pRefCell 0;
+    pRefValue 0;
+{residual_control}
+}}"""
+
     write(case / "system/fvSolution", f"""{foam_header("dictionary", "fvSolution")}
 solvers
 {{
@@ -701,14 +842,7 @@ solvers
 {turb_solver_block}
 }}
 
-SIMPLE
-{{
-    consistent {'yes' if CONSISTENT_SIMPLE else 'no'};
-    nNonOrthogonalCorrectors {N_NON_ORTHOGONAL_CORRECTORS};
-    pRefCell 0;
-    pRefValue 0;
-{residual_control}
-}}
+{coupling_block}
 
 relaxationFactors
 {{
@@ -728,6 +862,8 @@ relaxationFactors
     _write_config_report(case)
 
     postprocess_line = "postProcess -latestTime -dict system/controlDict | tee log.postProcess || true" if RUN_POSTPROCESS_FORCE_OBJECTS else "true"
+    application = solver_application()
+    solver_log = solver_log_name()
     write(case / "Allrun", f"""#!/bin/sh
 set -e
 
@@ -743,17 +879,17 @@ checkMesh -allGeometry -allTopology | tee log.checkMesh
 # instead of wasting hours or filling the disk.
 if [ "$SOLVER_TIMEOUT_SECONDS" -gt 0 ] && command -v timeout >/dev/null 2>&1; then
     set +e
-    timeout "$SOLVER_TIMEOUT_SECONDS"s simpleFoam | tee log.simpleFoam
+    timeout "$SOLVER_TIMEOUT_SECONDS"s {application} | tee {solver_log}
     solver_status=$?
     set -e
     if [ "$solver_status" -eq 124 ]; then
-        echo "WARNING: simpleFoam reached SOLVER_TIMEOUT_SECONDS=$SOLVER_TIMEOUT_SECONDS; continuing with latest written time." | tee -a log.simpleFoam
+        echo "WARNING: {application} reached SOLVER_TIMEOUT_SECONDS=$SOLVER_TIMEOUT_SECONDS; continuing with latest written time." | tee -a {solver_log}
     elif [ "$solver_status" -ne 0 ]; then
-        echo "ERROR: simpleFoam failed with exit code $solver_status" | tee -a log.simpleFoam
+        echo "ERROR: {application} failed with exit code $solver_status" | tee -a {solver_log}
         exit "$solver_status"
     fi
 else
-    simpleFoam | tee log.simpleFoam
+    {application} | tee {solver_log}
 fi
 
 {postprocess_line}
@@ -886,10 +1022,22 @@ def _write_config_report(case: Path) -> None:
     lines = [
         "# Active built-in CFD configuration",
         f"CFD_CONFIG={CFD_CONFIG}",
+        f"CFD_SOLVER_MODE={CFD_SOLVER_MODE}",
+        f"solver_application={solver_application()}",
         f"CFD_ITERATIONS={ITERATIONS}",
         f"CFD_WRITE_INTERVAL={CFD_WRITE_INTERVAL}",
         f"SOLVER_TIMEOUT_SECONDS={SOLVER_TIMEOUT_SECONDS}",
         f"ALLOW_CFD_ENV_OVERRIDES={int(ALLOW_CFD_ENV_OVERRIDES)}",
+        f"AERO_TRANSIENT_END_TIME={AERO_TRANSIENT_END_TIME}",
+        f"AERO_TRANSIENT_DELTA_T={AERO_TRANSIENT_DELTA_T}",
+        f"AERO_TRANSIENT_WRITE_INTERVAL={AERO_TRANSIENT_WRITE_INTERVAL}",
+        f"AERO_TRANSIENT_PURGE_WRITE={AERO_TRANSIENT_PURGE_WRITE}",
+        f"AERO_TRANSIENT_MAX_CO={AERO_TRANSIENT_MAX_CO}",
+        f"AERO_TRANSIENT_MAX_DELTA_T={AERO_TRANSIENT_MAX_DELTA_T}",
+        f"AERO_TRANSIENT_OUTER_CORRECTORS={AERO_TRANSIENT_OUTER_CORRECTORS}",
+        f"AERO_TRANSIENT_PRESSURE_CORRECTORS={AERO_TRANSIENT_PRESSURE_CORRECTORS}",
+        f"AERO_TRANSIENT_NON_ORTHOGONAL_CORRECTORS={AERO_TRANSIENT_NON_ORTHOGONAL_CORRECTORS}",
+        f"AERO_TRANSIENT_MOMENTUM_PREDICTOR={int(AERO_TRANSIENT_MOMENTUM_PREDICTOR)}",
         f"ASSEMBLY_DYNAMIC_STEPS={ASSEMBLY_DYNAMIC_STEPS}",
         f"BASE_CELLS_PER_LENGTH={BASE_CELLS_PER_LENGTH}",
         f"MIN_CELLS={MIN_CELLS}",
@@ -1006,6 +1154,7 @@ def make_case_from_components(components: Sequence[AeroComponent], case: Path, c
     write_constant(case)
     write_fields(case, VELOCITY, patch_names)
     write_system(case, components, overall_aref, length, (cx, cy, cz))
+    write_unsteady_fsi_gap_report(case, components)
     (case / "case.foam").write_text("")
 
     print("Created OpenFOAM case")
@@ -1152,7 +1301,7 @@ def export_force_coefficients(case: Path) -> Path:
         output_path.write_text(
             "No OpenFOAM forceCoeffs coefficient.dat files were found.\n"
             f"Expected files under: {case / 'postProcessing'}\n"
-            "This usually means simpleFoam did not reach the forceCoeffs write step.\n"
+            f"This usually means {solver_application()} did not reach the forceCoeffs write step.\n"
         )
         print(f"Coefficient log created, but no data was found: {output_path}")
         return output_path
@@ -1310,7 +1459,7 @@ def _read_forces_file(path: Path) -> List[Tuple[float, Vec3, Vec3]]:
 def _parse_forces_from_log_text(text: str) -> Dict[str, Tuple[Vec3, Vec3]]:
     """Fallback parser for OpenFOAM force function-object output in logs.
 
-    Some OpenFOAM Docker images print force/moment blocks to log.simpleFoam but
+    Some OpenFOAM Docker images print force/moment blocks to the solver log but
     do not create postProcessing/forces_*/forces.dat. This parser recovers the
     last pressure+viscous+porous force and moment per forces_<patch> object.
     """
@@ -1367,7 +1516,7 @@ def _parse_forces_from_log_text(text: str) -> Dict[str, Tuple[Vec3, Vec3]]:
 
 def latest_dimensional_loads_from_logs(case: Path) -> Dict[str, Tuple[Vec3, Vec3]]:
     loads: Dict[str, Tuple[Vec3, Vec3]] = {}
-    for log_name in ("log.simpleFoam", "log.postProcess"):
+    for log_name in solver_log_names() + ("log.postProcess",):
         path = case / log_name
         if not path.exists():
             continue
@@ -1468,7 +1617,7 @@ def write_force_load_debug_report(case: Path, loads_by_patch: Dict[str, Tuple[Ve
 
     log_loads = latest_dimensional_loads_from_logs(case)
     lines.append("")
-    lines.append("Recovered loads from log.simpleFoam/log.postProcess:")
+    lines.append(f"Recovered loads from {', '.join(solver_log_names())} and log.postProcess:")
     if log_loads:
         for patch, (force, moment) in sorted(log_loads.items()):
             lines.append(f"- {patch}: F={force} N, M={moment} N*m")
@@ -1491,7 +1640,7 @@ def write_force_load_debug_report(case: Path, loads_by_patch: Dict[str, Tuple[Ve
     else:
         lines.append("- none")
 
-    for log_name in ["log.simpleFoam", "log.postProcess"]:
+    for log_name in list(solver_log_names()) + ["log.postProcess"]:
         log_path = case / log_name
         lines.append("")
         lines.append(f"{log_name} exists: {log_path.exists()}")
@@ -1505,4 +1654,3 @@ def write_force_load_debug_report(case: Path, loads_by_patch: Dict[str, Tuple[Ve
 
 
 # ------------------------- Onshape client -------------------------
-

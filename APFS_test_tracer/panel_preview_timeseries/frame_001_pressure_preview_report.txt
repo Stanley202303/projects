@@ -1,0 +1,35 @@
+# Pressure preview / ParaView colouring report
+# The compact PVD is a surface preview.  For visible pressure colouring, use:
+#   pressureCoeff
+#   pressurePa
+#   pressureVisible01
+#   CpPanel / pPaPanel
+# not plain OpenFOAM p unless you are opening the raw case.foam volume.
+
+field	min	max	range
+CpAbsPanel	5.56124823e-10	0.999997446	0.999997446
+CpPanel	-0.349999106	0.999997446	1.34999655
+anchored	0	0	0
+massKg	0.000225	0.0911849356	0.0909599356
+movable	0	1	1
+normalX	-0.999998723	0.999998723	1.99999745
+normalY	-0.999047841	0.999047575	1.99809542
+normalZ	-0.999050406	0.99904874	1.99809915
+pPaAbsPanel	3.40626454e-06	6124.98436	6124.98436
+pPaPanel	-2143.74453	6124.98436	8268.72889
+patchId	0	5	5
+pressureCoeff	-0.349999106	0.999997446	1.34999655
+pressureCoeffAbs	5.56124823e-10	0.999997446	0.999997446
+pressurePa	-2143.74453	6124.98436	8268.72889
+pressurePaAbs	3.40626454e-06	6124.98436	6124.98436
+pressureVisible01	0	1	1
+skinFrictionPreview	1.27675653e-06	0.999976418	0.999975141
+triangleArea	1.65550623e-10	0.0001125	0.000112499834
+windExposure	2.35822989e-05	0.999998723	0.999975141
+
+If pressureCoeff/pressurePa have a non-zero range but ParaView is blue:
+  1) click Rescale to Data Range,
+  2) make sure the selected source is paraview_motion_timeseries.pvd,
+  3) choose the Point Data version of pressureCoeff/pressurePa if ParaView shows both Point and Cell arrays.
+
+If pressureCoeff/pressurePa range is zero, the current frame genuinely has no visible pressure variation in this preview.

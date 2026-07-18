@@ -189,6 +189,8 @@ def infer_motion_origin(component: "AeroComponent") -> Vec3:
         return component.motion_origin
     if not AUTO_HINGE_ORIGINS or not component.freedom.rotate_axes:
         return component.cofr
+    if len(component.freedom.translate_axes) >= 3 or len(component.freedom.rotate_axes) >= 3:
+        return component.cofr
 
     xmin, xmax, ymin, ymax, zmin, zmax = component_bounds(component.triangles)
     cx, cy, cz = component.cofr
@@ -637,4 +639,3 @@ def write_ascii_stl_triangles(destination: Path, solid_name: str, triangles: Seq
 
 def write_scaled_ascii_stl(source: Path, destination: Path, scale: float) -> None:
     write_ascii_stl_triangles(destination, "obstacle", read_stl_triangles(source), scale)
-

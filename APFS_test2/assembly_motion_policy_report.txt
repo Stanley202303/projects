@@ -1,0 +1,23 @@
+Assembly relative-motion policy report
+
+ANCHOR_ASSEMBLY_ROOT=True
+ASSEMBLY_ROOT_PATCH=<auto>
+ASSEMBLY_ROOT_NAME_CONTAINS=<auto>
+ASSEMBLY_ROOT_MODE=largest_mass
+FORCE_NON_ROOT_COMPONENTS_FREE=False
+USE_FORCE_LEVER_ARM_TORQUE=True
+AUTO_HINGE_ORIGINS=True
+USE_ALL_COEFFS_FALLBACK=True
+MOTION_FORCE_GAIN=1.0
+MOTION_MOMENT_GAIN=1.0
+
+No relative motion freedoms were decoded. Treating the imported assembly as one rigid free body so net fin/body loads can still spin it.
+Rigid-body root component: patch='Part_1_1', name='Part 1 <1>', follower_count=5
+
+Movable components after policy:
+- Part_1_3: rigid-body follower, mate_type=FASTENED, source=assembly-rigid-body-follower, translate_axes=[], rotate_axes=[], origin=(-0.0942473,0.000885865,-0.052507), cofr=(-0.0942473,0.000885847,-0.040007), bbox=(-0.098646,-0.0898486,-0.00112663,0.00289833,-0.052507,-0.027507)
+- Part_1_4: rigid-body follower, mate_type=FASTENED, source=assembly-rigid-body-follower, translate_axes=[], rotate_axes=[], origin=(-0.0942473,0.000885865,-0.067507), cofr=(-0.0942473,0.000885899,-0.080007), bbox=(-0.0986479,-0.0898468,-0.00111949,0.00289129,-0.092507,-0.067507)
+- Part_1_1: rigid-body root, mate_type=FREE, source=assembly-rigid-body-root, translate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], rotate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], origin=(0.0202788,0.000970022,-0.0600069), cofr=(0.0202788,0.000970022,-0.0600069), bbox=(-0.0342592,0.0748167,-0.0175541,0.0194942,-0.0785069,-0.0415069)
+- Part_1_6: rigid-body follower, mate_type=FASTENED, source=assembly-rigid-body-follower, translate_axes=[], rotate_axes=[], origin=(-0.0942539,0.00838586,-0.060007), cofr=(-0.0942648,0.0208859,-0.0600069), bbox=(-0.0986753,-0.0898543,0.00838202,0.0333897,-0.0620159,-0.057998)
+- Part_1_5: rigid-body follower, mate_type=FASTENED, source=assembly-rigid-body-follower, translate_axes=[], rotate_axes=[], origin=(-0.0942408,-0.00661413,-0.060007), cofr=(-0.0942298,-0.0191141,-0.060007), bbox=(-0.0986403,-0.0898193,-0.031618,-0.00661029,-0.0620159,-0.057998)
+- Part_1_2: rigid-body follower, mate_type=FASTENED, source=assembly-rigid-body-follower, translate_axes=[], rotate_axes=[], origin=(-0.0942539,0.00838586,-0.060007), cofr=(-0.0667473,0.000909895,-0.060007), bbox=(-0.0992539,-0.0342408,-0.0066185,0.00843829,-0.067507,-0.052507)

@@ -197,6 +197,10 @@ NU = float(os.environ.get("NU", "1.5e-5"))                # m^2/s, air-ish
 # Accuracy-first default: simpleFoam needs enough SIMPLE iterations for pressure/force convergence.
 # Override with CFD_ITERATIONS=1000 etc. for serious runs, or lower it for debugging.
 ITERATIONS = cfg_int("CFD_ITERATIONS", "70")
+CFD_SOLVER_MODE = os.environ.get("CFD_SOLVER_MODE", "steady").strip().lower() or "steady"
+if CFD_SOLVER_MODE not in {"steady", "transient"}:
+    print(f"WARNING: unknown CFD_SOLVER_MODE={CFD_SOLVER_MODE!r}; using steady")
+    CFD_SOLVER_MODE = "steady"
 TURBULENCE_MODEL = os.environ.get("TURBULENCE_MODEL", "kOmegaSST").strip()
 TURBULENCE_INTENSITY = float(os.environ.get("TURBULENCE_INTENSITY", "0.05"))
 TURBULENCE_LENGTH_SCALE = float(os.environ.get("TURBULENCE_LENGTH_SCALE", "0.03"))
@@ -344,6 +348,13 @@ STORE_START_FINAL_GEOMETRY = env_bool("STORE_START_FINAL_GEOMETRY", True)
 START_GEOMETRY_DIR_NAME = os.environ.get("START_GEOMETRY_DIR_NAME", "start_geometry")
 FINAL_MOVED_GEOMETRY_DIR_NAME = os.environ.get("FINAL_MOVED_GEOMETRY_DIR_NAME", "final_moved_geometry")
 GEOMETRY_SNAPSHOT_FILE_NAME = os.environ.get("GEOMETRY_SNAPSHOT_FILE_NAME", "geometry.vtp")
+# Minimal real-volume Stream Tracer export.  This keeps only one lightweight
+# OpenFOAM case with the latest solved mesh and velocity field U.  It is much
+# smaller than ROOT_OPENFOAM_TIMESERIES=1 or RUN_FULL_VTK_EXPORT=1, but still
+# gives ParaView a proper 3D vector field for Stream Tracer.
+PARAVIEW_MINIMAL_STREAM_TRACER_EXPORT = env_bool("PARAVIEW_MINIMAL_STREAM_TRACER_EXPORT", True)
+STREAM_TRACER_CASE_DIR_NAME = os.environ.get("STREAM_TRACER_CASE_DIR_NAME", "stream_tracer_volume_case")
+STREAM_TRACER_FIELD_NAME = os.environ.get("STREAM_TRACER_FIELD_NAME", "U")
 ABORT_IF_CASE_OVER_BUDGET = env_bool("ABORT_IF_CASE_OVER_BUDGET", True)
 
 # v16: make visualization fail-loud and avoid accidentally showing initial/uncomputed fields.
@@ -360,6 +371,17 @@ DEFAULT_PART_MASS_KG = float(os.environ.get("DEFAULT_PART_MASS_KG", "0.05"))
 DEFAULT_PART_INERTIA_KGM2 = float(os.environ.get("DEFAULT_PART_INERTIA_KGM2", "1e-4"))
 MAX_TRANSLATION_PER_STEP = float(os.environ.get("MAX_TRANSLATION_PER_STEP", "0.02"))
 MAX_ROTATION_PER_STEP_RAD = math.radians(float(os.environ.get("MAX_ROTATION_PER_STEP_DEG", "10")))
+AERO_SOLVER_REPORT_NAME = "unsteady_fsi_gap_report.txt"
+AERO_TRANSIENT_END_TIME = float(os.environ.get("AERO_TRANSIENT_END_TIME", "0.05"))
+AERO_TRANSIENT_DELTA_T = float(os.environ.get("AERO_TRANSIENT_DELTA_T", "0.001"))
+AERO_TRANSIENT_WRITE_INTERVAL = float(os.environ.get("AERO_TRANSIENT_WRITE_INTERVAL", "0.01"))
+AERO_TRANSIENT_PURGE_WRITE = max(0, int(os.environ.get("AERO_TRANSIENT_PURGE_WRITE", "3")))
+AERO_TRANSIENT_MAX_CO = float(os.environ.get("AERO_TRANSIENT_MAX_CO", "1.0"))
+AERO_TRANSIENT_MAX_DELTA_T = float(os.environ.get("AERO_TRANSIENT_MAX_DELTA_T", str(AERO_TRANSIENT_DELTA_T)))
+AERO_TRANSIENT_OUTER_CORRECTORS = max(1, int(os.environ.get("AERO_TRANSIENT_OUTER_CORRECTORS", "2")))
+AERO_TRANSIENT_PRESSURE_CORRECTORS = max(1, int(os.environ.get("AERO_TRANSIENT_PRESSURE_CORRECTORS", "2")))
+AERO_TRANSIENT_NON_ORTHOGONAL_CORRECTORS = max(0, int(os.environ.get("AERO_TRANSIENT_NON_ORTHOGONAL_CORRECTORS", "1")))
+AERO_TRANSIENT_MOMENTUM_PREDICTOR = os.environ.get("AERO_TRANSIENT_MOMENTUM_PREDICTOR", "1").strip().lower() not in {"0", "false", "no", "off"}
 AERO_LOAD_RELAXATION = max(0.0, min(1.0, float(os.environ.get("AERO_LOAD_RELAXATION", "0.35"))))
 AERO_USE_LOCAL_POINT_VELOCITY = os.environ.get("AERO_USE_LOCAL_POINT_VELOCITY", "1").strip().lower() not in {"0", "false", "no", "off"}
 # Motion gains are deliberately explicit.  Keep them at 1 for physics-like runs;

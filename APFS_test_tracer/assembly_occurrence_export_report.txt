@@ -1,0 +1,22 @@
+Assembly occurrence export report
+
+raw instances found=6
+raw occurrences found=6
+
+resolved occurrence 0: name='Part 1 <3>', instance='MQdDX5VuZsdhPW0Bp', partId='JHD', did='34b80739d7bf3704beb6bc4b', eid='5be18655354251cc584823fc'
+resolved occurrence 1: name='Part 1 <4>', instance='MbMHipzmgrFF6rxSK', partId='JHD', did='34b80739d7bf3704beb6bc4b', eid='5be18655354251cc584823fc'
+resolved occurrence 2: name='Part 1 <1>', instance='MjrnTbsnyy8eJ9ca2', partId='JHD', did='34b80739d7bf3704beb6bc4b', eid='aafe300d0786f92114e62c83'
+resolved occurrence 3: name='Part 1 <6>', instance='Mlsh0ecWSrPK/Yb5+', partId='JHD', did='34b80739d7bf3704beb6bc4b', eid='5be18655354251cc584823fc'
+resolved occurrence 4: name='Part 1 <5>', instance='MrrHxW09Lrw5c8Bf7', partId='JHD', did='34b80739d7bf3704beb6bc4b', eid='5be18655354251cc584823fc'
+resolved occurrence 5: name='Part 1 <2>', instance='Mss5Y7ClRMpGn+uBp', partId='JHD', did='34b80739d7bf3704beb6bc4b', eid='44669ed0bf03530ad6fab97d'
+
+exportable part jobs=6
+EXPORTED Part_1_3: partId='JHD', source=34b80739d7bf3704beb6bc4b/m/51d674daa0c14ca897718399/e/5be18655354251cc584823fc, configuration=default, triangles=12
+EXPORTED Part_1_4: partId='JHD', source=34b80739d7bf3704beb6bc4b/m/51d674daa0c14ca897718399/e/5be18655354251cc584823fc, configuration=default, triangles=12
+EXPORTED Part_1_1: partId='JHD', source=34b80739d7bf3704beb6bc4b/m/51d674daa0c14ca897718399/e/aafe300d0786f92114e62c83, configuration=default, triangles=3744
+EXPORTED Part_1_6: partId='JHD', source=34b80739d7bf3704beb6bc4b/m/51d674daa0c14ca897718399/e/5be18655354251cc584823fc, configuration=default, triangles=12
+EXPORTED Part_1_5: partId='JHD', source=34b80739d7bf3704beb6bc4b/m/51d674daa0c14ca897718399/e/5be18655354251cc584823fc, configuration=default, triangles=12
+EXPORTED Part_1_2: partId='JHD', source=34b80739d7bf3704beb6bc4b/m/51d674daa0c14ca897718399/e/44669ed0bf03530ad6fab97d, configuration=default, triangles=590
+
+successful component exports=6
+failed component exports=0
