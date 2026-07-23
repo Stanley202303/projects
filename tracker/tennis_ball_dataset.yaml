@@ -1,5 +1,5 @@
 # Edit this path to the dataset root.
-path: ./dataset
+path: /Users/Stanley/projects/tracker/
 train: images/train
 val: images/val
 test: images/test

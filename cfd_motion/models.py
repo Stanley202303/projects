@@ -67,6 +67,10 @@ class MaterialProperties:
     source: str = "default"
     linear_damping_per_kg: float = DEFAULT_LINEAR_DAMPING_PER_KG
     angular_damping_per_kg: float = DEFAULT_ANGULAR_DAMPING_PER_KG
+    young_modulus_pa: Optional[float] = None
+    poisson_ratio: Optional[float] = None
+    thickness_m: Optional[float] = None
+    structural_source: str = "default"
 
 
 @dataclass
@@ -100,6 +104,9 @@ class AeroComponent:
     mate_reference_y_axis: Optional[Vec3] = None
     mate_reference_z_axis: Optional[Vec3] = None
     is_assembly_anchor: bool = False
+    deformation_reference_triangles: Optional[List[Triangle]] = None
+    deformation_max_m: float = 0.0
+    deformation_mean_m: float = 0.0
 
 
 # ------------------------- small math helpers -------------------------

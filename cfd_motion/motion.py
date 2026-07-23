@@ -296,6 +296,14 @@ def move_component_rigidly(
     origin: Vec3,
 ) -> None:
     component.triangles = move_triangles(component.triangles, translation, rotation_axis, rotation_angle, origin)
+    if component.deformation_reference_triangles is not None:
+        component.deformation_reference_triangles = move_triangles(
+            component.deformation_reference_triangles,
+            translation,
+            rotation_axis,
+            rotation_angle,
+            origin,
+        )
     component.cofr = v_add(component.cofr, translation)
     if rotation_axis is not None:
         component.cofr = rotate_point_around_axis(component.cofr, origin, rotation_axis, rotation_angle)
@@ -952,12 +960,272 @@ def apply_relative_motion_policy(components: List[AeroComponent], root_case: Pat
     return lines
 
 
+DEFORMATION_YOUNG_MODULUS_BY_MATERIAL_PA: Dict[str, float] = {
+    "eps": 1.0e7,
+    "xps": 2.5e7,
+    "epp": 2.0e7,
+    "depron": 2.5e7,
+    "foamboard": 8.0e7,
+    "foam board": 8.0e7,
+    "foam": 3.0e7,
+    "balsa": 3.0e9,
+    "plywood": 8.0e9,
+    "basswood": 8.0e9,
+    "pla": 3.5e9,
+    "petg": 2.1e9,
+    "abs": 2.0e9,
+    "asa": 2.0e9,
+    "nylon": 1.5e9,
+    "carbon": 7.0e10,
+    "fiberglass": 2.0e10,
+    "glass fiber": 2.0e10,
+    "glass fibre": 2.0e10,
+    "aluminum": 6.9e10,
+    "aluminium": 6.9e10,
+    "steel": 2.0e11,
+}
+
+
+def component_deformation_enabled(component: AeroComponent) -> bool:
+    if not ENABLE_NONRIGID_DEFORMATION or not component.triangles:
+        return False
+    if component.is_assembly_anchor and not DEFORM_ANCHORED_COMPONENTS:
+        return False
+    component_text = f"{component.name} {component.patch}".lower()
+    material_text = component.material.material_name.lower()
+    if DEFORMATION_EXCLUDE_COMPONENT_NAME_CONTAINS and DEFORMATION_EXCLUDE_COMPONENT_NAME_CONTAINS in component_text:
+        return False
+    if DEFORMATION_EXCLUDE_MATERIAL_NAME_CONTAINS and DEFORMATION_EXCLUDE_MATERIAL_NAME_CONTAINS in material_text:
+        return False
+    if DEFORMATION_COMPONENT_NAME_CONTAINS:
+        if DEFORMATION_COMPONENT_NAME_CONTAINS not in component_text:
+            return False
+    if DEFORMATION_MATERIAL_NAME_CONTAINS:
+        if DEFORMATION_MATERIAL_NAME_CONTAINS not in material_text:
+            return False
+    return True
+
+
+def inferred_deformation_young_modulus(component: AeroComponent) -> float:
+    if DEFORMATION_YOUNG_MODULUS_PA > 0.0:
+        return DEFORMATION_YOUNG_MODULUS_PA
+    if component.material.young_modulus_pa is not None and component.material.young_modulus_pa > 0.0:
+        return component.material.young_modulus_pa
+    name = component.material.material_name.lower()
+    for key, value in DEFORMATION_YOUNG_MODULUS_BY_MATERIAL_PA.items():
+        if key in name:
+            return value
+    return 5.0e7
+
+
+def inferred_deformation_poisson_ratio(component: AeroComponent) -> float:
+    if component.material.poisson_ratio is not None:
+        return max(0.0, min(0.49, component.material.poisson_ratio))
+    return DEFORMATION_POISSON_RATIO
+
+
+def inferred_deformation_thickness(component: AeroComponent) -> float:
+    if DEFORMATION_THICKNESS_M > 0.0:
+        return DEFORMATION_THICKNESS_M
+    if component.material.thickness_m is not None and component.material.thickness_m > 0.0:
+        return component.material.thickness_m
+    return max(0.001, min(0.05, 0.04 * max(component.lref, 1e-6)))
+
+
+def deformation_vertex_key(point: Vec3) -> Tuple[int, int, int]:
+    tol = max(DEFORMATION_VERTEX_TOLERANCE_M, 1e-12)
+    return (
+        int(round(point[0] / tol)),
+        int(round(point[1] / tol)),
+        int(round(point[2] / tol)),
+    )
+
+
+def deformation_support_origin(component: AeroComponent) -> Vec3:
+    if component.mate_origin is not None:
+        return component.mate_origin
+    if component.motion_origin is not None:
+        return component.motion_origin
+    xmin, xmax, ymin, ymax, zmin, zmax = component_bounds(component.triangles)
+    support_x = xmin if flow_is_positive_x() else xmax
+    return (support_x, 0.5 * (ymin + ymax), 0.5 * (zmin + zmax))
+
+
+def deformation_span_axis(component: AeroComponent, origin: Vec3) -> Vec3:
+    from_origin = v_sub(component.cofr, origin)
+    if v_norm(from_origin) > 1e-9:
+        return v_unit(from_origin)
+
+    xmin, xmax, ymin, ymax, zmin, zmax = component_bounds(component.triangles)
+    extents = [
+        (xmax - xmin, (1.0, 0.0, 0.0)),
+        (ymax - ymin, (0.0, 1.0, 0.0)),
+        (zmax - zmin, (0.0, 0.0, 1.0)),
+    ]
+    _length, axis = max(extents, key=lambda item: item[0])
+    return axis
+
+
+def triangle_pressure_force_for_deformation(component: AeroComponent, triangle: Triangle) -> Vec3:
+    area, centroid, normal = triangle_area_centroid_normal(triangle)
+    if area <= 1e-18:
+        return (0.0, 0.0, 0.0)
+    rel_speed, flow_unit = local_air_speed_and_unit(component, centroid)
+    if rel_speed <= 1e-9:
+        return (0.0, 0.0, 0.0)
+    q = 0.5 * RHO * rel_speed ** 2
+    incoming_dir = v_mul(flow_unit, -1.0)
+    projection = v_dot(normal, incoming_dir)
+    if SURFACE_LOAD_DOUBLE_SIDED:
+        if projection >= 0.0:
+            force_dir = v_mul(normal, -1.0)
+            exposure = projection
+        else:
+            force_dir = normal
+            exposure = -projection
+    else:
+        if projection <= 0.0:
+            return (0.0, 0.0, 0.0)
+        force_dir = v_mul(normal, -1.0)
+        exposure = projection
+    pressure = q * (exposure ** 2) * SURFACE_LOAD_COEFF * SURFACE_LOAD_GAIN
+    return v_mul(force_dir, pressure * area)
+
+
+def ensure_deformation_reference(component: AeroComponent) -> None:
+    if component.deformation_reference_triangles is None:
+        component.deformation_reference_triangles = list(component.triangles)
+
+
+def update_component_deformation(component: AeroComponent, dt: float) -> Tuple[float, float, float, float, int]:
+    if not component_deformation_enabled(component):
+        component.deformation_max_m = 0.0
+        component.deformation_mean_m = 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0
+
+    ensure_deformation_reference(component)
+    reference = component.deformation_reference_triangles or component.triangles
+    young = max(inferred_deformation_young_modulus(component), 1.0)
+    poisson = inferred_deformation_poisson_ratio(component)
+    thickness = max(inferred_deformation_thickness(component), 1e-5)
+    origin = deformation_support_origin(component)
+    axis = deformation_span_axis(component, origin)
+
+    vertex_points: Dict[Tuple[int, int, int], Vec3] = {}
+    current_sums: Dict[Tuple[int, int, int], Vec3] = {}
+    current_counts: Dict[Tuple[int, int, int], int] = {}
+    force_sums: Dict[Tuple[int, int, int], Vec3] = {}
+    area_sums: Dict[Tuple[int, int, int], float] = {}
+
+    for ref_tri, cur_tri in zip(reference, component.triangles):
+        area, _centroid, _normal = triangle_area_centroid_normal(ref_tri)
+        tri_force = triangle_pressure_force_for_deformation(component, ref_tri)
+        for ref_point, current_point in zip(ref_tri[1:], cur_tri[1:]):
+            key = deformation_vertex_key(ref_point)
+            vertex_points.setdefault(key, ref_point)
+            current_sums[key] = v_add(current_sums.get(key, (0.0, 0.0, 0.0)), current_point)
+            current_counts[key] = current_counts.get(key, 0) + 1
+            force_sums[key] = v_add(force_sums.get(key, (0.0, 0.0, 0.0)), v_mul(tri_force, 1.0 / 3.0))
+            area_sums[key] = area_sums.get(key, 0.0) + area / 3.0
+
+    if not vertex_points:
+        return 0.0, 0.0, young, thickness, 0
+
+    levers = [abs(v_dot(v_sub(point, origin), axis)) for point in vertex_points.values()]
+    span = max(max(levers), 1e-6)
+    plate_factor = 12.0 * (1.0 - poisson ** 2) / 64.0
+    stiffness_scale = plate_factor * (span ** 4) / (young * (thickness ** 3))
+    max_total = min(MAX_TOTAL_DEFORMATION, 0.25 * max(component.lref, 1e-6))
+    max_delta = max(MAX_DEFORMATION_PER_STEP, 0.0)
+    relaxation = DEFORMATION_RELAXATION if dt > 0.0 else 1.0
+    displacement_by_key: Dict[Tuple[int, int, int], Vec3] = {}
+
+    for key, ref_point in vertex_points.items():
+        count = max(current_counts.get(key, 1), 1)
+        current_point = v_mul(current_sums.get(key, ref_point), 1.0 / count)
+        current_disp = v_sub(current_point, ref_point)
+        area = max(area_sums.get(key, 0.0), 1e-18)
+        pressure_vector = v_mul(force_sums.get(key, (0.0, 0.0, 0.0)), 1.0 / area)
+        pressure_mag = v_norm(pressure_vector)
+        if pressure_mag <= 1e-12:
+            target_disp = (0.0, 0.0, 0.0)
+        else:
+            lever = abs(v_dot(v_sub(ref_point, origin), axis))
+            s = max(0.0, min(1.0, lever / span))
+            shape = s * s * (3.0 - 2.0 * s)
+            target_mag = pressure_mag * stiffness_scale * shape * DEFORMATION_GAIN
+            target_disp = v_mul(v_unit(pressure_vector), target_mag)
+            target_disp = clamp_vector_magnitude(target_disp, max_total)
+
+        step_delta = v_mul(v_sub(target_disp, current_disp), relaxation)
+        if max_delta > 0.0:
+            step_delta = clamp_vector_magnitude(step_delta, max_delta)
+        displacement_by_key[key] = clamp_vector_magnitude(v_add(current_disp, step_delta), max_total)
+
+    deformed: List[Triangle] = []
+    magnitudes: List[float] = []
+    for _normal, v1, v2, v3 in reference:
+        pts = []
+        for point in (v1, v2, v3):
+            disp = displacement_by_key.get(deformation_vertex_key(point), (0.0, 0.0, 0.0))
+            magnitudes.append(v_norm(disp))
+            pts.append(v_add(point, disp))
+        normal = v_unit(v_cross(v_sub(pts[1], pts[0]), v_sub(pts[2], pts[0])), _normal)
+        deformed.append((normal, pts[0], pts[1], pts[2]))
+
+    component.triangles = deformed
+    component.aref, component.lref, component.cofr = component_references(component.triangles)
+    component.deformation_max_m = max(magnitudes) if magnitudes else 0.0
+    component.deformation_mean_m = sum(magnitudes) / max(len(magnitudes), 1)
+    return component.deformation_max_m, component.deformation_mean_m, young, thickness, len(vertex_points)
+
+
+def write_deformation_log_header(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "# Quasi-static non-rigid surface deformation log\n"
+        "# Deformation is a bounded panel-pressure plate/cantilever approximation, not a structural finite-element solve.\n"
+        "step\tpatch\tmaterial\tstructural_source\tenabled\tyoung_modulus_pa\tpoisson_ratio\tthickness_m\tnode_count\tmax_deformation_m\tmean_deformation_m\n"
+    )
+
+
+def append_deformation_log(
+    path: Path,
+    step: int,
+    component: AeroComponent,
+    enabled: bool,
+    young: float,
+    thickness: float,
+    node_count: int,
+) -> None:
+    with path.open("a") as f:
+        f.write(
+            f"{step}\t{component.patch}\t{component.material.material_name}\t{component.material.structural_source}\t{int(enabled)}\t"
+            f"{young:.8g}\t{inferred_deformation_poisson_ratio(component):.8g}\t{thickness:.8g}\t{node_count}\t"
+            f"{component.deformation_max_m:.8g}\t{component.deformation_mean_m:.8g}\n"
+        )
+
+
+def apply_nonrigid_deformations(components: Sequence[AeroComponent], step: int, log_path: Path) -> List[AeroComponent]:
+    changed: List[AeroComponent] = []
+    if not ENABLE_NONRIGID_DEFORMATION:
+        return changed
+    for component in components:
+        enabled = component_deformation_enabled(component)
+        max_def, _mean_def, young, thickness, node_count = update_component_deformation(component, MOTION_DT)
+        append_deformation_log(log_path, step, component, enabled, young, thickness, node_count)
+        if enabled and max_def > 1e-12:
+            changed.append(component)
+    return changed
+
+
 def write_motion_log_header(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "# Quasi-dynamic assembly motion log\n"
         f"# dt={MOTION_DT:g} s, default_mass={DEFAULT_PART_MASS_KG:g} kg, default_inertia={DEFAULT_PART_INERTIA_KGM2:g} kg m^2\n"
-        "# This is a rigid-body approximation driven by OpenFOAM forces.dat/log loads, with panel fallback only if OpenFOAM loads are unavailable.\n"
+        "# Rigid-body motion is driven by OpenFOAM forces.dat/log loads, with panel fallback only if OpenFOAM loads are unavailable.\n"
+        "# Optional non-rigid deformation is logged separately in assembly_deformation_log.txt.\n"
         "step\tpatch\tmaterial\tmaterial_source\tmass_kg\tdensity_kg_m3\tmate_type\tfreedom_source\tCd\tCs\tCl\tCmRoll\tCmPitch\tCmYaw\tFx_N\tFy_N\tFz_N\tMx_Nm\tMy_Nm\tMz_Nm\tdx_m\tdy_m\tdz_m\tdroll_rad\tdpitch_rad\tdyaw_rad\ttotal_x_m\ttotal_y_m\ttotal_z_m\n"
     )
 

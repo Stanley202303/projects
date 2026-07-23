@@ -423,6 +423,58 @@ def parse_density_kg_m3(value: Any) -> Optional[float]:
     return number
 
 
+def parse_pressure_pa(value: Any) -> Optional[float]:
+    number = parse_numeric_value(value)
+    if number is None:
+        return None
+    text = str(value or "").lower().replace(" ", "")
+    if "gpa" in text:
+        return number * 1.0e9
+    if "mpa" in text:
+        return number * 1.0e6
+    if "kpa" in text:
+        return number * 1.0e3
+    if "ksi" in text:
+        return number * 6_894_757.293
+    if "psi" in text:
+        return number * 6_894.757293
+    if "pa" in text or "n/m" in text:
+        return number
+
+    # Most material table Young's modulus values are written in GPa when the
+    # unit label is lost by BOM export. Keep plain large values as Pa.
+    if 1.0 <= abs(number) <= 1000.0:
+        return number * 1.0e9
+    return number
+
+
+def parse_length_m(value: Any) -> Optional[float]:
+    number = parse_numeric_value(value)
+    if number is None:
+        return None
+    text = str(value or "").lower().replace(" ", "")
+    if "mm" in text:
+        return number / 1000.0
+    if "cm" in text:
+        return number / 100.0
+    if "in" in text or '"' in text:
+        return number * 0.0254
+    if "ft" in text:
+        return number * 0.3048
+    if "um" in text or "micron" in text:
+        return number * 1.0e-6
+    return number
+
+
+def parse_poisson_ratio(value: Any) -> Optional[float]:
+    number = parse_numeric_value(value)
+    if number is None:
+        return None
+    if 0.0 <= number < 0.5:
+        return number
+    return None
+
+
 def text_from_any(value: Any) -> str:
     if value is None:
         return ""
@@ -446,7 +498,7 @@ def flatten_candidate_bom_rows(payload: Any) -> List[Dict[str, Any]]:
             keys = {str(k).lower() for k in obj.keys()}
             rowish = bool(keys & {"item", "itemnumber", "name", "partnumber", "partidentity", "material", "quantity", "columns", "properties"})
             text = json.dumps(obj, default=str).lower()[:3000]
-            if rowish and any(term in text for term in ("material", "mass", "density", "part", "item")):
+            if rowish and any(term in text for term in ("material", "mass", "density", "young", "modulus", "poisson", "thickness", "part", "item")):
                 rows.append(obj)
             for val in obj.values():
                 visit(val)
@@ -498,14 +550,36 @@ def bom_records_from_payload(payload: Optional[Dict[str, Any]]) -> List[Dict[str
         material = ""
         mass = None
         density = None
+        young_modulus = None
+        poisson_ratio = None
+        thickness = None
         for label, value in vals.items():
             label_norm = label.lower()
+            compact_label = re.sub(r"[^a-z0-9]+", "", label_norm)
             if not material and "material" in label_norm:
                 material = text_from_any(value).strip()
             if mass is None and "mass" in label_norm and "center" not in label_norm and "centre" not in label_norm:
                 mass = parse_mass_kg(value)
             if density is None and ("density" in label_norm or "rho" == label_norm):
                 density = parse_density_kg_m3(value)
+            if young_modulus is None and (
+                "young" in label_norm
+                or "elastic modulus" in label_norm
+                or "modulus of elasticity" in label_norm
+                or compact_label in {"e", "emodulus", "youngsmodulus", "youngmodulus", "elasticmodulus"}
+            ):
+                young_modulus = parse_pressure_pa(value)
+            if poisson_ratio is None and (
+                "poisson" in label_norm
+                or compact_label in {"nu", "poissonsratio", "poissonratio"}
+            ):
+                poisson_ratio = parse_poisson_ratio(value)
+            if thickness is None and (
+                "thickness" in label_norm
+                or "wall thickness" in label_norm
+                or compact_label in {"t", "gage", "gauge", "sheetthickness", "wallthickness"}
+            ):
+                thickness = parse_length_m(value)
         identity_text = text_from_any(get_case_insensitive(row, ["partIdentity", "part identity", "identity"]))
         names = [
             text_from_any(get_case_insensitive(row, ["name", "partName", "part name", "description"])),
@@ -518,6 +592,9 @@ def bom_records_from_payload(payload: Optional[Dict[str, Any]]) -> List[Dict[str
             "material": material,
             "mass_kg": mass,
             "density_kg_m3": density,
+            "young_modulus_pa": young_modulus,
+            "poisson_ratio": poisson_ratio,
+            "thickness_m": thickness,
             "names": [n for n in names if n],
             "raw": row,
         })
@@ -562,7 +639,16 @@ def infer_material_from_name(name: str) -> str:
     return DEFAULT_MATERIAL_NAME
 
 
-def apply_material_model(component: AeroComponent, material_name: str, mass_kg: Optional[float], density_kg_m3: Optional[float], source: str) -> None:
+def apply_material_model(
+    component: AeroComponent,
+    material_name: str,
+    mass_kg: Optional[float],
+    density_kg_m3: Optional[float],
+    source: str,
+    young_modulus_pa: Optional[float] = None,
+    poisson_ratio: Optional[float] = None,
+    thickness_m: Optional[float] = None,
+) -> None:
     volume = estimate_closed_mesh_volume(component.triangles)
     density = density_kg_m3 if density_kg_m3 and density_kg_m3 > 0 else material_density_kg_m3(material_name)
     mass = mass_kg if mass_kg and mass_kg > 0 else (volume * density if volume > 0 else DEFAULT_PART_MASS_KG)
@@ -577,6 +663,10 @@ def apply_material_model(component: AeroComponent, material_name: str, mass_kg: 
         source=source,
         linear_damping_per_kg=linear_damping,
         angular_damping_per_kg=angular_damping,
+        young_modulus_pa=young_modulus_pa if young_modulus_pa and young_modulus_pa > 0.0 else None,
+        poisson_ratio=poisson_ratio if poisson_ratio is not None else None,
+        thickness_m=thickness_m if thickness_m and thickness_m > 0.0 else None,
+        structural_source=source if any(v is not None for v in (young_modulus_pa, poisson_ratio, thickness_m)) else "material/default",
     )
     component.mass = mass
     component.inertia = estimate_scalar_inertia(mass, component.triangles)
@@ -605,18 +695,27 @@ def assign_materials_from_bom(components: Sequence[AeroComponent], occurrences: 
             material = record.get("material") or DEFAULT_MATERIAL_NAME
             mass = record.get("mass_kg")
             density = record.get("density_kg_m3")
+            young_modulus = record.get("young_modulus_pa")
+            poisson_ratio = record.get("poisson_ratio")
+            thickness = record.get("thickness_m")
             source = "bom"
         else:
             material = infer_material_from_name(c.name)
             mass = None
             density = None
+            young_modulus = None
+            poisson_ratio = None
+            thickness = None
             source = "name/default"
-        apply_material_model(c, material, mass, density, source)
+        apply_material_model(c, material, mass, density, source, young_modulus, poisson_ratio, thickness)
         report.append(
             f"- {c.patch}: name={c.name!r}, material={c.material.material_name!r}, "
             f"source={c.material.source}, density={c.material.density_kg_m3:.6g} kg/m^3, "
             f"volume={c.material.volume_m3:.6g} m^3, mass={c.mass:.6g} kg, "
             f"inertia={c.inertia:.6g} kg m^2, "
+            f"young_modulus={c.material.young_modulus_pa if c.material.young_modulus_pa is not None else 'default'} Pa, "
+            f"poisson_ratio={c.material.poisson_ratio if c.material.poisson_ratio is not None else 'default'}, "
+            f"thickness={c.material.thickness_m if c.material.thickness_m is not None else 'geometry/default'} m, "
             f"linear_damping_per_kg={c.material.linear_damping_per_kg:.6g}, "
             f"angular_damping_per_kg={c.material.angular_damping_per_kg:.6g}"
         )

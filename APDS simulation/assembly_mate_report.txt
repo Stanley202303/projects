@@ -1,9 +1,0 @@
-Assembly mate/freedom report
-
-Decoded mates/freedoms:
-MNPXu9AOE53Zd5v7R: no decoded mate -> treated as separate free body
-MVSPMtO10WTayZ7rI: no decoded mate -> treated as separate free body
-Ma3g3Luzzb7VcU7qf: no decoded mate -> treated as separate free body
-MmYW4Kdpcr7RGfnUi: no decoded mate -> treated as separate free body
-MuTq6Lsb0QGlnsO9n: no decoded mate -> treated as separate free body
-MzQIAYzrPFqZR8BvJ: no decoded mate -> treated as separate free body

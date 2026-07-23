@@ -1232,7 +1232,16 @@ def components_from_assembly_translation(ref: OnshapeRef, client: OnshapeClient,
                 best_score = score
                 record = r
         if record and best_score >= 10:
-            apply_material_model(c, record.get("material") or DEFAULT_MATERIAL_NAME, record.get("mass_kg"), record.get("density_kg_m3"), "bom/fuzzy")
+            apply_material_model(
+                c,
+                record.get("material") or DEFAULT_MATERIAL_NAME,
+                record.get("mass_kg"),
+                record.get("density_kg_m3"),
+                "bom/fuzzy",
+                record.get("young_modulus_pa"),
+                record.get("poisson_ratio"),
+                record.get("thickness_m"),
+            )
         else:
             material = infer_material_from_name(c.name)
             apply_material_model(c, material, None, None, "name/default")
@@ -1240,7 +1249,10 @@ def components_from_assembly_translation(ref: OnshapeRef, client: OnshapeClient,
             f"- {c.patch}: name={c.name!r}, material={c.material.material_name!r}, "
             f"source={c.material.source}, density={c.material.density_kg_m3:.6g} kg/m^3, "
             f"volume={c.material.volume_m3:.6g} m^3, mass={c.mass:.6g} kg, "
-            f"inertia={c.inertia:.6g} kg m^2"
+            f"inertia={c.inertia:.6g} kg m^2, "
+            f"young_modulus={c.material.young_modulus_pa if c.material.young_modulus_pa is not None else 'default'} Pa, "
+            f"poisson_ratio={c.material.poisson_ratio if c.material.poisson_ratio is not None else 'default'}, "
+            f"thickness={c.material.thickness_m if c.material.thickness_m is not None else 'geometry/default'} m"
         )
     (workdir / MATERIAL_REPORT_NAME).write_text("\n".join(report) + "\n")
     return components

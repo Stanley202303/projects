@@ -1,8 +1,0 @@
-Assembly mate/freedom report
-
-Decoded mates/freedoms:
-Mate M5LS52UHhEoPgptzG: type=FASTENED, axis=(-1,0,0), paths=['Mss5Y7ClRMpGn+uBp', 'MjrnTbsnyy8eJ9ca2']
-Mate MQ8OyZzY9UZBdDyrI: type=FASTENED, axis=(0,0,1), paths=['MQdDX5VuZsdhPW0Bp', 'Mss5Y7ClRMpGn+uBp']
-Mate M2PbW6JQ9G1NPixtF: type=FASTENED, axis=(0,0,1), paths=['MrrHxW09Lrw5c8Bf7', 'Mss5Y7ClRMpGn+uBp']
-Mate M6vHs+aXHzRwi4NFo: type=FASTENED, axis=(0,1.156e-16,1), paths=['Mss5Y7ClRMpGn+uBp', 'MbMHipzmgrFF6rxSK']
-Mate M2iRE4lSKGpWK4C9m: type=FASTENED, axis=(0,0,-1), paths=['Mlsh0ecWSrPK/Yb5+', 'Mss5Y7ClRMpGn+uBp']

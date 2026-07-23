@@ -1,7 +1,0 @@
-# Part collision log. Collision method is conservative AABB broad-phase/narrow-phase.
-# AABB collisions prevent obvious interpenetration and add contact impulses/torques, but are not exact triangle-triangle contact mechanics.
-step	pass	patch_a	patch_b	depth_m	nx	ny	nz	cx	cy	cz	impulse_Ns	move_a_m	move_b_m
-0	0	Part_1_5	Part_1_1	0.0078667278	0	1	0	-0.030746713	0.027089393	0.0082808068	0	0.0078667278	0
-0	0	Part_1_4	Part_1_1	0.0078829776	0	0	1	-0.030761432	0.026039334	0.037372135	0	0.0078829776	0
-0	0	Part_1_1	Part_1_3	0.0078861013	0	1	0	-0.03075764	-0.0030341924	0.036360271	0	0	0.0078861013
-0	0	Part_1_1	Part_1_6	0.007875657	0	0	1	-0.030752177	-0.0019944297	0.0072514521	0	0	0.007875657

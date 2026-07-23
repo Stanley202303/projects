@@ -64,6 +64,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         steps_dir = root_case / "motion_steps"  # logical only; not created
 
     motion_log = root_case / MOTION_LOG_NAME
+    deformation_log = root_case / DEFORMATION_LOG_NAME
     geometry_report = root_case / MOTION_GEOMETRY_REPORT_NAME
     collision_log = root_case / COLLISION_LOG_NAME
     write_unsteady_fsi_gap_report(root_case, components)
@@ -71,6 +72,8 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
     rigid_body_root = assembly_rigid_body_root(components)
     rigid_body_state = build_rigid_body_state(components, rigid_body_root) if rigid_body_root is not None else None
     write_motion_log_header(motion_log)
+    if ENABLE_NONRIGID_DEFORMATION:
+        write_deformation_log_header(deformation_log)
     collision_log.write_text(
         "# Part collision log. Collision method is conservative AABB broad-phase/narrow-phase.\n"
         "# AABB collisions prevent obvious interpenetration and add contact impulses/torques, but are not exact triangle-triangle contact mechanics.\n"
@@ -89,6 +92,18 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         f"solver_application={solver_application()}",
         f"dynamic_steps={ASSEMBLY_DYNAMIC_STEPS}",
         f"motion_dt={MOTION_DT}",
+        f"enable_nonrigid_deformation={ENABLE_NONRIGID_DEFORMATION}",
+        f"deform_anchored_components={DEFORM_ANCHORED_COMPONENTS}",
+        f"deformation_component_name_contains={DEFORMATION_COMPONENT_NAME_CONTAINS or '<all>'}",
+        f"deformation_material_name_contains={DEFORMATION_MATERIAL_NAME_CONTAINS or '<all>'}",
+        f"deformation_exclude_component_name_contains={DEFORMATION_EXCLUDE_COMPONENT_NAME_CONTAINS or '<none>'}",
+        f"deformation_exclude_material_name_contains={DEFORMATION_EXCLUDE_MATERIAL_NAME_CONTAINS or '<none>'}",
+        f"deformation_young_modulus_pa={DEFORMATION_YOUNG_MODULUS_PA or '<bom/material-inferred>'}",
+        f"deformation_thickness_m={DEFORMATION_THICKNESS_M or '<bom/geometry-inferred>'}",
+        f"deformation_gain={DEFORMATION_GAIN}",
+        f"deformation_relaxation={DEFORMATION_RELAXATION}",
+        f"max_deformation_per_step={MAX_DEFORMATION_PER_STEP}",
+        f"max_total_deformation={MAX_TOTAL_DEFORMATION}",
         f"save_motion_steps={SAVE_MOTION_STEPS}",
         f"root_panel_preview_dir={ROOT_PANEL_PREVIEW_DIR_NAME}",
         f"keep_step_debug_reports={KEEP_STEP_DEBUG_REPORTS}",
@@ -274,8 +289,16 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                             f"{component.cofr[0]:.8g}\t{component.cofr[1]:.8g}\t{component.cofr[2]:.8g}\t"
                             f"{xmin:.8g}\t{xmax:.8g}\t{ymin:.8g}\t{ymax:.8g}\t{zmin:.8g}\t{zmax:.8g}\n"
                         )
+                deformed_components = apply_nonrigid_deformations(components, step, deformation_log)
+                if deformed_components:
+                    max_def = max(c.deformation_max_m for c in deformed_components)
+                    print(f"Non-rigid deformation: {len(deformed_components)} component(s), max {max_def:.6g} m.")
             else:
                 enforce_attachment_constraints(components)
+                deformed_components = apply_nonrigid_deformations(components, step, deformation_log)
+                if deformed_components:
+                    max_def = max(c.deformation_max_m for c in deformed_components)
+                    print(f"Non-rigid deformation: {len(deformed_components)} component(s), max {max_def:.6g} m.")
                 collision_lines = resolve_part_collisions(components, step, collision_log)
                 if collision_lines:
                     print(f"Collision resolution: {len(collision_lines)} contact event(s) handled at step {step}.")
@@ -344,6 +367,8 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
             temp_context.cleanup()
 
     print(f"Motion log: {motion_log}")
+    if ENABLE_NONRIGID_DEFORMATION:
+        print(f"Deformation log: {deformation_log}")
     print(f"Case storage used: {human_bytes(directory_size_bytes(root_case))} / {human_bytes(CASE_STORAGE_LIMIT_BYTES)}")
     if not SAVE_MOTION_STEPS:
         print("Full motion_steps folder not retained. Set SAVE_MOTION_STEPS=1 to keep it.")
