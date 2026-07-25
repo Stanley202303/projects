@@ -1241,6 +1241,8 @@ def components_from_assembly_translation(ref: OnshapeRef, client: OnshapeClient,
                 record.get("young_modulus_pa"),
                 record.get("poisson_ratio"),
                 record.get("thickness_m"),
+                record.get("yield_strength_pa"),
+                record.get("failure_strain"),
             )
         else:
             material = infer_material_from_name(c.name)
@@ -1253,12 +1255,15 @@ def components_from_assembly_translation(ref: OnshapeRef, client: OnshapeClient,
             f"young_modulus={c.material.young_modulus_pa if c.material.young_modulus_pa is not None else 'default'} Pa, "
             f"poisson_ratio={c.material.poisson_ratio if c.material.poisson_ratio is not None else 'default'}, "
             f"thickness={c.material.thickness_m if c.material.thickness_m is not None else 'geometry/default'} m"
+            f", yield_strength={c.material.yield_strength_pa if c.material.yield_strength_pa is not None else 'material/default'} Pa"
+            f", failure_strain={c.material.failure_strain if c.material.failure_strain is not None else 'material/default'}"
         )
     (workdir / MATERIAL_REPORT_NAME).write_text("\n".join(report) + "\n")
     return components
 
 
 def build_assembly_components(ref: OnshapeRef, client: OnshapeClient, workdir: Path) -> Tuple[List[AeroComponent], Dict[str, Any]]:
+    workdir.mkdir(parents=True, exist_ok=True)
     assembly_def = get_assembly_definition(ref, client)
     bom_payload = get_assembly_bom(ref, client)
     if bom_payload is not None:

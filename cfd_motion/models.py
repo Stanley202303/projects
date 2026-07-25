@@ -70,6 +70,8 @@ class MaterialProperties:
     young_modulus_pa: Optional[float] = None
     poisson_ratio: Optional[float] = None
     thickness_m: Optional[float] = None
+    yield_strength_pa: Optional[float] = None
+    failure_strain: Optional[float] = None
     structural_source: str = "default"
 
 

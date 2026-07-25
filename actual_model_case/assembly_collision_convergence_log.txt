@@ -1,0 +1,5 @@
+# Prescribed impact convergence log
+# speed is impactor speed; the stationary target is not translated by the driver.
+# pair=object_1,object_2
+# moving=object_1, stationary=object_2
+step	active	moving_patch	stationary_patch	impactor_speed_mps	axis_x	axis_y	axis_z	gap_before_m	gap_after_m	requested_m	dmoving_m	dstationary_m	sweep_clamped

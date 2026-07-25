@@ -67,17 +67,34 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
     deformation_log = root_case / DEFORMATION_LOG_NAME
     geometry_report = root_case / MOTION_GEOMETRY_REPORT_NAME
     collision_log = root_case / COLLISION_LOG_NAME
+    collision_convergence_log = root_case / COLLISION_CONVERGENCE_LOG_NAME
     write_unsteady_fsi_gap_report(root_case, components)
     apply_relative_motion_policy(components, root_case)
-    rigid_body_root = assembly_rigid_body_root(components)
+    collision_convergence_pair = configure_collision_convergence_components(components)
+    collision_convergence_active = collision_convergence_pair is not None
+    collision_convergence_axis = (
+        collision_convergence_approach_axis(collision_convergence_pair)
+        if collision_convergence_pair is not None
+        else None
+    )
+    if collision_convergence_pair is not None:
+        write_collision_convergence_log_header(collision_convergence_log, collision_convergence_pair)
+        moving, stationary = collision_convergence_moving_and_stationary(collision_convergence_pair)
+        print(
+            "Collision convergence mode: "
+            f"{moving.patch} impacts stationary {stationary.patch}, "
+            f"speed {COLLISION_CONVERGENCE_SPEED_MPS:g} m/s."
+        )
+    rigid_body_root = None if collision_convergence_pair is not None else assembly_rigid_body_root(components)
     rigid_body_state = build_rigid_body_state(components, rigid_body_root) if rigid_body_root is not None else None
     write_motion_log_header(motion_log)
     if ENABLE_NONRIGID_DEFORMATION:
         write_deformation_log_header(deformation_log)
     collision_log.write_text(
-        "# Part collision log. Collision method is conservative AABB broad-phase/narrow-phase.\n"
-        "# AABB collisions prevent obvious interpenetration and add contact impulses/torques, but are not exact triangle-triangle contact mechanics.\n"
-        "step\tpass\tpatch_a\tpatch_b\tdepth_m\tnx\tny\tnz\tcx\tcy\tcz\timpulse_Ns\tmove_a_m\tmove_b_m\n"
+        "# Part collision log. Prescribed two-object impacts use swept mesh-surface contact; other assembly pairs use conservative AABB contact.\n"
+        "# Swept impacts preserve prescribed speed until real triangle surfaces meet.\n"
+        "# Solid contact uses Hertz elasticity. Thin targets use elastic/plastic membrane energy, yielding, and perforation with residual projectile velocity.\n"
+        "step\tpass\tpatch_a\tpatch_b\tdepth_m\tnx\tny\tnz\tcx\tcy\tcz\timpulse_Ns\tmove_a_m\tmove_b_m\tdeform_a_m\tdeform_b_m\tcontact_radius_m\tindent_a_m\tindent_b_m\tfailure_mode\tperforated\tabsorbed_energy_J\tresidual_speed_mps\tremoved_triangles\tmanifold_points\tfriction_coefficient\n"
     )
     geometry_report.write_text(
         "# Per-step geometry/movement diagnostic. If dx/drot stay zero, the motion solver is not moving that part.\n"
@@ -118,9 +135,27 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         f"collision_method={COLLISION_METHOD}",
         f"collision_margin_m={COLLISION_MARGIN_M}",
         f"collision_restitution={COLLISION_RESTITUTION}",
+        f"collision_prescribed_impact_restitution={COLLISION_PRESCRIBED_IMPACT_RESTITUTION}",
+        f"collision_friction_coefficient={COLLISION_FRICTION_COEFFICIENT if COLLISION_FRICTION_COEFFICIENT >= 0.0 else '<material-pair>'}",
+        f"collision_manifold_tolerance_m={COLLISION_MANIFOLD_TOLERANCE_M}",
         f"collision_max_passes={COLLISION_MAX_PASSES}",
         f"collision_max_linear_speed_mps={COLLISION_MAX_LINEAR_SPEED_MPS}",
         f"collision_max_angular_speed_rad_s={COLLISION_MAX_ANGULAR_SPEED_RAD_S}",
+        f"enable_collision_deformation={ENABLE_COLLISION_DEFORMATION}",
+        f"collision_deformation_model={COLLISION_DEFORMATION_MODEL}",
+        f"collision_deformation_gain={COLLISION_DEFORMATION_GAIN}",
+        f"collision_deformation_radius_factor={COLLISION_DEFORMATION_RADIUS_FACTOR}",
+        f"collision_deformation_min_radius_m={COLLISION_DEFORMATION_MIN_RADIUS_M}",
+        f"collision_max_contact_deformation={COLLISION_MAX_CONTACT_DEFORMATION}",
+        f"collision_convergence_speed_mps={COLLISION_CONVERGENCE_SPEED_MPS}",
+        f"collision_convergence_components={COLLISION_CONVERGENCE_COMPONENTS or '<auto>'}",
+        f"collision_convergence_axis={COLLISION_CONVERGENCE_AXIS}",
+        f"collision_initial_gap_m={COLLISION_INITIAL_GAP_M}",
+        f"collision_convergence_moving_component={COLLISION_CONVERGENCE_MOVING_COMPONENT}",
+        f"collision_sweep_clamping={COLLISION_SWEEP_CLAMPING}",
+        f"collision_sweep_penetration_m={COLLISION_SWEEP_PENETRATION_M}",
+        f"collision_convergence_stop_after_contact={COLLISION_CONVERGENCE_STOP_AFTER_CONTACT}",
+        f"collision_convergence_pair={(collision_convergence_pair[0].patch + ',' + collision_convergence_pair[1].patch) if collision_convergence_pair else '<disabled>'}",
         f"aero_reference_frame={AERO_REFERENCE_FRAME}",
         f"body_moving_through_still_air={BODY_MOVING_THROUGH_STILL_AIR}",
         f"body_world_velocity_mps={BODY_WORLD_VELOCITY}",
@@ -131,6 +166,10 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         index_lines.append(
             f"- {c.patch}: name={c.name}, material={c.material.material_name}, "
             f"mass={c.mass:.6g} kg, density={c.material.density_kg_m3:.6g} kg/m^3, "
+            f"young_modulus={inferred_deformation_young_modulus(c):.6g} Pa, "
+            f"thickness={inferred_deformation_thickness(c):.6g} m, "
+            f"yield_strength={material_yield_strength_pa(c):.6g} Pa, "
+            f"failure_strain={material_failure_strain(c):.6g}, "
             f"mate_type={c.freedom.mate_type}, translate_axes={c.freedom.translate_axes}, "
             f"rotate_axes={c.freedom.rotate_axes}, source={c.freedom.source}, "
             f"anchored={c.is_assembly_anchor}"
@@ -246,7 +285,18 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     rigid_net_moment = v_add(rigid_net_moment, component_moment)
                     continue
 
-                force, moment, dpos, drot = update_component_motion(component, coeffs, MOTION_DT, load_override=load_override)
+                prescribed_impact_motion = (
+                    collision_convergence_active
+                    and collision_convergence_pair is not None
+                    and component is collision_convergence_moving_and_stationary(collision_convergence_pair)[0]
+                )
+                force, moment, dpos, drot = update_component_motion(
+                    component,
+                    coeffs,
+                    MOTION_DT,
+                    load_override=load_override,
+                    hold_kinematics=prescribed_impact_motion,
+                )
                 append_motion_log(motion_log, step, component, coeffs, force, moment, dpos, drot)
                 xmin, xmax, ymin, ymax, zmin, zmax = component_bounds(component.triangles)
                 with geometry_report.open("a") as gf:
@@ -299,9 +349,39 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                 if deformed_components:
                     max_def = max(c.deformation_max_m for c in deformed_components)
                     print(f"Non-rigid deformation: {len(deformed_components)} component(s), max {max_def:.6g} m.")
-                collision_lines = resolve_part_collisions(components, step, collision_log)
+                swept_contact = None
+                if collision_convergence_active and collision_convergence_pair is not None:
+                    move_a, move_b, swept_contact = apply_collision_convergence_step(
+                        collision_convergence_pair,
+                        step,
+                        MOTION_DT,
+                        collision_convergence_log,
+                        collision_convergence_axis,
+                    )
+                    if swept_contact is not None and swept_contact.perforated:
+                        added_triangles = refine_thin_impact_target(swept_contact.stationary)
+                        if added_triangles:
+                            print(
+                                f"Thin impact target refinement: added {added_triangles} triangles "
+                                "for local bending/fracture."
+                            )
+                    print(
+                        "Collision convergence step: "
+                        f"impactor moved {v_norm(move_a):.6g} m, "
+                        f"target moved {v_norm(move_b):.6g} m."
+                    )
+                collision_lines = resolve_part_collisions(
+                    components,
+                    step,
+                    collision_log,
+                    swept_contact if collision_convergence_active else None,
+                    collision_convergence_pair,
+                )
                 if collision_lines:
                     print(f"Collision resolution: {len(collision_lines)} contact event(s) handled at step {step}.")
+                    if collision_convergence_active and COLLISION_CONVERGENCE_STOP_AFTER_CONTACT:
+                        collision_convergence_active = False
+                        append_collision_convergence_stop(collision_convergence_log, step, "first_contact")
 
             # Write compact visualisation AFTER the motion and collision update so the frame
             # shows moved, non-interpenetrating geometry.
@@ -463,6 +543,149 @@ def copy_if_exists(source: Path, destination: Path) -> None:
         shutil.copy2(source, destination)
 
 
+def _source_label(source: str, index: int) -> str:
+    if is_onshape_url(source):
+        return f"object_{index}"
+    path = Path(source).expanduser()
+    return path.stem or f"object_{index}"
+
+
+def _component_from_triangles(name: str, patch: str, triangles: Sequence[Triangle]) -> AeroComponent:
+    aref, lref, cofr = component_references(triangles)
+    component = AeroComponent(name, patch, list(triangles), cofr, lref, aref, freedom=six_dof_motion_freedom("two-source-collision"))
+    material = infer_material_from_name(name)
+    apply_material_model(component, material, None, None, "name/default")
+    return component
+
+
+def _combined_source_component(name: str, patch: str, components: Sequence[AeroComponent]) -> AeroComponent:
+    triangles = [triangle for component in components for triangle in component.triangles]
+    if not triangles:
+        raise ValueError(f"No triangles were imported for {name}")
+    combined = _component_from_triangles(name, patch, triangles)
+    total_mass = sum(max(component.mass, 0.0) for component in components)
+    material_components = [
+        component
+        for component in components
+        if component.material.material_name.lower() not in {"", "unknown", "default"}
+    ]
+    representative = max(material_components or list(components), key=lambda component: max(component.mass, 0.0))
+    combined.material = MaterialProperties(**vars(representative.material))
+    if total_mass > 0.0:
+        combined.mass = total_mass
+        combined.material.mass_kg = total_mass
+        combined.material.volume_m3 = sum(
+            max(component.material.volume_m3 or 0.0, 0.0)
+            for component in components
+        )
+        combined.material.source = f"combined-source/{representative.material.source}"
+        combined.material.structural_source = (
+            f"combined-source/{representative.material.structural_source}"
+        )
+        combined.inertia = estimate_scalar_inertia(total_mass, combined.triangles)
+    return combined
+
+
+def _subdivide_triangle(triangle: Triangle) -> List[Triangle]:
+    _normal, a, b, c = triangle
+    ab = v_mul(v_add(a, b), 0.5)
+    bc = v_mul(v_add(b, c), 0.5)
+    ca = v_mul(v_add(c, a), 0.5)
+    points = ((a, ab, ca), (ab, b, bc), (ca, bc, c), (ab, bc, ca))
+    return [
+        (v_unit(v_cross(v_sub(q, p), v_sub(r, p))), p, q, r)
+        for p, q, r in points
+    ]
+
+
+def refine_thin_impact_target(component: AeroComponent) -> int:
+    xmin, xmax, ymin, ymax, zmin, zmax = component_bounds(component.triangles)
+    extents = sorted((xmax - xmin, ymax - ymin, zmax - zmin))
+    if extents[0] <= 1e-9 or extents[0] >= 0.05 * max(extents[2], 1e-9):
+        return 0
+    target_edge = max(extents[2] / 16.0, extents[0] * 4.0)
+    triangles = list(component.triangles)
+    original_count = len(triangles)
+    for _level in range(6):
+        longest = max(
+            max(v_norm(v_sub(b, a)), v_norm(v_sub(c, b)), v_norm(v_sub(a, c)))
+            for _normal, a, b, c in triangles
+        )
+        if longest <= target_edge:
+            break
+        triangles = [child for triangle in triangles for child in _subdivide_triangle(triangle)]
+    component.triangles = triangles
+    component.aref, component.lref, component.cofr = component_references(triangles)
+    return len(triangles) - original_count
+
+
+def build_collision_source_component(source: str, index: int, workdir: Path, client: Optional[OnshapeClient] = None) -> AeroComponent:
+    label = _source_label(source, index)
+    patch = unique_patch_names([label])[0]
+
+    if is_onshape_url(source):
+        ref = parse_onshape_url(source)
+        client = client or get_onshape_client()
+        element_type = detect_onshape_element_type(ref, client)
+        print(f"Collision source {index}: Onshape element detected as {element_type}")
+        if element_type == "assembly":
+            source_dir = workdir / f"source_{index:02d}"
+            source_dir.mkdir(parents=True, exist_ok=True)
+            components, assembly_def = build_assembly_components(ref, client, source_dir)
+            (workdir / f"source_{index:02d}_assembly_definition.json").write_text(json.dumps(assembly_def, indent=2))
+            return _combined_source_component(label, patch, components)
+
+        stl_path = download_partstudio_stl(ref, client, workdir / f"source_{index:02d}.stl")
+        return _component_from_triangles(label, patch, read_stl_triangles(stl_path))
+
+    stl_path = Path(source).expanduser().resolve()
+    if not stl_path.exists():
+        raise FileNotFoundError(stl_path)
+    return _component_from_triangles(label, patch, read_stl_triangles(stl_path))
+
+
+def run_sources(sources: Sequence[str]) -> int:
+    if len(sources) != 2:
+        raise ValueError("run_sources expects exactly two sources")
+    case = Path.cwd() / CASE_NAME
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            client = get_onshape_client() if any(is_onshape_url(source) for source in sources) else None
+            components = [
+                build_collision_source_component(source, index + 1, tmp, client)
+                for index, source in enumerate(sources)
+            ]
+            components[0].patch, components[1].patch = unique_patch_names([components[0].patch, components[1].patch])
+            if COLLISION_CONVERGENCE_SPEED_MPS <= 0.0:
+                raise ValueError("Two-source collision runs need COLLISION_CONVERGENCE_SPEED_MPS > 0")
+            pair = configure_collision_convergence_components(components)
+            if pair is not None:
+                shift = arrange_collision_convergence_initial_gap(pair)
+                moving, stationary = collision_convergence_moving_and_stationary(pair)
+                axis = collision_convergence_approach_axis(pair)
+                print(
+                    f"Initial collision layout: placed {moving.patch} directly behind "
+                    f"stationary {stationary.patch}, moved impactor by {v_norm(shift):.6g} m; "
+                    f"axis=({axis[0]:g}, {axis[1]:g}, {axis[2]:g}), "
+                    f"target gap {COLLISION_INITIAL_GAP_M:g} m."
+                )
+            run_assembly_motion_simulation(components, case)
+
+        print("\nDone.")
+        print(f"OpenFOAM output root: {case}")
+        print(f"Collision convergence log: {case / COLLISION_CONVERGENCE_LOG_NAME}")
+        print(f"Collision contact log: {case / COLLISION_LOG_NAME}")
+        print("Open in ParaView on macOS:")
+        print(f"  open -a ParaView {case / PARAVIEW_PVD_NAME}")
+        return 0
+
+    except Exception as exc:
+        print(f"\nERROR: {exc}", file=sys.stderr)
+        return 1
+
+
 def run_source(source: str) -> int:
     case = Path.cwd() / CASE_NAME
 
@@ -531,9 +754,12 @@ def run_source(source: str) -> int:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in {2, 3}:
         print("Usage:")
         print("  python -m cfd_motion '<ONSHAPE_PART_STUDIO_OR_ASSEMBLY_URL>'")
+        print("  python -m cfd_motion '<OBJECT_A_URL>' '<OBJECT_B_URL>'")
         print("  python -m cfd_motion model.stl")
         return 2
+    if len(sys.argv) == 3:
+        return run_sources([sys.argv[1], sys.argv[2]])
     return run_source(sys.argv[1])

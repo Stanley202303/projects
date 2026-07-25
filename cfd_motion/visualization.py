@@ -1022,9 +1022,6 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
     """
     if not PARAVIEW_CREATE_PANEL_PREVIEW:
         return
-    q = 0.5 * RHO * abs(VELOCITY) ** 2
-    flow_dir = flow_unit_vector()
-    incoming_dir = incoming_unit_vector()
     out_dir = step_case / "panel_preview"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1033,6 +1030,9 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
     combined_scalars: Dict[str, List[float]] = {
         "CpPanel": [],
         "CpAbsPanel": [],
+        "Cp": [],
+        "p": [],
+        "pPa": [],
         "pPaPanel": [],
         "pPaAbsPanel": [],
         # User-friendly aliases. These are the fields to colour by in ParaView.
@@ -1058,6 +1058,9 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
         polys: List[Tuple[int, int, int]] = []
         cp_vals: List[float] = []
         cp_abs_vals: List[float] = []
+        cp_alias_vals: List[float] = []
+        p_vals: List[float] = []
+        ppa_alias_vals: List[float] = []
         ppa_vals: List[float] = []
         ppa_abs_vals: List[float] = []
         pressure_coeff_vals: List[float] = []
@@ -1077,7 +1080,10 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             i = len(pts)
             pts.extend([v1, v2, v3])
             polys.append((i, i + 1, i + 2))
-            area, _centroid, n = triangle_area_centroid_normal((_normal, v1, v2, v3))
+            area, centroid, n = triangle_area_centroid_normal((_normal, v1, v2, v3))
+            rel_speed, flow_dir = local_air_speed_and_unit(comp, centroid)
+            incoming_dir = v_mul(flow_dir, -1.0)
+            q = 0.5 * RHO * rel_speed ** 2
             # Panel preview pressure. This is only for robust visualisation; the
             # motion solver still prefers OpenFOAM forces. Use the same corrected
             # flow direction as the OpenFOAM case. Windward faces get positive Cp,
@@ -1093,6 +1099,10 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             cp_abs_vals.append(cp_abs)
             pressure_pa = cp * q
             pressure_pa_abs = cp_abs * q
+            p_kinematic = pressure_pa / max(RHO, 1e-30)
+            cp_alias_vals.append(cp)
+            p_vals.append(p_kinematic)
+            ppa_alias_vals.append(pressure_pa)
             ppa_vals.append(pressure_pa)
             ppa_abs_vals.append(pressure_pa_abs)
             pressure_coeff_vals.append(cp)
@@ -1111,6 +1121,9 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             combined_polys.append((ci, ci + 1, ci + 2))
             combined_scalars["CpPanel"].append(cp)
             combined_scalars["CpAbsPanel"].append(cp_abs)
+            combined_scalars["Cp"].append(cp)
+            combined_scalars["p"].append(p_kinematic)
+            combined_scalars["pPa"].append(pressure_pa)
             combined_scalars["pPaPanel"].append(pressure_pa)
             combined_scalars["pPaAbsPanel"].append(pressure_pa_abs)
             combined_scalars["pressureCoeff"].append(cp)
@@ -1137,6 +1150,9 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             {
                 "CpPanel": cp_vals,
                 "CpAbsPanel": cp_abs_vals,
+                "Cp": cp_alias_vals,
+                "p": p_vals,
+                "pPa": ppa_alias_vals,
                 "pPaPanel": ppa_vals,
                 "pPaAbsPanel": ppa_abs_vals,
                 "pressureCoeff": pressure_coeff_vals,
@@ -1727,7 +1743,10 @@ def create_root_safe_pvd_from_copied_previews(root_case: Path, total_steps: int)
         t = step * MOTION_DT if PARAVIEW_TIME_MODE == "seconds" else float(step)
         cfd_vf = root_case / ROOT_CFD_SAMPLED_DIR_NAME / f"frame_{step:03d}_{CFD_SAMPLED_SURFACE_VTP_NAME}"
         panel_vf = root_case / ROOT_PANEL_PREVIEW_DIR_NAME / f"frame_{step:03d}_{COMBINED_SURFACE_VTK_NAME}"
-        if PARAVIEW_PREFER_CFD_SAMPLED_SURFACES and cfd_vf.exists():
+        prefer_cfd = PARAVIEW_PREFER_CFD_SAMPLED_SURFACES and not (
+            COLLISION_CONVERGENCE_SPEED_MPS > 0.0 and abs(VELOCITY) <= 1e-12
+        )
+        if prefer_cfd and cfd_vf.exists():
             vf = cfd_vf
             group = "sampled_cfd_surfaces"
         elif panel_vf.exists():

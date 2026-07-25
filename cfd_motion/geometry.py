@@ -296,6 +296,8 @@ BASE_MATERIAL_DENSITIES_KG_M3: Dict[str, float] = {
     "stainless steel": 8000.0,
     "brass": 8500.0,
     "copper": 8960.0,
+    "tungsten": 19300.0,
+    "wolfram": 19300.0,
     "titanium": 4500.0,
 }
 
@@ -475,6 +477,16 @@ def parse_poisson_ratio(value: Any) -> Optional[float]:
     return None
 
 
+def parse_failure_strain(value: Any) -> Optional[float]:
+    number = parse_numeric_value(value)
+    if number is None or number < 0.0:
+        return None
+    text = str(value or "").lower()
+    if "%" in text or number > 1.0:
+        number /= 100.0
+    return number if 0.0 <= number <= 5.0 else None
+
+
 def text_from_any(value: Any) -> str:
     if value is None:
         return ""
@@ -553,6 +565,8 @@ def bom_records_from_payload(payload: Optional[Dict[str, Any]]) -> List[Dict[str
         young_modulus = None
         poisson_ratio = None
         thickness = None
+        yield_strength = None
+        failure_strain = None
         for label, value in vals.items():
             label_norm = label.lower()
             compact_label = re.sub(r"[^a-z0-9]+", "", label_norm)
@@ -580,6 +594,19 @@ def bom_records_from_payload(payload: Optional[Dict[str, Any]]) -> List[Dict[str
                 or compact_label in {"t", "gage", "gauge", "sheetthickness", "wallthickness"}
             ):
                 thickness = parse_length_m(value)
+            if yield_strength is None and (
+                "yield strength" in label_norm
+                or "yield stress" in label_norm
+                or compact_label in {"yield", "yieldstrength", "yieldstress"}
+            ):
+                yield_strength = parse_pressure_pa(value)
+            if failure_strain is None and (
+                "failure strain" in label_norm
+                or "strain at break" in label_norm
+                or "elongation at break" in label_norm
+                or compact_label in {"failurestrain", "strainatbreak", "elongationatbreak"}
+            ):
+                failure_strain = parse_failure_strain(value)
         identity_text = text_from_any(get_case_insensitive(row, ["partIdentity", "part identity", "identity"]))
         names = [
             text_from_any(get_case_insensitive(row, ["name", "partName", "part name", "description"])),
@@ -595,6 +622,8 @@ def bom_records_from_payload(payload: Optional[Dict[str, Any]]) -> List[Dict[str
             "young_modulus_pa": young_modulus,
             "poisson_ratio": poisson_ratio,
             "thickness_m": thickness,
+            "yield_strength_pa": yield_strength,
+            "failure_strain": failure_strain,
             "names": [n for n in names if n],
             "raw": row,
         })
@@ -648,6 +677,8 @@ def apply_material_model(
     young_modulus_pa: Optional[float] = None,
     poisson_ratio: Optional[float] = None,
     thickness_m: Optional[float] = None,
+    yield_strength_pa: Optional[float] = None,
+    failure_strain: Optional[float] = None,
 ) -> None:
     volume = estimate_closed_mesh_volume(component.triangles)
     density = density_kg_m3 if density_kg_m3 and density_kg_m3 > 0 else material_density_kg_m3(material_name)
@@ -666,7 +697,9 @@ def apply_material_model(
         young_modulus_pa=young_modulus_pa if young_modulus_pa and young_modulus_pa > 0.0 else None,
         poisson_ratio=poisson_ratio if poisson_ratio is not None else None,
         thickness_m=thickness_m if thickness_m and thickness_m > 0.0 else None,
-        structural_source=source if any(v is not None for v in (young_modulus_pa, poisson_ratio, thickness_m)) else "material/default",
+        yield_strength_pa=yield_strength_pa if yield_strength_pa and yield_strength_pa > 0.0 else None,
+        failure_strain=failure_strain if failure_strain is not None and failure_strain >= 0.0 else None,
+        structural_source=source if any(v is not None for v in (young_modulus_pa, poisson_ratio, thickness_m, yield_strength_pa, failure_strain)) else "material/default",
     )
     component.mass = mass
     component.inertia = estimate_scalar_inertia(mass, component.triangles)
@@ -698,6 +731,8 @@ def assign_materials_from_bom(components: Sequence[AeroComponent], occurrences: 
             young_modulus = record.get("young_modulus_pa")
             poisson_ratio = record.get("poisson_ratio")
             thickness = record.get("thickness_m")
+            yield_strength = record.get("yield_strength_pa")
+            failure_strain = record.get("failure_strain")
             source = "bom"
         else:
             material = infer_material_from_name(c.name)
@@ -706,8 +741,13 @@ def assign_materials_from_bom(components: Sequence[AeroComponent], occurrences: 
             young_modulus = None
             poisson_ratio = None
             thickness = None
+            yield_strength = None
+            failure_strain = None
             source = "name/default"
-        apply_material_model(c, material, mass, density, source, young_modulus, poisson_ratio, thickness)
+        apply_material_model(
+            c, material, mass, density, source, young_modulus, poisson_ratio,
+            thickness, yield_strength, failure_strain
+        )
         report.append(
             f"- {c.patch}: name={c.name!r}, material={c.material.material_name!r}, "
             f"source={c.material.source}, density={c.material.density_kg_m3:.6g} kg/m^3, "
@@ -716,6 +756,8 @@ def assign_materials_from_bom(components: Sequence[AeroComponent], occurrences: 
             f"young_modulus={c.material.young_modulus_pa if c.material.young_modulus_pa is not None else 'default'} Pa, "
             f"poisson_ratio={c.material.poisson_ratio if c.material.poisson_ratio is not None else 'default'}, "
             f"thickness={c.material.thickness_m if c.material.thickness_m is not None else 'geometry/default'} m, "
+            f"yield_strength={c.material.yield_strength_pa if c.material.yield_strength_pa is not None else 'material/default'} Pa, "
+            f"failure_strain={c.material.failure_strain if c.material.failure_strain is not None else 'material/default'}, "
             f"linear_damping_per_kg={c.material.linear_damping_per_kg:.6g}, "
             f"angular_damping_per_kg={c.material.angular_damping_per_kg:.6g}"
         )

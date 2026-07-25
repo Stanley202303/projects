@@ -1,0 +1,4 @@
+# Part collision log. Prescribed two-object impacts use swept mesh-surface contact; other assembly pairs use conservative AABB contact.
+# Swept impacts preserve prescribed speed until real triangle surfaces meet.
+# Solid contact uses Hertz elasticity. Thin targets use elastic/plastic membrane energy, yielding, and perforation with residual projectile velocity.
+step	pass	patch_a	patch_b	depth_m	nx	ny	nz	cx	cy	cz	impulse_Ns	move_a_m	move_b_m	deform_a_m	deform_b_m	contact_radius_m	indent_a_m	indent_b_m	failure_mode	perforated	absorbed_energy_J	residual_speed_mps	removed_triangles	manifold_points	friction_coefficient
