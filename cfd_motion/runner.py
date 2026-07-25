@@ -67,6 +67,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
     deformation_log = root_case / DEFORMATION_LOG_NAME
     geometry_report = root_case / MOTION_GEOMETRY_REPORT_NAME
     collision_log = root_case / COLLISION_LOG_NAME
+    collision_damage_log = root_case / COLLISION_DAMAGE_LOG_NAME
     collision_convergence_log = root_case / COLLISION_CONVERGENCE_LOG_NAME
     write_unsteady_fsi_gap_report(root_case, components)
     apply_relative_motion_policy(components, root_case)
@@ -90,11 +91,12 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
     write_motion_log_header(motion_log)
     if ENABLE_NONRIGID_DEFORMATION:
         write_deformation_log_header(deformation_log)
+    write_collision_damage_log_header(collision_damage_log)
     collision_log.write_text(
         "# Part collision log. Prescribed two-object impacts use swept mesh-surface contact; other assembly pairs use conservative AABB contact.\n"
         "# Swept impacts preserve prescribed speed until real triangle surfaces meet.\n"
-        "# Solid contact uses Hertz elasticity. Thin targets use elastic/plastic membrane energy, yielding, and perforation with residual projectile velocity.\n"
-        "step\tpass\tpatch_a\tpatch_b\tdepth_m\tnx\tny\tnz\tcx\tcy\tcz\timpulse_Ns\tmove_a_m\tmove_b_m\tdeform_a_m\tdeform_b_m\tcontact_radius_m\tindent_a_m\tindent_b_m\tfailure_mode\tperforated\tabsorbed_energy_J\tresidual_speed_mps\tremoved_triangles\tmanifold_points\tfriction_coefficient\n"
+        "# Curved contact uses Hertz elasticity; flat contact uses the classical elastic flat-punch relation. Thin targets use membrane energy, yielding, and perforation with residual impactor velocity.\n"
+        "step\tpass\tpatch_a\tpatch_b\tdepth_m\tnx\tny\tnz\tcx\tcy\tcz\timpulse_Ns\tmove_a_m\tmove_b_m\tdeform_a_m\tdeform_b_m\tcontact_radius_m\tindent_a_m\tindent_b_m\tfailure_mode\tperforated\tabsorbed_energy_J\tresidual_speed_mps\tdisplaced_fragments\tmanifold_points\tfriction_coefficient\n"
     )
     geometry_report.write_text(
         "# Per-step geometry/movement diagnostic. If dx/drot stay zero, the motion solver is not moving that part.\n"
@@ -198,6 +200,18 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         for step in range(ASSEMBLY_DYNAMIC_STEPS):
             step_started = time.monotonic()
             print(f"\nAssembly motion step {step + 1}/{ASSEMBLY_DYNAMIC_STEPS}")
+            if step > 0:
+                changed_damage_sites = evolve_collision_damage(
+                    components,
+                    step,
+                    MOTION_DT,
+                    collision_damage_log,
+                )
+                if changed_damage_sites:
+                    print(
+                        "Collision damage evolution: "
+                        f"{changed_damage_sites} site(s) changed."
+                    )
 
             if SAVE_MOTION_STEPS:
                 step_case = steps_dir / f"step_{step:03d}"
@@ -379,6 +393,12 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                 )
                 if collision_lines:
                     print(f"Collision resolution: {len(collision_lines)} contact event(s) handled at step {step}.")
+                    evolve_collision_damage(
+                        components,
+                        step,
+                        0.0,
+                        collision_damage_log,
+                    )
                     if collision_convergence_active and COLLISION_CONVERGENCE_STOP_AFTER_CONTACT:
                         collision_convergence_active = False
                         append_collision_convergence_stop(collision_convergence_log, step, "first_contact")
@@ -677,6 +697,7 @@ def run_sources(sources: Sequence[str]) -> int:
         print(f"OpenFOAM output root: {case}")
         print(f"Collision convergence log: {case / COLLISION_CONVERGENCE_LOG_NAME}")
         print(f"Collision contact log: {case / COLLISION_LOG_NAME}")
+        print(f"Collision damage evolution log: {case / COLLISION_DAMAGE_LOG_NAME}")
         print("Open in ParaView on macOS:")
         print(f"  open -a ParaView {case / PARAVIEW_PVD_NAME}")
         return 0
@@ -736,6 +757,7 @@ def run_source(source: str) -> int:
         print(f"OpenFOAM output root: {case}")
         print(f"Coefficient TXT files: {case}/**/{COEFFICIENT_LOG_NAME}")
         print(f"Assembly motion log, when applicable: {case / MOTION_LOG_NAME}")
+        print(f"Collision damage log, when applicable: {case / COLLISION_DAMAGE_LOG_NAME}")
         print(f"Assembly material report, when applicable: {case / MATERIAL_REPORT_NAME}")
         print(f"Assembly occurrence export report, when applicable: {case / OCCURRENCE_EXPORT_REPORT_NAME}")
         print("Open in ParaView on macOS:")

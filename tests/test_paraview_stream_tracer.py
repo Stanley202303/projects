@@ -1,9 +1,33 @@
 from pathlib import Path
+import xml.etree.ElementTree as ElementTree
 
 from cfd_motion.visualization import (
+    _write_ascii_polydata_vtk,
     copy_minimal_stream_tracer_case_to_root,
+    validate_preview_polydata,
     write_cfd_sampled_surface_preview_for_step,
 )
+
+
+def test_polydata_fields_are_written_as_cell_data_for_shared_vertices(tmp_path: Path) -> None:
+    output = tmp_path / "shared_vertices.vtp"
+    _write_ascii_polydata_vtk(
+        output,
+        [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)],
+        [(0, 1, 2), (0, 2, 3)],
+        {"CpPanel": [1.0, 3.0]},
+    )
+
+    root = ElementTree.parse(output).getroot()
+    piece = root.find(".//Piece")
+    assert piece is not None
+    arrays = piece.find("CellData")
+    assert arrays is not None
+    cp = next(array for array in arrays.findall("DataArray") if array.attrib.get("Name") == "CpPanel")
+    values = [float(value) for value in (cp.text or "").split()]
+    assert len(values) == 2
+    assert values == [1.0, 3.0]
+    validate_preview_polydata(output)
 
 
 def test_cfd_sampled_surface_vtp_preserves_u_vector_for_stream_tracer(tmp_path: Path) -> None:
@@ -40,7 +64,7 @@ def test_cfd_sampled_surface_vtp_preserves_u_vector_for_stream_tracer(tmp_path: 
 
     assert out is not None
     text = out.read_text()
-    assert '<PointData Scalars="pressureCoeff" Vectors="U">' in text
+    assert '<PointData/>' in text
     assert '<CellData Scalars="pressureCoeff" Vectors="U">' in text
     assert 'Name="U" NumberOfComponents="3"' in text
     assert "0.333333333 0.666666667 1" in text

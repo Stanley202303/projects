@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ElementTree
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -266,6 +267,49 @@ def _xml_attr(value: str) -> str:
     )
 
 
+def validate_preview_polydata(path: Path) -> None:
+    """Validate the restricted VTP dialect used by the animation PVD files.
+
+    The preview intentionally stores face fields only in CellData.  Keeping the
+    format narrow avoids ParaView array-association and length failures when a
+    collision changes surface topology between frames.
+    """
+    root = ElementTree.parse(path).getroot()
+    piece = root.find(".//Piece")
+    if piece is None:
+        raise ValueError(f"Preview VTP has no PolyData Piece: {path}")
+    point_count = int(piece.attrib.get("NumberOfPoints", "-1"))
+    polygon_count = int(piece.attrib.get("NumberOfPolys", "-1"))
+    if point_count < 0 or polygon_count < 0:
+        raise ValueError(f"Preview VTP has invalid geometry counts: {path}")
+
+    point_data = piece.find("PointData")
+    if point_data is not None and point_data.findall("DataArray"):
+        raise ValueError(f"Preview VTP must not contain PointData arrays: {path}")
+
+    points_array = piece.find("Points/DataArray")
+    if points_array is None or len((points_array.text or "").split()) != 3 * point_count:
+        raise ValueError(f"Preview VTP has an incomplete point coordinate array: {path}")
+
+    connectivity = piece.find("Polys/DataArray[@Name='connectivity']")
+    offsets = piece.find("Polys/DataArray[@Name='offsets']")
+    if connectivity is None or offsets is None:
+        raise ValueError(f"Preview VTP has incomplete polygon connectivity: {path}")
+    if len((connectivity.text or "").split()) != 3 * polygon_count:
+        raise ValueError(f"Preview VTP has an incomplete connectivity array: {path}")
+    if len((offsets.text or "").split()) != polygon_count:
+        raise ValueError(f"Preview VTP has an incomplete polygon offsets array: {path}")
+
+    cell_data = piece.find("CellData")
+    if cell_data is None:
+        raise ValueError(f"Preview VTP has no CellData: {path}")
+    for array in cell_data.findall("DataArray"):
+        components = int(array.attrib.get("NumberOfComponents", "1"))
+        if len((array.text or "").split()) != polygon_count * components:
+            name = array.attrib.get("Name", "unnamed")
+            raise ValueError(f"Preview VTP CellData array {name!r} has the wrong length: {path}")
+
+
 def _write_ascii_polydata_vtk(
     path: Path,
     points: List[Vec3],
@@ -283,11 +327,10 @@ def _write_ascii_polydata_vtk(
         Could not determine the data type for the first dataset
 
     This function keeps the old name so the rest of the script needs minimal
-    changes, but it now writes a proper .vtp XML PolyData file.  Scalar and
-    vector arrays are written as both CellData and PointData.  Each triangle owns
-    duplicate vertices, so copying one cell value to its 3 points preserves sharp
-    face-to-face differences and makes ParaView colouring reliable.  Writing U as
-    a 3-component PointData vector is also what ParaView's Stream Tracer expects.
+    changes, but it now writes a proper .vtp XML PolyData file.  The preview
+    fields are face quantities, so they are written only as CellData.  Duplicating
+    them into PointData is both physically misleading at shared vertices and a
+    recurring source of VTK XML array-length failures during large remeshes.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() != ".vtp":
@@ -328,6 +371,10 @@ def _write_ascii_polydata_vtk(
             continue
         valid_vectors[name] = [clean_vec3(v) for v in vals]
 
+    for triangle in triangles:
+        if len(triangle) != 3 or any(index < 0 or index >= len(points) for index in triangle):
+            raise ValueError(f"Invalid PolyData triangle index while writing {path}")
+
     connectivity: List[str] = []
     offsets: List[str] = []
     off = 0
@@ -365,11 +412,9 @@ def _write_ascii_polydata_vtk(
         point_values.extend([x, y, z])
 
     active_vectors = "U" if "U" in valid_vectors else (next(iter(valid_vectors)) if valid_vectors else "")
-    point_data_attrs = 'Scalars="pressureCoeff"'
     cell_data_attrs = 'Scalars="pressureCoeff"'
     if active_vectors:
         escaped_vectors = _xml_attr(active_vectors)
-        point_data_attrs += f' Vectors="{escaped_vectors}"'
         cell_data_attrs += f' Vectors="{escaped_vectors}"'
 
     lines: List[str] = [
@@ -377,29 +422,8 @@ def _write_ascii_polydata_vtk(
         '<VTKFile type="PolyData" version="0.1" byte_order="LittleEndian">',
         '  <PolyData>',
         f'    <Piece NumberOfPoints="{len(points)}" NumberOfPolys="{len(triangles)}">',
-        f'      <PointData {point_data_attrs}>',
+        '      <PointData/>',
     ]
-
-    # Point arrays: ParaView often defaults to point arrays for colouring.
-    for name, vals in valid_scalars.items():
-        escaped = _xml_attr(name)
-        point_vals: List[float] = []
-        for v in vals:
-            point_vals.extend([v, v, v])
-        lines.append(f'        <DataArray type="Float32" Name="{escaped}" format="ascii">')
-        lines.extend(values_text(point_vals))
-        lines.append('        </DataArray>')
-
-    for name, vals in valid_vectors.items():
-        escaped = _xml_attr(name)
-        point_vals: List[Vec3] = []
-        for v in vals:
-            point_vals.extend([v, v, v])
-        lines.append(f'        <DataArray type="Float32" Name="{escaped}" NumberOfComponents="3" format="ascii">')
-        lines.extend(vector_values_text(point_vals))
-        lines.append('        </DataArray>')
-
-    lines.append('      </PointData>')
     lines.append(f'      <CellData {cell_data_attrs}>')
 
     for name, vals in valid_scalars.items():
@@ -447,7 +471,13 @@ def _write_ascii_polydata_vtk(
         '',
     ])
 
-    path.write_text("\n".join(lines))
+    # ParaView can watch an already-open PVD while a simulation replaces frames.
+    # Publish the complete XML in one atomic rename so it never observes a
+    # partially copied PointData array.
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    temporary_path.write_text("\n".join(lines))
+    validate_preview_polydata(temporary_path)
+    os.replace(temporary_path, path)
 
 
 def directory_size_bytes(path: Path) -> int:
@@ -1661,6 +1691,15 @@ def copy_minimal_stream_tracer_case_to_root(root_case: Path, step_case: Path, st
     return foam_path
 
 
+def _copy_file_atomically(source: Path, destination: Path) -> None:
+    """Copy a complete frame before exposing it at a PVD-referenced path."""
+    validate_preview_polydata(source)
+    temporary_path = destination.with_name(f".{destination.name}.tmp")
+    shutil.copy2(source, temporary_path)
+    validate_preview_polydata(temporary_path)
+    os.replace(temporary_path, destination)
+
+
 def copy_step_panel_preview_to_root(root_case: Path, step_case: Path, step: int) -> Optional[Path]:
     """Copy the compact combined moving-surface VTK into root_case only."""
     src = step_case / "panel_preview" / COMBINED_SURFACE_VTK_NAME
@@ -1669,7 +1708,7 @@ def copy_step_panel_preview_to_root(root_case: Path, step_case: Path, step: int)
     out_dir = root_case / ROOT_PANEL_PREVIEW_DIR_NAME
     out_dir.mkdir(parents=True, exist_ok=True)
     dst = out_dir / f"frame_{step:03d}_{COMBINED_SURFACE_VTK_NAME}"
-    shutil.copy2(src, dst)
+    _copy_file_atomically(src, dst)
 
     # Keep the small pressure-range report even when SAVE_MOTION_STEPS=0, so the
     # user can immediately tell whether ParaView should have visible colour range.
@@ -1688,7 +1727,7 @@ def copy_step_cfd_sampled_preview_to_root(root_case: Path, step_case: Path, step
     out_dir = root_case / ROOT_CFD_SAMPLED_DIR_NAME
     out_dir.mkdir(parents=True, exist_ok=True)
     dst = out_dir / f"frame_{step:03d}_{CFD_SAMPLED_SURFACE_VTP_NAME}"
-    shutil.copy2(src, dst)
+    _copy_file_atomically(src, dst)
     for rep_name in ("cfd_sampled_pressure_report.txt", "source_sampled_vtk_files.txt"):
         rep = step_case / CFD_SAMPLED_PREVIEW_DIR_NAME / rep_name
         if rep.exists():

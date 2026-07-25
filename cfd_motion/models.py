@@ -76,6 +76,22 @@ class MaterialProperties:
 
 
 @dataclass
+class CollisionDamageState:
+    contact_point: Vec3
+    inward_direction: Vec3
+    contact_radius_m: float
+    current_depth_m: float
+    permanent_depth_m: float
+    current_hole_radius_m: float = 0.0
+    target_hole_radius_m: float = 0.0
+    response_time_s: float = 1e-6
+    failure_mode: str = "elastic_contact"
+    accumulated_energy_j: float = 0.0
+    created_step: int = 0
+    elapsed_s: float = 0.0
+
+
+@dataclass
 class AeroComponent:
     name: str
     patch: str
@@ -109,6 +125,7 @@ class AeroComponent:
     deformation_reference_triangles: Optional[List[Triangle]] = None
     deformation_max_m: float = 0.0
     deformation_mean_m: float = 0.0
+    collision_damage: List[CollisionDamageState] = field(default_factory=list)
 
 
 # ------------------------- small math helpers -------------------------

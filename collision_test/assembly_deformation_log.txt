@@ -1,0 +1,13 @@
+# Quasi-static non-rigid surface deformation log
+# Deformation is a bounded panel-pressure plate/cantilever approximation, not a structural finite-element solve.
+step	patch	material	structural_source	enabled	young_modulus_pa	poisson_ratio	thickness_m	node_count	max_deformation_m	mean_deformation_m
+0	object_1	unknown	combined-source/material/default	1	50000000	0.35	0.004362552	1874	7.4802721e-06	3.3258358e-06
+0	object_2	unknown	combined-source/material/default	1	50000000	0.35	0.0001	8	1.2757001e-17	6.0493231e-18
+1	object_1	unknown	combined-source/material/default	1	50000000	0.35	0.0043625606	1874	1.2342404e-05	5.4876093e-06
+1	object_2	unknown	combined-source/material/default	1	50000000	0.35	0.0001	8	1.2757001e-17	6.0493231e-18
+2	object_1	unknown	combined-source/material/default	1	50000000	0.35	0.0043625663	1874	1.5435029e-05	6.8626345e-06
+2	object_2	unknown	combined-source/material/default	1	50000000	0.35	0.01592123	9832	2.4774995e-10	6.0244567e-14
+3	object_1	unknown	combined-source/material/default	1	50000000	0.35	0.0043625698	1874	1.7427682e-05	7.7485961e-06
+3	object_2	unknown	combined-source/material/default	1	50000000	0.35	0.01592123	9832	4.0878742e-10	9.940252e-14
+4	object_1	unknown	combined-source/material/default	1	50000000	0.35	0.0043625721	1874	1.8705402e-05	8.3166889e-06
+4	object_2	unknown	combined-source/material/default	1	50000000	0.35	0.01592123	9832	5.1346178e-10	1.2485458e-13

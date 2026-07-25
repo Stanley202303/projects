@@ -448,6 +448,14 @@ COLLISION_SWEEP_CLAMPING = env_bool("COLLISION_SWEEP_CLAMPING", True)
 COLLISION_SWEEP_PENETRATION_M = float(os.environ.get("COLLISION_SWEEP_PENETRATION_M", "0.001"))
 COLLISION_CONVERGENCE_STOP_AFTER_CONTACT = env_bool("COLLISION_CONVERGENCE_STOP_AFTER_CONTACT", True)
 COLLISION_CONVERGENCE_LOG_NAME = "assembly_collision_convergence_log.txt"
+COLLISION_DAMAGE_LOG_NAME = "assembly_collision_damage_log.txt"
+# Limit local thin-shell remeshing.  This is deliberately conservative: a
+# collision should refine only the contact neighbourhood, never turn a coarse
+# target mesh into an unbounded number of visualisation cells.
+COLLISION_FRACTURE_MAX_SUBDIVISION_DEPTH = max(
+    0,
+    int(os.environ.get("COLLISION_FRACTURE_MAX_SUBDIVISION_DEPTH", "5")),
+)
 USE_FORCE_LEVER_ARM_TORQUE = os.environ.get("USE_FORCE_LEVER_ARM_TORQUE", "1").strip().lower() not in {"0", "false", "no", "off"}
 AUTO_HINGE_ORIGINS = os.environ.get("AUTO_HINGE_ORIGINS", "1").strip().lower() not in {"0", "false", "no", "off"}
 USE_ALL_COEFFS_FALLBACK = os.environ.get("USE_ALL_COEFFS_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}

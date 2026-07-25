@@ -1,0 +1,15 @@
+# Quasi-dynamic assembly motion log
+# dt=0.0005 s, default_mass=0.05 kg, default_inertia=0.0001 kg m^2
+# Rigid-body motion is driven by OpenFOAM forces.dat/log loads, with panel fallback only if OpenFOAM loads are unavailable.
+# Optional non-rigid deformation is logged separately in assembly_deformation_log.txt.
+step	patch	material	material_source	mass_kg	density_kg_m3	mate_type	freedom_source	Cd	Cs	Cl	CmRoll	CmPitch	CmYaw	Fx_N	Fy_N	Fz_N	Mx_Nm	My_Nm	Mz_Nm	dx_m	dy_m	dz_m	droll_rad	dpitch_rad	dyaw_rad	total_x_m	total_y_m	total_z_m
+0	object_1	unknown	combined-source/bom	0.091184936	1000	COLLISION_IMPACTOR	collision-convergence-moving	nan	0	nan	0	0	0	8.7219659e-12	-0.48177962	1.3313373e-07	-1.952402e-08	2.4413258e-13	-5.9082111e-13	0	0	0	0	0	0	-1.3952873e-05	-0.0022692462	0.00050900497
+0	object_2	unknown	combined-source/bom	0.004	1000	COLLISION_TARGET	collision-convergence-stationary	nan	0	nan	0	0	0	nan	nan	nan	0	0	0	0	0	0	0	0	0	0	0	0
+1	object_1	unknown	combined-source/bom	0.091184936	1000	COLLISION_IMPACTOR	collision-convergence-moving	nan	0	nan	0	0	0	-4.2476671e-05	-0.48178107	1.328427e-07	-2.0860265e-08	2.9614964e-12	-1.6936638e-06	0	0	0	0	0	0	-1.3952873e-05	0.012730754	0.00050900497
+1	object_2	unknown	combined-source/bom	0.004	1000	COLLISION_TARGET	collision-convergence-stationary	nan	0	nan	0	0	0	nan	nan	nan	0	0	0	0	0	0	0	0	0	0	0	0
+2	object_1	unknown	combined-source/bom	0.091184936	1000	COLLISION_IMPACTOR	post-perforation-ballistic	nan	0	nan	0	0	0	-0.00019891662	-0.47858128	1.3077841e-07	-2.5640854e-08	9.1501292e-12	-7.9308632e-06	-5.4476813e-10	0.014931932	3.5815969e-13	-6.3582212e-11	1.0991474e-13	-1.9666343e-08	-1.3953418e-05	0.042629145	0.00050900497
+2	object_2	unknown	combined-source/bom	0.004	1000	COLLISION_TARGET	collision-convergence-stationary	nan	0	nan	0	0	0	nan	nan	nan	0	0	0	0	0	0	0	0	0	0	0	0
+3	object_1	unknown	combined-source/bom	0.091184936	1000	COLLISION_IMPACTOR	post-perforation-ballistic	nan	0	nan	0	0	0	-0.00021615037	-0.47818864	1.3051053e-07	-2.6162916e-08	8.8623597e-12	-8.6180591e-06	-1.1361368e-09	0.014914256	7.1519316e-13	-1.284414e-10	2.1634151e-13	-4.1031297e-08	-1.3954554e-05	0.057543401	0.00050900498
+3	object_2	unknown	combined-source/bom	0.004	1000	COLLISION_TARGET	collision-convergence-stationary	nan	0	nan	0	0	0	nan	nan	nan	0	0	0	0	0	0	0	0	0	0	0	0
+4	object_1	unknown	combined-source/bom	0.091184936	1000	COLLISION_IMPACTOR	post-perforation-ballistic	nan	0	nan	0	0	0	-0.00023832576	-0.47754149	1.3011353e-07	-2.6828838e-08	8.264227e-12	-9.5026245e-06	-1.7875886e-09	0.014896601	1.070748e-12	-1.9493401e-10	3.1555356e-13	-6.4583828e-08	-1.3956342e-05	0.072440003	0.00050900498
+4	object_2	unknown	combined-source/bom	0.004	1000	COLLISION_TARGET	collision-convergence-stationary	nan	0	nan	0	0	0	nan	nan	nan	0	0	0	0	0	0	0	0	0	0	0	0
