@@ -15,6 +15,7 @@ from cfd_motion.motion import (
     configure_collision_convergence_components,
     contact_inverse_mass,
     deform_component_at_contact,
+    build_eulerian_contact_grid,
     fracture_thin_shell,
     local_contact_geometry,
     register_collision_dent,
@@ -26,7 +27,7 @@ from cfd_motion.motion import (
     update_component_motion,
     write_collision_convergence_log_header,
 )
-from cfd_motion.runner import refine_thin_impact_target
+from cfd_motion.runner import refine_collision_mesh_for_deformation, refine_thin_impact_target
 
 
 def box_component(name: str, xmin: float, xmax: float) -> AeroComponent:
@@ -315,6 +316,7 @@ class CollisionConvergenceTest(TestCase):
         )
         self.assertGreater(refine_thin_impact_target(target), 0)
         initial_triangle_count = len(target.triangles)
+        initial_triangles = list(target.triangles)
         damage = register_collision_hole(
             target,
             (0.0, 0.0, 0.0),
@@ -346,22 +348,8 @@ class CollisionConvergenceTest(TestCase):
             damage.target_hole_radius_m,
             delta=1e-6,
         )
-        self.assertGreater(len(target.triangles), initial_triangle_count)
-        retained_inner_fragments = []
-        intact_face_centroid_radii = []
-        for triangle in target.triangles:
-            area, centroid, normal = triangle_area_centroid_normal(triangle)
-            if area > 1e-18 and abs(normal[0]) >= 0.5:
-                radial = math.hypot(centroid[1], centroid[2])
-                if radial < damage.target_hole_radius_m - 1e-6:
-                    retained_inner_fragments.append(abs(centroid[0]))
-                else:
-                    intact_face_centroid_radii.append(radial)
-        # A perforation opens the original sheet while retaining failed material
-        # as displaced fragments rather than deleting it.
-        self.assertTrue(retained_inner_fragments)
-        self.assertGreater(min(retained_inner_fragments), 1e-5)
-        self.assertTrue(intact_face_centroid_radii)
+        self.assertEqual(len(target.triangles), initial_triangle_count)
+        self.assertNotEqual(target.triangles, initial_triangles)
 
     def test_fracture_cuts_a_resolved_hole_in_coarse_sheet_mesh(self) -> None:
         target = rectangular_component(
@@ -593,7 +581,69 @@ class CollisionConvergenceTest(TestCase):
             post_contact = swept_mesh_contact(moving, stationary, axis, 0.005)
             self.assertIsNotNone(post_contact)
             assert post_contact is not None
-            self.assertAlmostEqual(post_contact[0], 0.0, places=9)
+            self.assertLessEqual(post_contact[0], 1e-4)
+
+    def test_fixed_topology_deforms_coarse_triangle_containing_contact(self) -> None:
+        component = rectangular_component(
+            "coarse_target",
+            0.0,
+            0.0001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        original_triangles = list(component.triangles)
+        applied = deform_component_at_contact(
+            component,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.002,
+            0.05,
+        )
+
+        self.assertGreater(applied, 0.0)
+        self.assertEqual(len(component.triangles), len(original_triangles))
+        self.assertNotEqual(component.triangles, original_triangles)
+
+    def test_eulerian_contact_grid_contains_contact_penalty_pressure(self) -> None:
+        component = rectangular_component(
+            "grid_target",
+            0.0,
+            0.0001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        grid = build_eulerian_contact_grid(
+            component.triangles,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.002,
+            0.05,
+        )
+
+        self.assertTrue(grid.penalty_pressure_pa)
+        self.assertGreaterEqual(grid.pressure_at((0.0, 0.0, 0.0)), 0.0)
+
+    def test_collision_refinement_keeps_coarse_target_centered(self) -> None:
+        component = rectangular_component(
+            "coarse_target",
+            0.0,
+            0.0001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        original_center = component_center_from_bounds(component)
+        original_count = len(component.triangles)
+        refined = refine_collision_mesh_for_deformation(component)
+
+        self.assertGreater(refined, 0)
+        self.assertGreater(len(component.triangles), original_count)
+        self.assertEqual(component_center_from_bounds(component), original_center)
 
     def test_tungsten_ball_perforates_point_one_mm_abs_sheet(self) -> None:
         moving = rectangular_component("ball", 0.0, 0.03, -0.015, 0.015, -0.015, 0.015)
@@ -639,16 +689,20 @@ class CollisionConvergenceTest(TestCase):
             self.assertGreater(contact.residual_speed, 45.0)
             self.assertGreater(refine_thin_impact_target(stationary), 0)
             triangle_count_before = len(stationary.triangles)
+            triangles_before = list(stationary.triangles)
 
             lines = resolve_part_collisions([moving, stationary], 0, collision_log, contact, pair)
 
             self.assertTrue(lines)
-            self.assertGreater(len(stationary.triangles), triangle_count_before)
+            self.assertEqual(len(stationary.triangles), triangle_count_before)
+            self.assertNotEqual(stationary.triangles, triangles_before)
+            self.assertGreater(stationary.deformation_max_m, 0.0)
+            self.assertGreater(moving.deformation_max_m, 0.0)
             self.assertTrue(stationary.collision_damage)
-            self.assertAlmostEqual(
-                stationary.collision_damage[0].current_hole_radius_m,
-                stationary.collision_damage[0].target_hole_radius_m,
-                delta=1e-6,
-            )
+            damage = stationary.collision_damage[0]
+            self.assertLess(damage.current_hole_radius_m, damage.target_hole_radius_m)
+            first_radius = damage.current_hole_radius_m
+            advance_collision_damage_state(stationary, damage, damage.response_time_s)
+            self.assertGreater(damage.current_hole_radius_m, first_radius)
             self.assertGreater(moving.linear_velocity[0], 45.0)
             self.assertEqual(moving.freedom.source, "post-perforation-ballistic")

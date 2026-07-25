@@ -2,4 +2,4 @@
 # Swept impacts preserve prescribed speed until real triangle surfaces meet.
 # Curved contact uses Hertz elasticity; flat contact uses the classical elastic flat-punch relation. Thin targets use membrane energy, yielding, and perforation with residual impactor velocity.
 step	pass	patch_a	patch_b	depth_m	nx	ny	nz	cx	cy	cz	impulse_Ns	move_a_m	move_b_m	deform_a_m	deform_b_m	contact_radius_m	indent_a_m	indent_b_m	failure_mode	perforated	absorbed_energy_J	residual_speed_mps	displaced_fragments	manifold_points	friction_coefficient
-1	0	object_1	object_2	0.0062355352	0	-1	0	0.0003140037	0.01730809	0.00028920307	0	0	0	0	0.013053446	0.006526723	0	0	plastic_membrane_perforation	1	0.27512251	29.899258	264	72	0
+0	0	object_1	object_2	0.0062120912	0	-1	0	0.00031400419	0.01730809	0.00028920311	0	0	0	0.00029581386	0.0059162773	0	0	0	plastic_membrane_perforation	1	0.27308727	29.900004	0	72	0

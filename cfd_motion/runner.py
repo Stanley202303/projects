@@ -73,6 +73,14 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
     apply_relative_motion_policy(components, root_case)
     collision_convergence_pair = configure_collision_convergence_components(components)
     collision_convergence_active = collision_convergence_pair is not None
+    if collision_convergence_pair is not None:
+        for collision_component in collision_convergence_pair:
+            refined = refine_collision_mesh_for_deformation(collision_component)
+            if refined:
+                print(
+                    f"Collision mesh refinement: {collision_component.patch} "
+                    f"added {refined} fixed-topology triangles."
+                )
     collision_convergence_axis = (
         collision_convergence_approach_axis(collision_convergence_pair)
         if collision_convergence_pair is not None
@@ -149,6 +157,14 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         f"collision_deformation_radius_factor={COLLISION_DEFORMATION_RADIUS_FACTOR}",
         f"collision_deformation_min_radius_m={COLLISION_DEFORMATION_MIN_RADIUS_M}",
         f"collision_max_contact_deformation={COLLISION_MAX_CONTACT_DEFORMATION}",
+        "collision_contact_coupling=eulerian_sdf_penalty",
+        f"collision_eulerian_grid_cells={COLLISION_EULERIAN_GRID_CELLS}",
+        f"collision_eulerian_grid_min_cell_m={COLLISION_EULERIAN_GRID_MIN_CELL_M}",
+        f"collision_eulerian_penalty_gain={COLLISION_EULERIAN_PENALTY_GAIN}",
+        f"collision_mesh_refinement_target_triangles={COLLISION_MESH_REFINEMENT_TARGET_TRIANGLES}",
+        f"collision_mesh_refinement_max_levels={COLLISION_MESH_REFINEMENT_MAX_LEVELS}",
+        f"collision_damage_min_response_time_s={COLLISION_DAMAGE_MIN_RESPONSE_TIME_S}",
+        f"collision_topology_changes={ENABLE_COLLISION_TOPOLOGY_CHANGES}",
         f"collision_convergence_speed_mps={COLLISION_CONVERGENCE_SPEED_MPS}",
         f"collision_convergence_components={COLLISION_CONVERGENCE_COMPONENTS or '<auto>'}",
         f"collision_convergence_axis={COLLISION_CONVERGENCE_AXIS}",
@@ -372,7 +388,11 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                         collision_convergence_log,
                         collision_convergence_axis,
                     )
-                    if swept_contact is not None and swept_contact.perforated:
+                    if (
+                        ENABLE_COLLISION_TOPOLOGY_CHANGES
+                        and swept_contact is not None
+                        and swept_contact.perforated
+                    ):
                         added_triangles = refine_thin_impact_target(swept_contact.stationary)
                         if added_triangles:
                             print(
@@ -639,6 +659,30 @@ def refine_thin_impact_target(component: AeroComponent) -> int:
     return len(triangles) - original_count
 
 
+def refine_collision_mesh_for_deformation(component: AeroComponent) -> int:
+    """Refine only very coarse collision meshes before the first frame.
+
+    Collision dents are fixed-topology geometry edits.  Refining once up front
+    gives the dent enough local vertices while keeping every exported frame
+    compatible with ParaView and preventing a coarse face from translating an
+    entire target.
+    """
+    target_count = COLLISION_MESH_REFINEMENT_TARGET_TRIANGLES
+    if target_count <= 0 or len(component.triangles) >= target_count:
+        return 0
+    triangles = list(component.triangles)
+    original_count = len(triangles)
+    for _level in range(COLLISION_MESH_REFINEMENT_MAX_LEVELS):
+        if len(triangles) >= target_count:
+            break
+        triangles = [child for triangle in triangles for child in _subdivide_triangle(triangle)]
+    if len(triangles) == original_count:
+        return 0
+    component.triangles = triangles
+    component.aref, component.lref, component.cofr = component_references(triangles)
+    return len(triangles) - original_count
+
+
 def build_collision_source_component(source: str, index: int, workdir: Path, client: Optional[OnshapeClient] = None) -> AeroComponent:
     label = _source_label(source, index)
     patch = unique_patch_names([label])[0]
@@ -682,6 +726,13 @@ def run_sources(sources: Sequence[str]) -> int:
                 raise ValueError("Two-source collision runs need COLLISION_CONVERGENCE_SPEED_MPS > 0")
             pair = configure_collision_convergence_components(components)
             if pair is not None:
+                for collision_component in pair:
+                    refined = refine_collision_mesh_for_deformation(collision_component)
+                    if refined:
+                        print(
+                            f"Collision mesh refinement: {collision_component.patch} "
+                            f"added {refined} fixed-topology triangles."
+                        )
                 shift = arrange_collision_convergence_initial_gap(pair)
                 moving, stationary = collision_convergence_moving_and_stationary(pair)
                 axis = collision_convergence_approach_axis(pair)

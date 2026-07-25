@@ -2,8 +2,8 @@ Assembly quasi-dynamic CFD run
 
 cfd_solver_mode=steady
 solver_application=simpleFoam
-dynamic_steps=5
-motion_dt=0.0005
+dynamic_steps=12
+motion_dt=0.00075
 enable_nonrigid_deformation=True
 deform_anchored_components=True
 deformation_component_name_contains=<all>
@@ -42,6 +42,14 @@ collision_deformation_gain=1.0
 collision_deformation_radius_factor=1.0
 collision_deformation_min_radius_m=0.002
 collision_max_contact_deformation=0.01
+collision_contact_coupling=eulerian_sdf_penalty
+collision_eulerian_grid_cells=12
+collision_eulerian_grid_min_cell_m=0.0001
+collision_eulerian_penalty_gain=1.0
+collision_mesh_refinement_target_triangles=2048
+collision_mesh_refinement_max_levels=4
+collision_damage_min_response_time_s=0.003
+collision_topology_changes=False
 collision_convergence_speed_mps=30.0
 collision_convergence_components=<auto>
 collision_convergence_axis=auto

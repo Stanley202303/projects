@@ -1088,16 +1088,42 @@ def deform_triangle_mesh_at_contact(
     inward_direction: Vec3,
     indentation: float,
     contact_radius: float,
+    eulerian_grid: Optional[EulerianContactGrid] = None,
 ) -> Tuple[List[Triangle], float]:
     direction = v_unit(inward_direction)
     deformed: List[Triangle] = []
     max_applied = 0.0
     for normal, v1, v2, v3 in triangles:
+        triangle_centroid = v_mul(v_add(v_add(v1, v2), v3), 1.0 / 3.0)
+        centroid_distance = v_norm(v_sub(triangle_centroid, contact_point))
+        if centroid_distance < contact_radius:
+            centroid_fraction = centroid_distance / max(contact_radius, 1e-12)
+            if COLLISION_DEFORMATION_MODEL in {"hertz", "hertzian"}:
+                centroid_weight = math.sqrt(max(0.0, 1.0 - centroid_fraction * centroid_fraction))
+            else:
+                smooth_fraction = 1.0 - centroid_fraction
+                centroid_weight = smooth_fraction * smooth_fraction * (3.0 - 2.0 * smooth_fraction)
+        else:
+            centroid_weight = 0.0
+        if eulerian_grid is not None:
+            grid_pressure = eulerian_grid.pressure_at(triangle_centroid)
+            grid_weight = min(
+                1.0,
+                grid_pressure / max(
+                    COLLISION_EULERIAN_PENALTY_GAIN * indentation,
+                    1e-12,
+                ),
+            )
+            centroid_weight = max(centroid_weight, grid_weight)
         points: List[Vec3] = []
         for point in (v1, v2, v3):
             distance = v_norm(v_sub(point, contact_point))
             if distance >= contact_radius:
-                displacement = (0.0, 0.0, 0.0)
+                # A refined fixed-topology mesh supplies nearby vertices.  Do
+                # not move distant vertices just because their parent triangle
+                # overlaps the contact footprint; doing so translates coarse
+                # targets instead of creating a local dent.
+                weight = 0.0
             else:
                 radial_fraction = distance / contact_radius
                 if COLLISION_DEFORMATION_MODEL in {"hertz", "hertzian"}:
@@ -1111,7 +1137,8 @@ def deform_triangle_mesh_at_contact(
                         * smooth_fraction
                         * (3.0 - 2.0 * smooth_fraction)
                     )
-                displacement = v_mul(direction, indentation * weight)
+                weight = max(weight, 0.65 * centroid_weight)
+            displacement = v_mul(direction, indentation * weight)
             max_applied = max(max_applied, v_norm(displacement))
             points.append(v_add(point, displacement))
         new_normal = v_unit(
@@ -1176,6 +1203,13 @@ def deform_component_at_contact(
         target,
         contact_radius,
     )
+    eulerian_grid = build_eulerian_contact_grid(
+        component.triangles,
+        contact_point,
+        direction,
+        target,
+        radius,
+    )
 
     deformed, max_applied = deform_triangle_mesh_at_contact(
         component.triangles,
@@ -1183,12 +1217,16 @@ def deform_component_at_contact(
         direction,
         amplitude,
         radius,
+        eulerian_grid,
     )
 
     if max_applied <= 1e-12:
         return 0.0
+    original_cofr = component.cofr
     component.triangles = deformed
-    component.aref, component.lref, component.cofr = component_references(component.triangles)
+    component.aref, component.lref, _geometry_centroid = component_references(component.triangles)
+    # A local dent changes surface geometry, not the body's centre of mass.
+    component.cofr = original_cofr
     component.deformation_max_m = max(component.deformation_max_m, max_applied)
     return max_applied
 
@@ -1211,6 +1249,73 @@ class SweptCollisionContact:
     hole_radius: float = 0.0
     contact_geometry: Optional[LocalContactGeometry] = None
     post_contact_time_s: float = 0.0
+
+
+@dataclass(frozen=True)
+class EulerianContactGrid:
+    """Small Cartesian contact grid used for fixed-topology solid deformation."""
+
+    origin: Vec3
+    cell_size_m: float
+    penalty_pressure_pa: Dict[Tuple[int, int, int], float]
+
+    def pressure_at(self, point: Vec3) -> float:
+        indices = tuple(
+            math.floor((point[axis] - self.origin[axis]) / self.cell_size_m)
+            for axis in range(3)
+        )
+        return self.penalty_pressure_pa.get(indices, 0.0)
+
+
+def build_eulerian_contact_grid(
+    triangles: Sequence[Triangle],
+    contact_point: Vec3,
+    inward_direction: Vec3,
+    indentation: float,
+    contact_radius: float,
+) -> EulerianContactGrid:
+    """Voxelize contact penetration into a local penalty-pressure field.
+
+    This is intentionally a small, explicit Eulerian grid rather than a global
+    fluid solver.  It supplies a stable signed-distance-like contact field for
+    coarse STL surfaces; OpenFOAM supplies the fluid pressure and momentum
+    loads for the surrounding two-way motion loop.
+    """
+    radius = max(contact_radius, COLLISION_DEFORMATION_MIN_RADIUS_M)
+    cell_size = max(
+        radius / COLLISION_EULERIAN_GRID_CELLS,
+        COLLISION_EULERIAN_GRID_MIN_CELL_M,
+    )
+    origin = v_sub(contact_point, (radius, radius, radius))
+    direction = v_unit(inward_direction)
+    pressure_by_cell: Dict[Tuple[int, int, int], float] = {}
+
+    for triangle in triangles:
+        _area, centroid, normal = triangle_area_centroid_normal(triangle)
+        delta = v_sub(centroid, contact_point)
+        signed_distance = v_dot(delta, direction)
+        tangent_delta = v_sub(delta, v_mul(direction, signed_distance))
+        radial_distance = v_norm(tangent_delta)
+        if radial_distance >= radius:
+            continue
+        radial_weight = math.sqrt(max(0.0, 1.0 - (radial_distance / radius) ** 2))
+        normal_weight = max(0.0, abs(v_dot(normal, direction)))
+        penetration = max(0.0, indentation - max(0.0, signed_distance))
+        pressure = (
+            COLLISION_EULERIAN_PENALTY_GAIN
+            * radial_weight
+            * max(normal_weight, 0.25)
+            * penetration
+        )
+        if pressure <= 0.0:
+            continue
+        indices = tuple(
+            math.floor((centroid[axis] - origin[axis]) / cell_size)
+            for axis in range(3)
+        )
+        pressure_by_cell[indices] = max(pressure_by_cell.get(indices, 0.0), pressure)
+
+    return EulerianContactGrid(origin, cell_size, pressure_by_cell)
 
 
 @dataclass(frozen=True)
@@ -1846,7 +1951,12 @@ def collision_damage_response_time(
     contact_radius: float,
 ) -> float:
     wave_speed = material_longitudinal_wave_speed(component)
-    return max(2.0 * max(contact_radius, 1e-9) / max(wave_speed, 1e-9), 1e-9)
+    physical_response_time = 2.0 * max(contact_radius, 1e-9) / max(wave_speed, 1e-9)
+    # A response faster than the output interval is physically unresolved in
+    # the animation.  Retain the physical lower bound, but use a configurable
+    # frame-resolved floor so a dent/hole evolves across saved frames instead
+    # of appearing fully formed in the first post-impact frame.
+    return max(physical_response_time, COLLISION_DAMAGE_MIN_RESPONSE_TIME_S, 1e-9)
 
 
 def _matching_collision_damage(
@@ -1972,9 +2082,13 @@ def register_collision_hole(
         direction,
         radius,
     )
+    physical_response_time = target_hole_radius / max(
+        0.4 * material_longitudinal_wave_speed(component),
+        1e-9,
+    )
     response_time = max(
-        target_hole_radius
-        / max(0.4 * material_longitudinal_wave_speed(component), 1e-9),
+        physical_response_time,
+        COLLISION_DAMAGE_MIN_RESPONSE_TIME_S,
         1e-9,
     )
     if damage is None:
@@ -2052,15 +2166,9 @@ def advance_collision_damage_state(
             damage.current_hole_radius_m + hole_increment,
         )
         damage.current_hole_radius_m = next_hole_radius
-        # Do not re-mesh for sub-resolution radius growth.  The damage state
-        # remains continuous, while the mesh changes only when it can represent
-        # a new physical feature.  This avoids repeatedly subdividing the same
-        # rim during post-impact settling.
-        topology_increment = max(
-            0.5 * inferred_deformation_thickness(component),
-            COLLISION_MIN_OVERLAP_M,
-        )
-        if hole_increment >= topology_increment:
+        if ENABLE_COLLISION_TOPOLOGY_CHANGES:
+            # Experimental/offline path only.  The normal animation path keeps
+            # a fixed mesh so every frame has compatible VTK arrays.
             rim_increment = min(2.0 * hole_increment, MAX_TOTAL_DEFORMATION)
             rim_deformation, removed_triangles = fracture_thin_shell(
                 component,
@@ -2079,6 +2187,24 @@ def advance_collision_damage_state(
             )
             geometry_changed = max(geometry_changed, rim_deformation, hole_increment)
             component.deformation_reference_triangles = list(component.triangles)
+        else:
+            rim_deformation = deform_component_at_contact(
+                component,
+                damage.contact_point,
+                damage.inward_direction,
+                min(2.0 * hole_increment, COLLISION_MAX_CONTACT_DEFORMATION),
+                max(damage.contact_radius_m, next_hole_radius),
+            )
+            damage.current_depth_m = max(damage.current_depth_m, rim_deformation)
+            damage.permanent_depth_m = max(damage.permanent_depth_m, rim_deformation)
+            geometry_changed = max(geometry_changed, rim_deformation)
+            deform_collision_reference(
+                component,
+                damage.contact_point,
+                damage.inward_direction,
+                rim_deformation,
+                max(damage.contact_radius_m, next_hole_radius),
+            )
 
     damage.elapsed_s += dt
     return geometry_changed, removed_triangles
@@ -2207,6 +2333,54 @@ def resolve_part_collisions(
                 inv_sum = inv_a + inv_b
                 if is_swept_pair and swept_contact is not None and swept_contact.perforated:
                     impact_axis = swept_contact.approach_axis
+                    moving_surface_point = v_add(
+                        swept_contact.point,
+                        v_mul(impact_axis, swept_contact.approach_penetration),
+                    )
+                    impact_depth = max(
+                        swept_contact.approach_penetration,
+                        swept_contact.depth,
+                        2.0 * COLLISION_MIN_OVERLAP_M,
+                    )
+                    contact_radius = hertz_contact_area_radius(
+                        swept_contact.moving,
+                        swept_contact.stationary,
+                        impact_depth,
+                        geometry=swept_contact.contact_geometry,
+                    )
+                    indent_moving, indent_stationary = split_contact_indentation(
+                        swept_contact.moving,
+                        swept_contact.stationary,
+                        impact_depth,
+                    )
+                    deform_moving = deform_component_at_contact(
+                        swept_contact.moving,
+                        moving_surface_point,
+                        v_mul(impact_axis, -1.0),
+                        indent_moving,
+                        contact_radius,
+                    )
+                    deform_stationary = deform_component_at_contact(
+                        swept_contact.stationary,
+                        swept_contact.point,
+                        impact_axis,
+                        indent_stationary,
+                        contact_radius,
+                    )
+                    deform_collision_reference(
+                        swept_contact.moving,
+                        moving_surface_point,
+                        v_mul(impact_axis, -1.0),
+                        deform_moving,
+                        contact_radius,
+                    )
+                    deform_collision_reference(
+                        swept_contact.stationary,
+                        swept_contact.point,
+                        impact_axis,
+                        deform_stationary,
+                        contact_radius,
+                    )
                     hole_damage = register_collision_hole(
                         swept_contact.stationary,
                         swept_contact.point,
@@ -2217,11 +2391,11 @@ def resolve_part_collisions(
                         swept_contact.failure_mode,
                         swept_contact.absorbed_energy_j,
                     )
-                    deform_target, removed_triangles = advance_collision_damage_state(
-                        swept_contact.stationary,
-                        hole_damage,
-                        swept_contact.post_contact_time_s,
-                    )
+                    # Register the perforation at first contact.  Its radius
+                    # and rim deformation are advanced at the start of each
+                    # subsequent frame, so the saved animation shows damage
+                    # growth instead of jumping straight to the final hole.
+                    removed_triangles = 0
                     swept_contact.moving.linear_velocity = v_mul(
                         impact_axis,
                         swept_contact.residual_speed,
@@ -2231,8 +2405,8 @@ def resolve_part_collisions(
                     swept_contact.moving.filtered_force = (0.0, 0.0, 0.0)
                     swept_contact.moving.filtered_moment = (0.0, 0.0, 0.0)
                     swept_contact.moving.aerodynamic_load_initialized = False
-                    deform_a = deform_target if a is swept_contact.stationary else 0.0
-                    deform_b = deform_target if b is swept_contact.stationary else 0.0
+                    deform_a = deform_moving if a is swept_contact.moving else deform_stationary
+                    deform_b = deform_moving if b is swept_contact.moving else deform_stationary
                     line = (
                         f"{step}\t{collision_pass}\t{a.patch}\t{b.patch}\t"
                         f"{depth:.8g}\t{normal[0]:.8g}\t{normal[1]:.8g}\t{normal[2]:.8g}\t"

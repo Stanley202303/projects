@@ -3,8 +3,8 @@ Minimal ParaView Stream Tracer volume case
 Open this file in ParaView for real 3D streamlines:
   /Users/Stanley/projects/collision_test/stream_tracer_volume_case/case.foam
 
-source_step=step_004
-source_solver_time=10
+source_step=step_008
+source_solver_time=5
 field=U
 retained_data=constant/polyMesh, system, latest U only
 

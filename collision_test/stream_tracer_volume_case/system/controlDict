@@ -12,12 +12,12 @@ startFrom       startTime;
 startTime       0;
 
 stopAt          endTime;
-endTime         10;
+endTime         5;
 
 deltaT          1;
 
 writeControl    timeStep;
-writeInterval   10;
+writeInterval   5;
 
 // Keep only the latest written solution time. This prevents a 5M+ cell case
 // from filling the Docker/host disk with 0,1,2,3,... field folders.
@@ -44,15 +44,15 @@ functions
         rhoInf          1.225;
         pRef            0;
 
-        CofR            (0.00031451 0.00257239 0.000289238);
+        CofR            (0.000314517 0.120965 0.000289238);
 
         enabled         true;
         writeToFile     true;
         writeFields     no;
         executeControl  timeStep;
-        executeInterval 10;
+        executeInterval 5;
         writeControl    timeStep;
-        writeInterval   10;
+        writeInterval   5;
         log             true;
     }
     forceCoeffs_object_1
@@ -67,23 +67,23 @@ functions
         rhoInf          1.225;
         pRef            0;
 
-        CofR            (0.00031451 0.00257239 0.000289238);
+        CofR            (0.000314517 0.120965 0.000289238);
 
         dragDir         (1 0 0);
         liftDir         (0 0 1);
         pitchAxis       (0 1 0);
 
         magUInf         0;
-        lRef            0.109064;
-        Aref            0.00403549;
+        lRef            0.108769;
+        Aref            0.00402457;
 
         enabled         true;
         writeToFile     true;
         writeFields     no;
         executeControl  timeStep;
-        executeInterval 10;
+        executeInterval 5;
         writeControl    timeStep;
-        writeInterval   10;
+        writeInterval   5;
         log             true;
     }
     forces_object_2
@@ -98,15 +98,15 @@ functions
         rhoInf          1.225;
         pRef            0;
 
-        CofR            (0.000314005 0.0252687 0.000289238);
+        CofR            (0.000314005 0.0254404 0.000289238);
 
         enabled         true;
         writeToFile     true;
         writeFields     no;
         executeControl  timeStep;
-        executeInterval 10;
+        executeInterval 5;
         writeControl    timeStep;
-        writeInterval   10;
+        writeInterval   5;
         log             true;
     }
     forceCoeffs_object_2
@@ -121,7 +121,7 @@ functions
         rhoInf          1.225;
         pRef            0;
 
-        CofR            (0.000314005 0.0252687 0.000289238);
+        CofR            (0.000314005 0.0254404 0.000289238);
 
         dragDir         (1 0 0);
         liftDir         (0 0 1);
@@ -135,9 +135,9 @@ functions
         writeToFile     true;
         writeFields     no;
         executeControl  timeStep;
-        executeInterval 10;
+        executeInterval 5;
         writeControl    timeStep;
-        writeInterval   10;
+        writeInterval   5;
         log             true;
     }
     forces_all
@@ -152,15 +152,15 @@ functions
         rhoInf          1.225;
         pRef            0;
 
-        CofR            (0.000314005 0.00257239 0.000289238);
+        CofR            (0.000314005 0.0963287 0.000289238);
 
         enabled         true;
         writeToFile     true;
         writeFields     no;
         executeControl  timeStep;
-        executeInterval 10;
+        executeInterval 5;
         writeControl    timeStep;
-        writeInterval   10;
+        writeInterval   5;
         log             true;
     }
     forceCoeffs_all
@@ -175,7 +175,7 @@ functions
         rhoInf          1.225;
         pRef            0;
 
-        CofR            (0.000314005 0.00257239 0.000289238);
+        CofR            (0.000314005 0.0963287 0.000289238);
 
         dragDir         (1 0 0);
         liftDir         (0 0 1);
@@ -183,15 +183,15 @@ functions
 
         magUInf         0;
         lRef            0.2;
-        Aref            0.0218129;
+        Aref            0.0316082;
 
         enabled         true;
         writeToFile     true;
         writeFields     no;
         executeControl  timeStep;
-        executeInterval 10;
+        executeInterval 5;
         writeControl    timeStep;
-        writeInterval   10;
+        writeInterval   5;
         log             true;
     }
 }

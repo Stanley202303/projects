@@ -439,6 +439,17 @@ COLLISION_DEFORMATION_GAIN = float(os.environ.get("COLLISION_DEFORMATION_GAIN", 
 COLLISION_DEFORMATION_RADIUS_FACTOR = float(os.environ.get("COLLISION_DEFORMATION_RADIUS_FACTOR", "1.0"))
 COLLISION_DEFORMATION_MIN_RADIUS_M = float(os.environ.get("COLLISION_DEFORMATION_MIN_RADIUS_M", "0.002"))
 COLLISION_MAX_CONTACT_DEFORMATION = float(os.environ.get("COLLISION_MAX_CONTACT_DEFORMATION", "0.01"))
+COLLISION_EULERIAN_GRID_CELLS = max(4, int(os.environ.get("COLLISION_EULERIAN_GRID_CELLS", "12")))
+COLLISION_EULERIAN_GRID_MIN_CELL_M = max(1e-9, float(os.environ.get("COLLISION_EULERIAN_GRID_MIN_CELL_M", "1e-4")))
+COLLISION_EULERIAN_PENALTY_GAIN = max(0.0, float(os.environ.get("COLLISION_EULERIAN_PENALTY_GAIN", "1.0")))
+COLLISION_MESH_REFINEMENT_TARGET_TRIANGLES = max(
+    0,
+    int(os.environ.get("COLLISION_MESH_REFINEMENT_TARGET_TRIANGLES", "2048")),
+)
+COLLISION_MESH_REFINEMENT_MAX_LEVELS = max(
+    0,
+    int(os.environ.get("COLLISION_MESH_REFINEMENT_MAX_LEVELS", "4")),
+)
 COLLISION_CONVERGENCE_SPEED_MPS = max(0.0, float(os.environ.get("COLLISION_CONVERGENCE_SPEED_MPS", "0")))
 COLLISION_CONVERGENCE_COMPONENTS = os.environ.get("COLLISION_CONVERGENCE_COMPONENTS", "").strip()
 COLLISION_CONVERGENCE_AXIS = os.environ.get("COLLISION_CONVERGENCE_AXIS", "auto").strip().lower()
@@ -449,9 +460,14 @@ COLLISION_SWEEP_PENETRATION_M = float(os.environ.get("COLLISION_SWEEP_PENETRATIO
 COLLISION_CONVERGENCE_STOP_AFTER_CONTACT = env_bool("COLLISION_CONVERGENCE_STOP_AFTER_CONTACT", True)
 COLLISION_CONVERGENCE_LOG_NAME = "assembly_collision_convergence_log.txt"
 COLLISION_DAMAGE_LOG_NAME = "assembly_collision_damage_log.txt"
-# Limit local thin-shell remeshing.  This is deliberately conservative: a
-# collision should refine only the contact neighbourhood, never turn a coarse
-# target mesh into an unbounded number of visualisation cells.
+COLLISION_DAMAGE_MIN_RESPONSE_TIME_S = max(
+    0.0,
+    float(os.environ.get("COLLISION_DAMAGE_MIN_RESPONSE_TIME_S", str(4.0 * MOTION_DT))),
+)
+# Collision output uses a fixed mesh by default.  Topology changes can make
+# successive VTP frames structurally incompatible in ParaView, particularly at
+# first contact.  Enable only for offline fracture experiments.
+ENABLE_COLLISION_TOPOLOGY_CHANGES = env_bool("ENABLE_COLLISION_TOPOLOGY_CHANGES", False)
 COLLISION_FRACTURE_MAX_SUBDIVISION_DEPTH = max(
     0,
     int(os.environ.get("COLLISION_FRACTURE_MAX_SUBDIVISION_DEPTH", "5")),

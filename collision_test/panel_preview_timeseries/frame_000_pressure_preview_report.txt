@@ -16,18 +16,18 @@ movable	0	1	1
 normalX	-1	1	2
 normalY	-1	1	2
 normalZ	-1	1	2
-p	-157.5	449.447989	606.947989
-pPa	-192.9375	550.573787	743.511287
-pPaAbsPanel	0	551.25	551.25
-pPaPanel	-192.9375	550.573787	743.511287
+p	-156.451795	446.497252	602.949046
+pPa	-191.653448	546.959134	738.612582
+pPaAbsPanel	0	547.581281	547.581281
+pPaPanel	-191.653448	546.959134	738.612582
 patchId	0	1	1
 pressureCoeff	-0.35	1	1.35
 pressureCoeffAbs	0	1	1
-pressurePa	-192.9375	550.573787	743.511287
-pressurePaAbs	0	551.25	551.25
+pressurePa	-191.653448	546.959134	738.612582
+pressurePaAbs	0	547.581281	547.581281
 pressureVisible01	0	1	1
 skinFrictionPreview	0	1	1
-triangleArea	1.6740455e-10	0.02	0.0199999998
+triangleArea	1.67394233e-10	9.4011027e-05	9.40108596e-05
 windExposure	0	1	1
 
 If pressureCoeff/pressurePa have a non-zero range but ParaView is blue:

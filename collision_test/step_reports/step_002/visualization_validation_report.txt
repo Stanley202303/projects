@@ -1,17 +1,17 @@
 # Visualization validation report
-case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_uq_barov/step_work
-numeric_time_dirs=['0', '10']
-selected_latest_time=10
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work
+numeric_time_dirs=['0', '5']
+selected_latest_time=5
 sampled_surface_vtk_count=2
 foamToVTK_vtk_count=2
 
 field	min	max	range	file
-p	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_uq_barov/step_work/10/p
-pPa	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_uq_barov/step_work/10/pPa
-Cp	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_uq_barov/step_work/10/Cp
-k	1.4115036e-15	9.9994916e-13	9.985376564e-13	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_uq_barov/step_work/10/k
-omega	6.0813516e-05	486.81794	486.8178792	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_uq_barov/step_work/10/omega
-nut	3.0649514e-18	1.6431535e-08	1.6431535e-08	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_uq_barov/step_work/10/nut
+p	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work/5/p
+pPa	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work/5/pPa
+Cp	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work/5/Cp
+k	3.3276166e-14	9.9997831e-13	9.66702144e-13	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work/5/k
+omega	6.0835318e-05	4576.3022	4576.302139	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work/5/omega
+nut	7.2872737e-18	1.643158e-08	1.643157999e-08	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work/5/nut
 
 Interpretation:
 - If selected_latest_time is 0, you are still looking at startup fields, not solved CFD.
