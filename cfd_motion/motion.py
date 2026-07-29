@@ -29,6 +29,20 @@ from .math_utils import *
 from .geometry import *
 from .openfoam import *
 from .onshape import *
+from .structural import (
+    ExplicitShellState,
+    HybridShellCollisionState,
+    advance_hybrid_shell_collision,
+    advance_explicit_shell,
+    apply_shell_contact_work,
+    apply_shell_impact_energy,
+    build_explicit_shell_state,
+    build_hybrid_shell_collision_state,
+    emit_shell_fragments,
+    hybrid_fragment_components,
+    sync_hybrid_shell_fragments,
+    update_shell_perforation,
+)
 
 def triangle_area_centroid_normal(triangle: Triangle) -> Tuple[float, Vec3, Vec3]:
     _normal, v1, v2, v3 = triangle
@@ -1072,9 +1086,21 @@ def hertz_contact_area_radius(
     )
 
 
+def component_is_collision_impactor(component: AeroComponent) -> bool:
+    return component.freedom.mate_type.upper() == "COLLISION_IMPACTOR"
+
+
+def collision_deformation_enabled(component: AeroComponent) -> bool:
+    if not ENABLE_NONRIGID_DEFORMATION or not component.triangles:
+        return False
+    if component_is_collision_impactor(component):
+        return COLLISION_DEFORM_IMPACTOR
+    return component_deformation_enabled(component)
+
+
 def split_contact_indentation(a: AeroComponent, b: AeroComponent, depth: float) -> Tuple[float, float]:
-    ca = component_contact_compliance(a) if component_deformation_enabled(a) else 0.0
-    cb = component_contact_compliance(b) if component_deformation_enabled(b) else 0.0
+    ca = component_contact_compliance(a) if collision_deformation_enabled(a) else 0.0
+    cb = component_contact_compliance(b) if collision_deformation_enabled(b) else 0.0
     total = ca + cb
     if total <= 1e-30:
         return 0.0, 0.0
@@ -1089,11 +1115,20 @@ def deform_triangle_mesh_at_contact(
     indentation: float,
     contact_radius: float,
     eulerian_grid: Optional[EulerianContactGrid] = None,
+    perforation_radius: float = 0.0,
+    perforation_displacement: float = 0.0,
 ) -> Tuple[List[Triangle], float]:
     direction = v_unit(inward_direction)
     deformed: List[Triangle] = []
     max_applied = 0.0
     for normal, v1, v2, v3 in triangles:
+        normal_unit = v_unit(normal, (0.0, 0.0, 1.0))
+        normal_alignment = v_dot(normal_unit, direction)
+        perforation_direction = (
+            normal_unit
+            if normal_alignment >= 0.0
+            else v_mul(normal_unit, -1.0)
+        )
         triangle_centroid = v_mul(v_add(v_add(v1, v2), v3), 1.0 / 3.0)
         centroid_distance = v_norm(v_sub(triangle_centroid, contact_point))
         if centroid_distance < contact_radius:
@@ -1138,7 +1173,32 @@ def deform_triangle_mesh_at_contact(
                         * (3.0 - 2.0 * smooth_fraction)
                     )
                 weight = max(weight, 0.65 * centroid_weight)
-            displacement = v_mul(direction, indentation * weight)
+            displacement_magnitude = indentation * weight
+            if perforation_radius > 0.0 and perforation_displacement > 0.0:
+                point_delta = v_sub(point, contact_point)
+                axial_distance = v_dot(point_delta, direction)
+                tangent_delta = v_sub(
+                    point_delta,
+                    v_mul(direction, axial_distance),
+                )
+                if v_norm(tangent_delta) < perforation_radius:
+                    # Retain the plug material, but move it through the sheet
+                    # along the inward side of the local face normal so the
+                    # fixed-topology surface exposes an opening even when the
+                    # target is rotated relative to the impact axis.
+                    displacement_magnitude = max(
+                        displacement_magnitude,
+                        perforation_displacement,
+                    )
+                    displacement_vector = v_mul(
+                        perforation_direction,
+                        displacement_magnitude,
+                    )
+                else:
+                    displacement_vector = v_mul(direction, displacement_magnitude)
+            else:
+                displacement_vector = v_mul(direction, displacement_magnitude)
+            displacement = displacement_vector
             max_applied = max(max_applied, v_norm(displacement))
             points.append(v_add(point, displacement))
         new_normal = v_unit(
@@ -1181,8 +1241,10 @@ def deform_component_at_contact(
     inward_direction: Vec3,
     indentation: float,
     contact_radius: float,
+    perforation_radius: float = 0.0,
+    perforation_displacement: float = 0.0,
 ) -> float:
-    if not ENABLE_COLLISION_DEFORMATION or not component_deformation_enabled(component):
+    if not ENABLE_COLLISION_DEFORMATION or not collision_deformation_enabled(component):
         return 0.0
     if indentation <= COLLISION_MIN_OVERLAP_M:
         return 0.0
@@ -1218,6 +1280,8 @@ def deform_component_at_contact(
         amplitude,
         radius,
         eulerian_grid,
+        perforation_radius,
+        perforation_displacement,
     )
 
     if max_applied <= 1e-12:
@@ -1551,6 +1615,30 @@ def impactor_contact_radius(
     return local_planar_patch_radius(component, contact_point, outward_normal)
 
 
+def impactor_projected_clearance_radius(
+    component: AeroComponent,
+    impact_axis: Vec3,
+) -> float:
+    """Return the minimum circular through-hole radius for the impactor width.
+
+    Contact-radius estimates are intentionally local: they are useful for Hertz
+    pressure and indentation, but they are too small for a projectile that fully
+    perforates a thin sheet.  A through-hole must clear the projectile's
+    projected cross-section, so use the impactor's projected bounding width in
+    the target plane as a simple, deterministic clearance estimate.
+    """
+    points = stl_points(component.triangles)
+    if not points:
+        return 0.0
+
+    tangent_x, tangent_y = contact_tangent_basis(impact_axis)
+    projected_x = [v_dot(point, tangent_x) for point in points]
+    projected_y = [v_dot(point, tangent_y) for point in points]
+    span_x = max(projected_x) - min(projected_x)
+    span_y = max(projected_y) - min(projected_y)
+    return 0.5 * max(span_x, span_y, 0.0)
+
+
 def thin_shell_impact_response(
     impactor: AeroComponent,
     target: AeroComponent,
@@ -1587,7 +1675,7 @@ def thin_shell_impact_response(
     if not is_thin:
         return None
 
-    radius = max(
+    contact_radius = max(
         impactor_contact_radius(
             impactor,
             impactor_contact_point,
@@ -1595,11 +1683,28 @@ def thin_shell_impact_response(
         ),
         thickness,
     )
+    clearance_radius = max(
+        contact_radius,
+        impactor_projected_clearance_radius(impactor, target_normal),
+    )
+    radius = clearance_radius
     affected_radius = 2.5 * radius
+    young_modulus = max(inferred_deformation_young_modulus(target), 1.0)
     yield_strength = material_yield_strength_pa(target)
     failure_strain = material_failure_strain(target)
     affected_volume = math.pi * affected_radius * affected_radius * thickness
-    membrane_energy = yield_strength * affected_volume * failure_strain
+    # Elastic work up to yield plus perfectly-plastic work to the tabulated
+    # failure strain.  This makes the BOM Young's modulus matter to the
+    # perforation threshold as well as to contact compliance and shell FEM.
+    yield_strain = min(yield_strength / young_modulus, failure_strain)
+    elastic_energy_density = 0.5 * young_modulus * yield_strain * yield_strain
+    plastic_energy_density = yield_strength * max(
+        failure_strain - yield_strain,
+        0.0,
+    )
+    membrane_energy = affected_volume * (
+        elastic_energy_density + plastic_energy_density
+    )
     shear_strength = yield_strength / math.sqrt(3.0)
     plug_shear_energy = 2.0 * math.pi * radius * thickness * thickness * shear_strength
     absorbed_energy = membrane_energy + plug_shear_energy
@@ -1614,7 +1719,7 @@ def thin_shell_impact_response(
             indentation=min(affected_radius, MAX_TOTAL_DEFORMATION),
             absorbed_energy_j=absorbed_energy,
             residual_speed=residual_speed,
-            hole_radius=1.05 * radius,
+            hole_radius=1.05 * clearance_radius,
             failure_mode="plastic_membrane_perforation",
         )
 
@@ -1959,6 +2064,20 @@ def collision_damage_response_time(
     return max(physical_response_time, COLLISION_DAMAGE_MIN_RESPONSE_TIME_S, 1e-9)
 
 
+def collision_shell_displacement_limit(
+    component: AeroComponent,
+    hole_radius: float,
+    contact_radius: float,
+) -> float:
+    thickness = inferred_deformation_thickness(component)
+    local_radius = max(hole_radius, min(contact_radius, hole_radius), thickness)
+    geometry_limit = max(
+        1.5 * local_radius,
+        3.0 * thickness,
+    )
+    return max(COLLISION_SHELL_DISPLACEMENT_LIMIT_M, geometry_limit)
+
+
 def _matching_collision_damage(
     component: AeroComponent,
     contact_point: Vec3,
@@ -1985,6 +2104,8 @@ def deform_collision_reference(
     inward_direction: Vec3,
     indentation: float,
     contact_radius: float,
+    perforation_radius: float = 0.0,
+    perforation_displacement: float = 0.0,
 ) -> None:
     ensure_deformation_reference(component)
     reference = component.deformation_reference_triangles
@@ -2003,6 +2124,9 @@ def deform_collision_reference(
             inward_direction,
             amplitude,
             radius,
+            None,
+            perforation_radius,
+            perforation_displacement,
         )
     )
 
@@ -2074,6 +2198,8 @@ def register_collision_hole(
     failure_mode: str,
     absorbed_energy_j: float,
 ) -> CollisionDamageState:
+    if component.collision_family is None:
+        component.collision_family = component.patch
     direction = v_unit(inward_direction)
     radius = max(contact_radius, COLLISION_DEFORMATION_MIN_RADIUS_M)
     damage = _matching_collision_damage(
@@ -2102,6 +2228,9 @@ def register_collision_hole(
             response_time_s=response_time,
             failure_mode=failure_mode,
             accumulated_energy_j=absorbed_energy_j,
+            ongoing_contact_energy_j=(
+                absorbed_energy_j * COLLISION_SHELL_ONGOING_ENERGY_FRACTION
+            ),
             created_step=step,
         )
         component.collision_damage.append(damage)
@@ -2113,7 +2242,100 @@ def register_collision_hole(
         damage.response_time_s = min(damage.response_time_s, response_time)
         damage.failure_mode = failure_mode
         damage.accumulated_energy_j += absorbed_energy_j
+        damage.ongoing_contact_energy_j += (
+            absorbed_energy_j * COLLISION_SHELL_ONGOING_ENERGY_FRACTION
+        )
         damage.created_step = step
+    previous_hole_radius = damage.current_hole_radius_m
+    if damage.target_hole_radius_m > 0.0:
+        initial_radius_limit = (
+            COLLISION_HOLE_INITIAL_RADIUS_FRACTION
+            * damage.target_hole_radius_m
+        )
+        visible_initial_radius = max(
+            min(radius, initial_radius_limit),
+            initial_radius_limit,
+        )
+        damage.current_hole_radius_m = min(
+            damage.target_hole_radius_m,
+            max(
+                damage.current_hole_radius_m,
+                visible_initial_radius,
+            ),
+        )
+    solver_supports_shell = COLLISION_STRUCTURAL_SOLVER in {
+        "explicit_shell",
+        "shell",
+        "dynamic_shell",
+        "mpm",
+        "hybrid_shell",
+    }
+    if solver_supports_shell and component.collision_structural_state is None:
+        build_args = (
+            component,
+            contact_point,
+            direction,
+            radius,
+            inferred_deformation_young_modulus(component),
+            inferred_deformation_thickness(component),
+            inferred_deformation_poisson_ratio(component),
+            material_yield_strength_pa(component),
+            material_failure_strain(component),
+            COLLISION_SHELL_DAMPING_RATIO,
+            COLLISION_SHELL_CFL,
+            COLLISION_SHELL_MAX_SUBSTEPS,
+            collision_shell_displacement_limit(component, target_hole_radius, radius),
+        )
+        if COLLISION_STRUCTURAL_SOLVER == "hybrid_shell":
+            state = build_hybrid_shell_collision_state(*build_args)
+            apply_shell_impact_energy(
+                state.shell_state,
+                absorbed_energy_j,
+                COLLISION_SHELL_IMPACT_ENERGY_FRACTION,
+            )
+        else:
+            state = build_explicit_shell_state(*build_args)
+            state.solver_backend = COLLISION_STRUCTURAL_SOLVER
+            apply_shell_impact_energy(
+                state,
+                absorbed_energy_j,
+                COLLISION_SHELL_IMPACT_ENERGY_FRACTION,
+            )
+        component.collision_structural_state = state
+    structural_state = component.collision_structural_state
+    hybrid_state = (
+        structural_state if isinstance(structural_state, HybridShellCollisionState) else None
+    )
+    shell_state = (
+        hybrid_state.shell_state
+        if hybrid_state is not None
+        else structural_state
+        if isinstance(structural_state, ExplicitShellState)
+        else None
+    )
+    if shell_state is not None and damage.current_hole_radius_m > previous_hole_radius:
+        radius_increment = damage.current_hole_radius_m - previous_hole_radius
+        update_shell_perforation(
+            shell_state,
+            damage.current_hole_radius_m,
+            radius_increment,
+            max(damage.response_time_s, 1e-9),
+        )
+        if ENABLE_COLLISION_TOPOLOGY_CHANGES:
+            if hybrid_state is not None:
+                _emitted_count, emitted_mass = sync_hybrid_shell_fragments(component, hybrid_state)
+            else:
+                _emitted_count, emitted_mass = emit_shell_fragments(shell_state)
+            if emitted_mass > 0.0:
+                remaining_mass = max(component.mass - emitted_mass, 0.0)
+                inertia_scale = remaining_mass / max(component.mass, 1e-18)
+                component.mass = remaining_mass
+                component.inertia *= inertia_scale
+        advance_dt = min(max(damage.response_time_s, 1e-9), max(MOTION_DT, 1e-9))
+        if hybrid_state is not None:
+            advance_hybrid_shell_collision(component, hybrid_state, advance_dt)
+        else:
+            advance_explicit_shell(component, shell_state, advance_dt)
     return damage
 
 
@@ -2128,13 +2350,24 @@ def advance_collision_damage_state(
     evolution_fraction = 1.0 - math.exp(-dt / response_time)
     geometry_changed = 0.0
     removed_triangles = 0
+    structural_state = component.collision_structural_state
+    hybrid_state = (
+        structural_state if isinstance(structural_state, HybridShellCollisionState) else None
+    )
+    shell_state = (
+        hybrid_state.shell_state
+        if hybrid_state is not None
+        else structural_state
+        if isinstance(structural_state, ExplicitShellState)
+        else None
+    )
 
     elastic_depth = max(
         0.0,
         damage.current_depth_m - damage.permanent_depth_m,
     )
     recovery = elastic_depth * evolution_fraction
-    if recovery > 1e-12:
+    if recovery > 1e-12 and shell_state is None:
         applied = deform_component_at_contact(
             component,
             damage.contact_point,
@@ -2159,6 +2392,9 @@ def advance_collision_damage_state(
         0.0,
         damage.target_hole_radius_m - damage.current_hole_radius_m,
     )
+    if remaining_hole_growth <= max(1e-6, 1e-4 * damage.target_hole_radius_m):
+        remaining_hole_growth = 0.0
+        damage.current_hole_radius_m = damage.target_hole_radius_m
     hole_increment = remaining_hole_growth * evolution_fraction
     if hole_increment > 1e-12:
         next_hole_radius = min(
@@ -2166,9 +2402,25 @@ def advance_collision_damage_state(
             damage.current_hole_radius_m + hole_increment,
         )
         damage.current_hole_radius_m = next_hole_radius
-        if ENABLE_COLLISION_TOPOLOGY_CHANGES:
-            # Experimental/offline path only.  The normal animation path keeps
-            # a fixed mesh so every frame has compatible VTK arrays.
+        if shell_state is not None:
+            update_shell_perforation(
+                shell_state,
+                next_hole_radius,
+                hole_increment,
+                dt,
+            )
+            if hybrid_state is not None and ENABLE_COLLISION_TOPOLOGY_CHANGES:
+                emitted_count, emitted_mass = sync_hybrid_shell_fragments(component, hybrid_state)
+                removed_triangles += emitted_count
+                if emitted_mass > 0.0:
+                    remaining_mass = max(component.mass - emitted_mass, 0.0)
+                    inertia_scale = remaining_mass / max(component.mass, 1e-18)
+                    component.mass = remaining_mass
+                    component.inertia *= inertia_scale
+        elif ENABLE_COLLISION_TOPOLOGY_CHANGES:
+            # Legacy surface-only path for collision damage states that do not
+            # own an explicit shell.  It still cuts an actual hole and exports
+            # displaced material instead of retaining a visual plug.
             rim_increment = min(2.0 * hole_increment, MAX_TOTAL_DEFORMATION)
             rim_deformation, removed_triangles = fracture_thin_shell(
                 component,
@@ -2194,6 +2446,12 @@ def advance_collision_damage_state(
                 damage.inward_direction,
                 min(2.0 * hole_increment, COLLISION_MAX_CONTACT_DEFORMATION),
                 max(damage.contact_radius_m, next_hole_radius),
+                perforation_radius=next_hole_radius,
+                perforation_displacement=max(
+                    hole_increment,
+                    inferred_deformation_thickness(component)
+                    * evolution_fraction,
+                ),
             )
             damage.current_depth_m = max(damage.current_depth_m, rim_deformation)
             damage.permanent_depth_m = max(damage.permanent_depth_m, rim_deformation)
@@ -2204,9 +2462,68 @@ def advance_collision_damage_state(
                 damage.inward_direction,
                 rim_deformation,
                 max(damage.contact_radius_m, next_hole_radius),
+                perforation_radius=next_hole_radius,
+                perforation_displacement=max(
+                    hole_increment,
+                    inferred_deformation_thickness(component)
+                    * evolution_fraction,
+                ),
             )
 
+    if shell_state is not None:
+        if damage.ongoing_contact_energy_j > 1e-12:
+            drive_duration = max(
+                COLLISION_SHELL_ONGOING_RESPONSE_TIMES * response_time,
+                dt,
+                1e-9,
+            )
+            drive_fraction = min(1.0, dt / drive_duration)
+            drive_work = damage.ongoing_contact_energy_j * drive_fraction
+            damage.ongoing_contact_energy_j = max(
+                0.0,
+                damage.ongoing_contact_energy_j - drive_work,
+            )
+            driven_displacement = apply_shell_contact_work(
+                shell_state,
+                damage.contact_point,
+                damage.inward_direction,
+                max(damage.contact_radius_m, damage.current_hole_radius_m),
+                drive_work,
+                dt,
+            )
+            geometry_changed = max(geometry_changed, driven_displacement)
+        if ENABLE_COLLISION_TOPOLOGY_CHANGES:
+            if hybrid_state is not None:
+                emitted_count, emitted_mass = sync_hybrid_shell_fragments(component, hybrid_state)
+            else:
+                emitted_count, emitted_mass = emit_shell_fragments(shell_state)
+            removed_triangles += emitted_count
+            if emitted_mass > 0.0:
+                remaining_mass = max(component.mass - emitted_mass, 0.0)
+                inertia_scale = remaining_mass / max(component.mass, 1e-18)
+                component.mass = remaining_mass
+                component.inertia *= inertia_scale
+        original_cofr = component.cofr
+        shell_deformation = (
+            advance_hybrid_shell_collision(component, hybrid_state, dt)
+            if hybrid_state is not None
+            else advance_explicit_shell(component, shell_state, dt)
+        )
+        component.aref, component.lref, _geometry_centroid = component_references(
+            component.triangles
+        )
+        component.cofr = original_cofr
+        if damage.target_hole_radius_m > 0.0:
+            damage.current_depth_m = max(damage.current_depth_m, shell_deformation)
+            damage.permanent_depth_m = max(
+                damage.permanent_depth_m,
+                shell_deformation,
+            )
+        geometry_changed = max(geometry_changed, shell_deformation)
+
     damage.elapsed_s += dt
+    # The second value is a transfer count: faces remain in the shell state
+    # and are exported as detached fragments rather than being destroyed.
     return geometry_changed, removed_triangles
 
 
@@ -2217,7 +2534,9 @@ def write_collision_damage_log_header(path: Path) -> None:
         "step\tpatch\tsite\tfailure_mode\telapsed_s\tresponse_time_s\t"
         "current_depth_m\tpermanent_depth_m\tcurrent_hole_radius_m\t"
         "target_hole_radius_m\tcontact_radius_m\taccumulated_energy_J\t"
-        "geometry_change_m\tdisplaced_fragments\tactive\n"
+        "ongoing_contact_energy_J\tgeometry_change_m\tdisplaced_fragments\tactive\tstructural_solver\t"
+        "shell_stable_dt_s\tshell_mass_scale\tshell_displacement_limit_m\t"
+        "shell_failed_edges\tshell_plug_faces\n"
     )
 
 
@@ -2243,6 +2562,15 @@ def evolve_collision_damage(
                 > damage.permanent_depth_m + 1e-9
                 or damage.current_hole_radius_m
                 < damage.target_hole_radius_m - 1e-9
+                or damage.ongoing_contact_energy_j > 1e-12
+            )
+            structural_state = component.collision_structural_state
+            shell_state = (
+                structural_state.shell_state
+                if isinstance(structural_state, HybridShellCollisionState)
+                else structural_state
+                if isinstance(structural_state, ExplicitShellState)
+                else None
             )
             if geometry_change > 1e-12 or removed_triangles:
                 changed_sites += 1
@@ -2255,7 +2583,14 @@ def evolve_collision_damage(
                     f"{damage.target_hole_radius_m:.8g}\t"
                     f"{damage.contact_radius_m:.8g}\t"
                     f"{damage.accumulated_energy_j:.8g}\t"
-                    f"{geometry_change:.8g}\t{removed_triangles}\t{int(active)}\n"
+                    f"{damage.ongoing_contact_energy_j:.8g}\t"
+                    f"{geometry_change:.8g}\t{removed_triangles}\t{int(active)}\t"
+                    f"{'explicit_shell' if shell_state is not None else 'surface_contact'}\t"
+                    f"{shell_state.stable_dt_s if shell_state is not None else 0.0:.8g}\t"
+                    f"{shell_state.mass_scale if shell_state is not None else 1.0:.8g}\t"
+                    f"{shell_state.displacement_limit_m if shell_state is not None else 0.0:.8g}\t"
+                    f"{shell_state.failed_edges if shell_state is not None else 0}\t"
+                    f"{len(shell_state.plug_triangles) if shell_state is not None else 0}\n"
                 )
     return changed_sites
 
@@ -2285,6 +2620,88 @@ def aabb_overlap_with_normal(a: AeroComponent, b: AeroComponent) -> Optional[Tup
     return depth, normal, contact
 
 
+def nearest_component_surface_point(component: AeroComponent, point: Vec3) -> Tuple[float, Vec3]:
+    nearest_point = component.cofr
+    nearest_distance = math.inf
+    for triangle in component.triangles:
+        surface_point = closest_point_on_triangle(point, triangle)
+        distance = v_norm(v_sub(surface_point, point))
+        if distance < nearest_distance:
+            nearest_distance = distance
+            nearest_point = surface_point
+    return nearest_distance, nearest_point
+
+
+def apply_nearby_collision_effects(
+    components: Sequence[AeroComponent],
+    directly_involved: Sequence[AeroComponent],
+    contact_point: Vec3,
+    normal: Vec3,
+    contact_radius: float,
+    energy_j: float,
+    step: int,
+    failure_mode: str,
+) -> int:
+    """Apply a local attenuated impact response to nearby non-contact parts.
+
+    This is a deliberately simple classical shock/contact falloff.  It is not a
+    wave solver, but it prevents nearby lightweight parts from remaining
+    perfectly unaffected when a high-energy collision occurs right beside them.
+    """
+    if energy_j <= 1e-12 or contact_radius <= 1e-12:
+        return 0
+    direct_ids = {id(component) for component in directly_involved}
+    influence_radius = max(6.0 * contact_radius, 0.02)
+    affected = 0
+    for component in components:
+        if id(component) in direct_ids or not component.triangles:
+            continue
+        distance, surface_point = nearest_component_surface_point(
+            component,
+            contact_point,
+        )
+        if distance > influence_radius:
+            continue
+        attenuation = max(0.0, 1.0 - distance / influence_radius)
+        if attenuation <= 1e-12:
+            continue
+        direction = v_sub(surface_point, contact_point)
+        if v_norm(direction) <= 1e-12:
+            direction = normal
+        direction = v_unit(direction)
+        local_energy = energy_j * attenuation * attenuation
+        local_radius = max(contact_radius * (0.5 + attenuation), COLLISION_DEFORMATION_MIN_RADIUS_M)
+        effective_mass = max(component.mass, 1e-9)
+        local_speed = math.sqrt(2.0 * local_energy / effective_mass)
+        if component_has_translation_freedom(component):
+            impulse = v_mul(direction, effective_mass * local_speed)
+            apply_collision_impulse(component, impulse, surface_point)
+        indentation = min(
+            local_radius,
+            COLLISION_MAX_CONTACT_DEFORMATION * attenuation,
+        )
+        deformation = deform_component_at_contact(
+            component,
+            surface_point,
+            direction,
+            indentation,
+            local_radius,
+        )
+        if deformation > 1e-12:
+            register_collision_dent(
+                component,
+                surface_point,
+                direction,
+                deformation,
+                local_radius,
+                step,
+                f"nearby_{failure_mode}",
+                local_energy,
+            )
+            affected += 1
+    return affected
+
+
 def resolve_part_collisions(
     components: List[AeroComponent],
     step: int,
@@ -2294,13 +2711,28 @@ def resolve_part_collisions(
 ) -> List[str]:
     if not ENABLE_PART_COLLISIONS or len(components) < 2:
         return []
+    active_components = list(components)
+    for component in components:
+        state = component.collision_structural_state
+        if isinstance(state, HybridShellCollisionState):
+            active_components.extend(hybrid_fragment_components(state))
     lines: List[str] = []
     for collision_pass in range(COLLISION_MAX_PASSES):
         any_collision = False
-        for i in range(len(components)):
-            a = components[i]
-            for j in range(i + 1, len(components)):
-                b = components[j]
+        for i in range(len(active_components)):
+            a = active_components[i]
+            for j in range(i + 1, len(active_components)):
+                b = active_components[j]
+                fragment_family_overlap = (
+                    a.collision_family is not None
+                    and a.collision_family == b.collision_family
+                    and (
+                        a.freedom.mate_type == "COLLISION_FRAGMENT"
+                        or b.freedom.mate_type == "COLLISION_FRAGMENT"
+                    )
+                )
+                if fragment_family_overlap:
+                    continue
                 is_prescribed_pair = (
                     prescribed_pair is not None
                     and {id(a), id(b)} == {id(prescribed_pair[0]), id(prescribed_pair[1])}
@@ -2386,7 +2818,7 @@ def resolve_part_collisions(
                         swept_contact.point,
                         impact_axis,
                         swept_contact.hole_radius,
-                        swept_contact.hole_radius,
+                        contact_radius,
                         step,
                         swept_contact.failure_mode,
                         swept_contact.absorbed_energy_j,
@@ -2405,6 +2837,16 @@ def resolve_part_collisions(
                     swept_contact.moving.filtered_force = (0.0, 0.0, 0.0)
                     swept_contact.moving.filtered_moment = (0.0, 0.0, 0.0)
                     swept_contact.moving.aerodynamic_load_initialized = False
+                    apply_nearby_collision_effects(
+                        components,
+                        (swept_contact.moving, swept_contact.stationary),
+                        swept_contact.point,
+                        impact_axis,
+                        contact_radius,
+                        swept_contact.absorbed_energy_j,
+                        step,
+                        swept_contact.failure_mode,
+                    )
                     deform_a = deform_moving if a is swept_contact.moving else deform_stationary
                     deform_b = deform_moving if b is swept_contact.moving else deform_stationary
                     line = (
@@ -2563,6 +3005,22 @@ def resolve_part_collisions(
                     failure_mode,
                     0.5 * absorbed_energy,
                 )
+                secondary_energy = absorbed_energy
+                if secondary_energy <= 1e-12 and impulse_mag > 0.0:
+                    secondary_energy = 0.5 * impulse_mag * impulse_mag / max(
+                        normal_inverse_mass,
+                        1e-12,
+                    )
+                apply_nearby_collision_effects(
+                    components,
+                    (a, b),
+                    contact,
+                    normal,
+                    contact_radius,
+                    secondary_energy,
+                    step,
+                    failure_mode,
+                )
                 if is_swept_pair:
                     assert swept_contact is not None
                     unresolved_overlap = max(
@@ -2685,6 +3143,101 @@ def collision_convergence_moving_and_stationary(
     return a, b
 
 
+def closest_point_on_triangle(point: Vec3, triangle: Triangle) -> Vec3:
+    """Return the nearest point using the standard barycentric-region test."""
+    _normal, a, b, c = triangle
+    ab = v_sub(b, a)
+    ac = v_sub(c, a)
+    ap = v_sub(point, a)
+    d1 = v_dot(ab, ap)
+    d2 = v_dot(ac, ap)
+    if d1 <= 0.0 and d2 <= 0.0:
+        return a
+
+    bp = v_sub(point, b)
+    d3 = v_dot(ab, bp)
+    d4 = v_dot(ac, bp)
+    if d3 >= 0.0 and d4 <= d3:
+        return b
+
+    vc = d1 * d4 - d3 * d2
+    if vc <= 0.0 and d1 >= 0.0 and d3 <= 0.0:
+        weight = d1 / max(d1 - d3, 1e-18)
+        return v_add(a, v_mul(ab, weight))
+
+    cp = v_sub(point, c)
+    d5 = v_dot(ab, cp)
+    d6 = v_dot(ac, cp)
+    if d6 >= 0.0 and d5 <= d6:
+        return c
+
+    vb = d5 * d2 - d1 * d6
+    if vb <= 0.0 and d2 >= 0.0 and d6 <= 0.0:
+        weight = d2 / max(d2 - d6, 1e-18)
+        return v_add(a, v_mul(ac, weight))
+
+    va = d3 * d6 - d5 * d4
+    if va <= 0.0 and (d4 - d3) >= 0.0 and (d5 - d6) >= 0.0:
+        bc = v_sub(c, b)
+        weight = (d4 - d3) / max((d4 - d3) + (d5 - d6), 1e-18)
+        return v_add(b, v_mul(bc, weight))
+
+    denominator = max(va + vb + vc, 1e-18)
+    v_weight = vb / denominator
+    w_weight = vc / denominator
+    return v_add(a, v_add(v_mul(ab, v_weight), v_mul(ac, w_weight)))
+
+
+def collision_convergence_surface_axis(
+    moving: AeroComponent,
+    stationary: AeroComponent,
+) -> Optional[Vec3]:
+    """Select the physical target face and approach along its outward normal."""
+    moving_center = component_center_from_bounds(moving)
+    stationary_points = stl_points(stationary.triangles)
+    if not stationary_points:
+        return None
+    xmin, xmax, ymin, ymax, zmin, zmax = component_bounds(stationary.triangles)
+    extents = (xmax - xmin, ymax - ymin, zmax - zmin)
+    positive_extents = [extent for extent in extents if extent > 1e-12]
+    aspect_ratio = max(positive_extents, default=1.0) / max(
+        min(positive_extents, default=1.0),
+        1e-12,
+    )
+
+    # A sheet has two broad faces and very small edge faces.  The broad-face
+    # normal is its intended impact orientation, even when a corner happens to
+    # be geometrically closer to the impactor centre.
+    if aspect_ratio >= 5.0:
+        largest = max(
+            stationary.triangles,
+            key=lambda triangle: triangle_area_centroid_normal(triangle)[0],
+        )
+        _area, _centroid, normal = triangle_area_centroid_normal(largest)
+        surface_point = closest_point_on_triangle(moving_center, largest)
+        if v_dot(normal, v_sub(moving_center, surface_point)) < 0.0:
+            normal = v_mul(normal, -1.0)
+        return v_mul(v_unit(normal), -1.0)
+
+    nearest: Optional[Tuple[float, Vec3, Vec3]] = None
+    for triangle in stationary.triangles:
+        _area, _centroid, normal = triangle_area_centroid_normal(triangle)
+        point = closest_point_on_triangle(moving_center, triangle)
+        offset = v_sub(moving_center, point)
+        distance_sq = v_dot(offset, offset)
+        if nearest is None or distance_sq < nearest[0]:
+            nearest = (distance_sq, point, normal)
+    if nearest is None:
+        return None
+
+    _distance_sq, surface_point, normal = nearest
+    # The STL winding can be either direction.  Make the normal point out of
+    # the target toward the impactor, then negate it for travel into the face.
+    if v_dot(normal, v_sub(moving_center, surface_point)) < 0.0:
+        normal = v_mul(normal, -1.0)
+    return v_mul(v_unit(normal), -1.0)
+
+
 def parse_collision_convergence_axis(pair: Tuple[AeroComponent, AeroComponent]) -> Vec3:
     raw = COLLISION_CONVERGENCE_AXIS.strip().lower()
     if raw in {"x", "+x"}:
@@ -2707,6 +3260,10 @@ def parse_collision_convergence_axis(pair: Tuple[AeroComponent, AeroComponent]) 
             pass
 
     moving, stationary = collision_convergence_moving_and_stationary(pair)
+    # In automatic collision-convergence mode, place the impactor directly in
+    # front of the target and drive it along one fixed world-axis line.  The
+    # impact face orientation can affect contact normals and deformation, but
+    # it must not turn the prescribed pre-impact flight path diagonal.
     delta = v_sub(
         component_center_from_bounds(stationary),
         component_center_from_bounds(moving),
@@ -2720,6 +3277,8 @@ def parse_collision_convergence_axis(pair: Tuple[AeroComponent, AeroComponent]) 
 def collision_convergence_approach_axis(pair: Tuple[AeroComponent, AeroComponent]) -> Vec3:
     moving, stationary = collision_convergence_moving_and_stationary(pair)
     axis = parse_collision_convergence_axis(pair)
+    if COLLISION_CONVERGENCE_AXIS.strip().lower() in {"", "auto"}:
+        return axis
     center_delta = v_sub(component_center_from_bounds(stationary), component_center_from_bounds(moving))
     if v_dot(center_delta, axis) < 0.0:
         axis = v_mul(axis, -1.0)
@@ -3088,6 +3647,8 @@ DEFORMATION_YOUNG_MODULUS_BY_MATERIAL_PA: Dict[str, float] = {
 def component_deformation_enabled(component: AeroComponent) -> bool:
     if not ENABLE_NONRIGID_DEFORMATION or not component.triangles:
         return False
+    if component_is_collision_impactor(component):
+        return False
     if component.is_assembly_anchor and not DEFORM_ANCHORED_COMPONENTS:
         return False
     component_text = f"{component.name} {component.patch}".lower()
@@ -3201,6 +3762,32 @@ def ensure_deformation_reference(component: AeroComponent) -> None:
 
 
 def update_component_deformation(component: AeroComponent, dt: float) -> Tuple[float, float, float, float, int]:
+    if isinstance(component.collision_structural_state, HybridShellCollisionState):
+        state = component.collision_structural_state
+        return (
+            state.shell_state.max_displacement_m,
+            component.deformation_mean_m,
+            inferred_deformation_young_modulus(component),
+            inferred_deformation_thickness(component),
+            len(state.shell_state.positions),
+        )
+    if isinstance(component.collision_structural_state, ExplicitShellState):
+        state = component.collision_structural_state
+        return (
+            state.max_displacement_m,
+            component.deformation_mean_m,
+            inferred_deformation_young_modulus(component),
+            inferred_deformation_thickness(component),
+            len(state.positions),
+        )
+    if component_is_collision_impactor(component):
+        return (
+            component.deformation_max_m,
+            component.deformation_mean_m,
+            inferred_deformation_young_modulus(component),
+            inferred_deformation_thickness(component),
+            0,
+        )
     if not component_deformation_enabled(component):
         component.deformation_max_m = 0.0
         component.deformation_mean_m = 0.0

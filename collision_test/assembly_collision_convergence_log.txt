@@ -3,5 +3,7 @@
 # pair=object_1,object_2
 # moving=object_1, stationary=object_2
 step	active	moving_patch	stationary_patch	impactor_speed_mps	axis_x	axis_y	axis_z	gap_before_m	gap_after_m	requested_m	dmoving_m	dstationary_m	sweep_clamped
-0	1	object_1	object_2	30	0	1	0	0.020006949	0	0.0225	0.022491691	0	1
-# stopped_after_step=0, reason=first_contact
+0	1	object_1	object_2	30	0	1	0	0	0	0.036	0.036	0	0
+1	1	object_1	object_2	30	0	1	0	0	0	0.036	0.036	0	0
+2	1	object_1	object_2	30	0	1	0	0	0	0.036	0.031129888	0	1
+# stopped_after_step=2, reason=first_contact

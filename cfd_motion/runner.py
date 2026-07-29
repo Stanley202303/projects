@@ -152,6 +152,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         f"collision_max_linear_speed_mps={COLLISION_MAX_LINEAR_SPEED_MPS}",
         f"collision_max_angular_speed_rad_s={COLLISION_MAX_ANGULAR_SPEED_RAD_S}",
         f"enable_collision_deformation={ENABLE_COLLISION_DEFORMATION}",
+        f"collision_deform_impactor={COLLISION_DEFORM_IMPACTOR}",
         f"collision_deformation_model={COLLISION_DEFORMATION_MODEL}",
         f"collision_deformation_gain={COLLISION_DEFORMATION_GAIN}",
         f"collision_deformation_radius_factor={COLLISION_DEFORMATION_RADIUS_FACTOR}",
@@ -164,6 +165,12 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         f"collision_mesh_refinement_target_triangles={COLLISION_MESH_REFINEMENT_TARGET_TRIANGLES}",
         f"collision_mesh_refinement_max_levels={COLLISION_MESH_REFINEMENT_MAX_LEVELS}",
         f"collision_damage_min_response_time_s={COLLISION_DAMAGE_MIN_RESPONSE_TIME_S}",
+        f"collision_structural_solver={COLLISION_STRUCTURAL_SOLVER}",
+        f"collision_shell_damping_ratio={COLLISION_SHELL_DAMPING_RATIO}",
+        f"collision_shell_cfl={COLLISION_SHELL_CFL}",
+        f"collision_shell_max_substeps={COLLISION_SHELL_MAX_SUBSTEPS}",
+        f"collision_shell_displacement_limit_m={COLLISION_SHELL_DISPLACEMENT_LIMIT_M}",
+        f"collision_shell_impact_energy_fraction={COLLISION_SHELL_IMPACT_ENERGY_FRACTION}",
         f"collision_topology_changes={ENABLE_COLLISION_TOPOLOGY_CHANGES}",
         f"collision_convergence_speed_mps={COLLISION_CONVERGENCE_SPEED_MPS}",
         f"collision_convergence_components={COLLISION_CONVERGENCE_COMPONENTS or '<auto>'}",
@@ -209,7 +216,12 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         print("Storage mode: minimal Stream Tracer volume case will keep only latest mesh + U.")
 
     if STORE_START_FINAL_GEOMETRY:
-        write_components_geometry_snapshot(root_case, components, START_GEOMETRY_DIR_NAME, "start")
+        write_components_geometry_snapshot(
+            root_case,
+            visualization_components_with_fragments(components),
+            START_GEOMETRY_DIR_NAME,
+            "start",
+        )
         enforce_case_storage_budget(root_case, "after start geometry snapshot")
 
     try:
@@ -425,7 +437,11 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
 
             # Write compact visualisation AFTER the motion and collision update so the frame
             # shows moved, non-interpenetrating geometry.
-            write_panel_aero_preview_for_step(step_case, components, step)
+            write_panel_aero_preview_for_step(
+                step_case,
+                visualization_components_with_fragments(components),
+                step,
+            )
 
             # Retain only compact root-level outputs needed for the .pvd animation.
             # The heavy OpenFOAM root time-series is optional and disabled by default
@@ -442,7 +458,12 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                 shutil.rmtree(step_case)
 
         if STORE_START_FINAL_GEOMETRY:
-            write_components_geometry_snapshot(root_case, components, FINAL_MOVED_GEOMETRY_DIR_NAME, "final_moved")
+            write_components_geometry_snapshot(
+                root_case,
+                visualization_components_with_fragments(components),
+                FINAL_MOVED_GEOMETRY_DIR_NAME,
+                "final_moved",
+            )
             enforce_case_storage_budget(root_case, "after final moved geometry snapshot")
 
         if KEEP_FINAL_GEOMETRY_CASE:

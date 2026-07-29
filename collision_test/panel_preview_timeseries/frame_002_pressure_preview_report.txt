@@ -7,28 +7,40 @@
 # not plain OpenFOAM p unless you are opening the raw case.foam volume.
 
 field	min	max	range
-Cp	-0.35	1	1.35
+Cp	-0.35	0.998748809	1.34874881
 CpAbsPanel	0	1	1
-CpPanel	-0.35	1	1.35
+CpPanel	-0.35	0.998748809	1.34874881
 anchored	0	1	1
-massKg	0.004	0.0911849356	0.0871849356
+massKg	0.00358142017	1.78722474	1.78364332
 movable	0	1	1
-normalX	-1	1	2
-normalY	-1	1	2
-normalZ	-1	1	2
-p	-155.343568	443.358672	598.70224
-pPa	-190.29587	543.114374	733.410244
-pPaAbsPanel	0	543.702487	543.702487
-pPaPanel	-190.29587	543.114374	733.410244
-patchId	0	1	1
-pressureCoeff	-0.35	1	1.35
+normalX	-0.999048192	0.999048192	1.99809638
+normalY	-1	0.999374209	1.99937421
+normalZ	-0.999048168	0.999048168	1.99809634
+p	-35.2236435	200.476792	235.700436
+pPa	-43.1489633	245.584071	288.733034
+pPaAbsPanel	0	245.584071	245.584071
+pPaPanel	-43.1489633	245.584071	288.733034
+patchId	0	3	3
+perforationPlug	0	1	1
+pressureCoeff	-0.35	0.998748809	1.34874881
 pressureCoeffAbs	0	1	1
-pressurePa	-190.29587	543.114374	733.410244
-pressurePaAbs	0	543.702487	543.702487
+pressurePa	-43.1489633	245.584071	288.733034
+pressurePaAbs	0	245.584071	245.584071
 pressureVisible01	0	1	1
-skinFrictionPreview	0	1	1
-triangleArea	1.69433349e-10	0.000124617886	0.000124617716
+skinFrictionPreview	1.11022302e-16	1	1
+speed	0	21.1061791	21.1061791
+structuralDisplacementM	0	0.081395226	0.081395226
+structuralFailedEdges	0	0	0
+triangleArea	1.65549674e-10	0.00147162203	0.00147162187
+velocityMagnitude	0	21.1061791	21.1061791
+velocityX	0	0	0
+velocityY	0	21.1061791	21.1061791
+velocityZ	0	0	0
 windExposure	0	1	1
+worldSpeed	0	21.1061791	21.1061791
+worldVelocityX	0	0	0
+worldVelocityY	0	21.1061791	21.1061791
+worldVelocityZ	0	0	0
 
 If pressureCoeff/pressurePa have a non-zero range but ParaView is blue:
   1) click Rescale to Data Range,

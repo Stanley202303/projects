@@ -1,8 +1,9 @@
 """
 Live 3D cuboid visualizer for the matching Pico2W_IMU_Cube.ino sketch.
 
-Orientation is estimated with quaternion gyro integration plus simple scalar
-Kalman correction from accelerometer tilt and tilt-compensated magnetic heading.
+Orientation is estimated with quaternion gyro integration plus a conservative
+complementary correction from accelerometer tilt and tilt-compensated magnetic
+heading.
 
 Install the two desktop dependencies:
     python -m pip install pygame PyOpenGL
@@ -93,11 +94,24 @@ IMU_AXIS_MAP = ((0, 1.0), (1, 1.0), (2, 1.0))
 # Change this when the MMC5603 breakout has a different physical orientation.
 MAG_AXIS_MAP = ((0, 1.0), (1, 1.0), (2, 1.0))
 
-# Kalman tuning values are variances in radians. Larger process noise trusts the
-# gyro prediction less; larger measurement noise trusts that sensor less.
-KALMAN_PROCESS_NOISE = math.radians(2.0) ** 2
-KALMAN_ACCEL_MEASUREMENT_NOISE = math.radians(4.0) ** 2
-KALMAN_MAG_MEASUREMENT_NOISE = math.radians(10.0) ** 2
+# Complementary filter tuning. Smaller time constants follow the absolute
+# sensors more quickly; larger values trust gyro integration more.
+ACCEL_CORRECTION_TIME_CONSTANT = 0.65
+MAG_CORRECTION_TIME_CONSTANT = 2.5
+
+# Gyro bias is learned slowly while absolute-sensor corrections are accepted.
+GYRO_BIAS_LEARNING_RATE = 0.03
+GYRO_BIAS_LIMIT_DPS = 8.0
+
+# Reject accelerometer correction while the device is clearly accelerating.
+ACCEL_MIN_G = 0.82
+ACCEL_MAX_G = 1.18
+
+# Reject obviously bad magnetic samples and large one-frame compass jumps.
+MAG_MIN_FIELD = 5.0
+MAG_MAX_FIELD = 120.0
+MAG_OUTLIER_FRACTION = 0.35
+MAG_HEADING_GATE = math.radians(55.0)
 
 # -----------------------------------------------------------------------------
 

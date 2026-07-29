@@ -1,0 +1,15 @@
+Open this compact moving-surface animation first:
+  /Users/Stanley/projects/collision_test_2/paraview_motion_timeseries.pvd
+
+For real 3D Stream Tracer with minimal storage, open this single latest-frame volume case:
+  /Users/Stanley/projects/collision_test_2/stream_tracer_volume_case/case.foam
+
+Storage-light geometry snapshots:
+  start: /Users/Stanley/projects/collision_test_2/start_geometry/geometry.vtp
+  final: /Users/Stanley/projects/collision_test_2/final_moved_geometry/geometry.vtp
+
+The root OpenFOAM time-series case.foam is not built by default because it copies heavy polyMesh/field folders for every frame.
+Set ROOT_OPENFOAM_TIMESERIES=1 only if you really need it and have enough disk space.
+The Stream Tracer case keeps only the latest mesh and U field; set PARAVIEW_MINIMAL_STREAM_TRACER_EXPORT=0 to disable it.
+Full per-step OpenFOAM cases were not retained because SAVE_MOTION_STEPS=0.
+Set SAVE_MOTION_STEPS=1 before running if you need actual_model_case/motion_steps/ for debugging.

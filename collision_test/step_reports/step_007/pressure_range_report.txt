@@ -1,6 +1,6 @@
 # Pressure diagnostic report
-case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work
-latest_solver_time=5
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_0qecl_m5/step_work
+latest_solver_time=1
 # In incompressible OpenFOAM simpleFoam, p is kinematic pressure p/rho, not Pa.
 # v16 also writes pPa=rho*p and Cp=p/(0.5*Uinf^2) for ParaView colouring.
 

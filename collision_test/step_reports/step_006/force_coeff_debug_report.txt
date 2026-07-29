@@ -1,10 +1,10 @@
 # forceCoeffs debug report
-case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_0qecl_m5/step_work
 
 Detected coefficient data by patch:
-- all: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 5.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
-- object_1: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 5.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
-- object_2: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 5.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
+- all: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
+- object_1: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
+- object_2: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
 
 postProcessing .dat files:
 - postProcessing/forceCoeffs_all/0/forceCoeffs.dat
@@ -36,33 +36,33 @@ OpenFOAM boundary file exists: True
       {
           type            patch;
           nFaces          4356;
-          startFace       1662466;
+          startFace       1602180;
       }
       outlet
       {
           type            patch;
           nFaces          4356;
-          startFace       1666822;
+          startFace       1606536;
       }
       farfield
       {
           type            patch;
           nFaces          30360;
-          startFace       1671178;
+          startFace       1610892;
       }
       object_1
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          529;
-          startFace       1701538;
+          nFaces          50;
+          startFace       1641252;
       }
       object_2
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          4004;
-          startFace       1702067;
+          nFaces          1019;
+          startFace       1641302;
       }
   )
   // ************************************************************************* //

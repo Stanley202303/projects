@@ -1,0 +1,68 @@
+# forceCoeffs debug report
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_2_step_work_iuxdwxlu/step_work
+
+Detected coefficient data by patch:
+- all: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
+- object_1: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
+- object_2: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
+
+postProcessing .dat files:
+- postProcessing/forceCoeffs_all/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_object_1/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_object_2/0/forceCoeffs.dat
+- postProcessing/forces_all/0/forces.dat
+- postProcessing/forces_object_1/0/forces.dat
+- postProcessing/forces_object_2/0/forces.dat
+
+OpenFOAM boundary file exists: True
+  /*--------------------------------*- C++ -*----------------------------------*\
+    =========                 |
+    \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+     \\    /   O peration     | Website:  https://openfoam.org
+      \\  /    A nd           | Version:  11
+       \\/     M anipulation  |
+  \*---------------------------------------------------------------------------*/
+  FoamFile
+  {
+      format      ascii;
+      class       polyBoundaryMesh;
+      location    "constant/polyMesh";
+      object      boundary;
+  }
+  // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+  5
+  (
+      inlet
+      {
+          type            patch;
+          nFaces          4356;
+          startFace       1585728;
+      }
+      outlet
+      {
+          type            patch;
+          nFaces          4356;
+          startFace       1590084;
+      }
+      farfield
+      {
+          type            patch;
+          nFaces          30360;
+          startFace       1594440;
+      }
+      object_1
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          38;
+          startFace       1624800;
+      }
+      object_2
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          769;
+          startFace       1624838;
+      }
+  )
+  // ************************************************************************* //

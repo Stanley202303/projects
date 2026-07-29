@@ -509,8 +509,23 @@ def flatten_candidate_bom_rows(payload: Any) -> List[Dict[str, Any]]:
         if isinstance(obj, dict):
             keys = {str(k).lower() for k in obj.keys()}
             rowish = bool(keys & {"item", "itemnumber", "name", "partnumber", "partidentity", "material", "quantity", "columns", "properties"})
+            material_library_object = (
+                "properties" in keys
+                and "displayname" in keys
+                and not bool(keys & {"itemsource", "headeridtovalue", "columns", "columnvalues", "cells"})
+            )
+            material_property_object = (
+                "value" in keys
+                and bool(keys & {"name", "displayname"})
+                and bool(keys & {"units", "category", "type"})
+            )
             text = json.dumps(obj, default=str).lower()[:3000]
-            if rowish and any(term in text for term in ("material", "mass", "density", "young", "modulus", "poisson", "thickness", "part", "item")):
+            if (
+                rowish
+                and not material_library_object
+                and not material_property_object
+                and any(term in text for term in ("material", "mass", "density", "young", "modulus", "poisson", "thickness", "part", "item"))
+            ):
                 rows.append(obj)
             for val in obj.values():
                 visit(val)
@@ -536,9 +551,31 @@ def extract_bom_column_values(row: Dict[str, Any]) -> Dict[str, Any]:
         label = str(label or "").strip().lower()
         if label:
             values[label] = value
+
+    def add_material_library_values(value: Any) -> None:
+        if isinstance(value, dict):
+            display_name = text_from_any(value.get("displayName", "")).strip()
+            if display_name and isinstance(value.get("properties"), list):
+                add_value("material", display_name)
+            properties = value.get("properties")
+            if isinstance(properties, list):
+                for prop in properties:
+                    if not isinstance(prop, dict):
+                        continue
+                    prop_value = get_first(prop, ["value", "displayValue", "computedValue", "expression"], None)
+                    for label_key in ("displayName", "name", "description"):
+                        label = text_from_any(prop.get(label_key, "")).strip()
+                        if label:
+                            add_value(label, prop_value)
+            for child in value.values():
+                add_material_library_values(child)
+        elif isinstance(value, list):
+            for child in value:
+                add_material_library_values(child)
+
     for key, value in row.items():
         add_value(key, value)
-    for container_key in ("columns", "columnValues", "properties", "propertyValues", "cells", "data"):
+    for container_key in ("columns", "columnValues", "properties", "propertyValues", "cells", "data", "headerIdToValue"):
         container = row.get(container_key)
         if isinstance(container, list):
             for item in container:
@@ -549,6 +586,8 @@ def extract_bom_column_values(row: Dict[str, Any]) -> Dict[str, Any]:
         elif isinstance(container, dict):
             for key, val in container.items():
                 add_value(str(key), val)
+                add_material_library_values(val)
+    add_material_library_values(row)
     return values
 
 
@@ -571,10 +610,16 @@ def bom_records_from_payload(payload: Optional[Dict[str, Any]]) -> List[Dict[str
             label_norm = label.lower()
             compact_label = re.sub(r"[^a-z0-9]+", "", label_norm)
             if not material and "material" in label_norm:
-                material = text_from_any(value).strip()
+                if isinstance(value, dict) and value.get("displayName"):
+                    material = text_from_any(value.get("displayName")).strip()
+                else:
+                    material = text_from_any(value).strip()
             if mass is None and "mass" in label_norm and "center" not in label_norm and "centre" not in label_norm:
                 mass = parse_mass_kg(value)
-            if density is None and ("density" in label_norm or "rho" == label_norm):
+            if density is None and (
+                "density" in label_norm
+                or compact_label in {"dens", "density", "rho"}
+            ):
                 density = parse_density_kg_m3(value)
             if young_modulus is None and (
                 "young" in label_norm
@@ -598,8 +643,12 @@ def bom_records_from_payload(payload: Optional[Dict[str, Any]]) -> List[Dict[str
                 "yield strength" in label_norm
                 or "yield stress" in label_norm
                 or compact_label in {"yield", "yieldstrength", "yieldstress"}
+                or "yieldstrength" in compact_label
+                or "yieldstress" in compact_label
             ):
-                yield_strength = parse_pressure_pa(value)
+                parsed_yield_strength = parse_pressure_pa(value)
+                if parsed_yield_strength is not None and parsed_yield_strength > 0.0:
+                    yield_strength = parsed_yield_strength
             if failure_strain is None and (
                 "failure strain" in label_norm
                 or "strain at break" in label_norm

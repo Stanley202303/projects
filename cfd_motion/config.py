@@ -434,6 +434,10 @@ COLLISION_MAX_LINEAR_SPEED_MPS = float(os.environ.get("COLLISION_MAX_LINEAR_SPEE
 COLLISION_MAX_ANGULAR_SPEED_RAD_S = float(os.environ.get("COLLISION_MAX_ANGULAR_SPEED_RAD_S", "20"))
 COLLISION_LOG_NAME = "assembly_collision_log.txt"
 ENABLE_COLLISION_DEFORMATION = env_bool("ENABLE_COLLISION_DEFORMATION", True)
+# Permit bounded, local contact deformation of a prescribed impactor. Its
+# generic aerodynamic pressure deformation remains disabled because that
+# model is not an impactor structural solver.
+COLLISION_DEFORM_IMPACTOR = env_bool("COLLISION_DEFORM_IMPACTOR", True)
 COLLISION_DEFORMATION_MODEL = os.environ.get("COLLISION_DEFORMATION_MODEL", "hertz").strip().lower()
 COLLISION_DEFORMATION_GAIN = float(os.environ.get("COLLISION_DEFORMATION_GAIN", "1.0"))
 COLLISION_DEFORMATION_RADIUS_FACTOR = float(os.environ.get("COLLISION_DEFORMATION_RADIUS_FACTOR", "1.0"))
@@ -464,10 +468,63 @@ COLLISION_DAMAGE_MIN_RESPONSE_TIME_S = max(
     0.0,
     float(os.environ.get("COLLISION_DAMAGE_MIN_RESPONSE_TIME_S", str(4.0 * MOTION_DT))),
 )
-# Collision output uses a fixed mesh by default.  Topology changes can make
-# successive VTP frames structurally incompatible in ParaView, particularly at
-# first contact.  Enable only for offline fracture experiments.
-ENABLE_COLLISION_TOPOLOGY_CHANGES = env_bool("ENABLE_COLLISION_TOPOLOGY_CHANGES", False)
+COLLISION_HOLE_INITIAL_RADIUS_FRACTION = max(
+    0.0,
+    min(
+        1.0,
+        float(os.environ.get("COLLISION_HOLE_INITIAL_RADIUS_FRACTION", "0.65")),
+    ),
+)
+COLLISION_STRUCTURAL_SOLVER = os.environ.get(
+    "COLLISION_STRUCTURAL_SOLVER",
+    "hybrid_shell",
+).strip().lower()
+if COLLISION_STRUCTURAL_SOLVER in {"material_point", "material_points", "mpm"}:
+    COLLISION_STRUCTURAL_SOLVER = "mpm"
+if COLLISION_STRUCTURAL_SOLVER in {"hybrid", "hybrid_shell", "hybrid-thin-target"}:
+    COLLISION_STRUCTURAL_SOLVER = "hybrid_shell"
+COLLISION_SHELL_DAMPING_RATIO = max(
+    0.0,
+    float(os.environ.get("COLLISION_SHELL_DAMPING_RATIO", "0.08")),
+)
+COLLISION_SHELL_CFL = max(
+    0.01,
+    min(0.9, float(os.environ.get("COLLISION_SHELL_CFL", "0.25"))),
+)
+COLLISION_SHELL_MAX_SUBSTEPS = max(
+    1,
+    int(os.environ.get("COLLISION_SHELL_MAX_SUBSTEPS", "256")),
+)
+COLLISION_SHELL_DISPLACEMENT_LIMIT_M = max(
+    1e-9,
+    float(
+        os.environ.get(
+            "COLLISION_SHELL_DISPLACEMENT_LIMIT_M",
+            str(3.0 * COLLISION_MAX_CONTACT_DEFORMATION),
+        )
+    ),
+)
+COLLISION_SHELL_IMPACT_ENERGY_FRACTION = max(
+    0.0,
+    min(
+        1.0,
+        float(os.environ.get("COLLISION_SHELL_IMPACT_ENERGY_FRACTION", "0.65")),
+    ),
+)
+COLLISION_SHELL_ONGOING_ENERGY_FRACTION = max(
+    0.0,
+    min(
+        1.0,
+        float(os.environ.get("COLLISION_SHELL_ONGOING_ENERGY_FRACTION", "0.35")),
+    ),
+)
+COLLISION_SHELL_ONGOING_RESPONSE_TIMES = max(
+    1.0,
+    float(os.environ.get("COLLISION_SHELL_ONGOING_RESPONSE_TIMES", "12.0")),
+)
+# Perforation is exported as a topology-changing event by default: the failed
+# plug leaves an actual hole and is retained as detached shell fragments.
+ENABLE_COLLISION_TOPOLOGY_CHANGES = env_bool("ENABLE_COLLISION_TOPOLOGY_CHANGES", True)
 COLLISION_FRACTURE_MAX_SUBDIVISION_DEPTH = max(
     0,
     int(os.environ.get("COLLISION_FRACTURE_MAX_SUBDIVISION_DEPTH", "5")),

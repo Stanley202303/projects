@@ -2,6 +2,7 @@ import math
 
 import pytest
 
+from cfd_motion.geometry import bom_records_from_payload
 from cfd_motion.onshape import deduce_component_freedoms, transform_motion_freedom_to_world
 from cfd_motion.motion import (
     apply_relative_motion_policy,
@@ -12,6 +13,63 @@ from cfd_motion.motion import (
     update_component_motion,
 )
 from cfd_motion.models import AeroComponent, MotionFreedom
+
+
+def test_onshape_bom_material_library_properties_are_parsed() -> None:
+    payload = {
+        "rows": [
+            {
+                "name": "Part 1",
+                "headerIdToValue": {
+                    "materialColumn": {
+                        "displayName": "Tungsten",
+                        "properties": [
+                            {
+                                "name": "COMPRESSIVE_YIELD_STRENGTH",
+                                "displayName": "Compressive Yield Strength",
+                                "value": "0",
+                                "units": "Pa",
+                            },
+                            {
+                                "name": "YOUNGS_MODULUS",
+                                "displayName": "Young's Modulus",
+                                "value": "400000000000",
+                                "units": "Pa",
+                            },
+                            {
+                                "name": "TENSILE_YIELD_STRENGTH",
+                                "displayName": "Tensile Yield Strength",
+                                "value": "750000000",
+                                "units": "Pa",
+                            },
+                            {
+                                "name": "DENS",
+                                "displayName": "Density",
+                                "value": "19600",
+                                "units": "kg/m^3",
+                            },
+                            {
+                                "name": "POISSONS_RATIO",
+                                "displayName": "Poisson's Ratio",
+                                "value": "0.28",
+                                "units": "",
+                            },
+                        ],
+                    },
+                    "massColumn": "3.95 lb",
+                },
+            }
+        ]
+    }
+
+    records = bom_records_from_payload(payload)
+    tungsten = next(record for record in records if record["material"] == "Tungsten")
+
+    assert tungsten["mass_kg"] == pytest.approx(1.7916898615)
+    assert tungsten["density_kg_m3"] == pytest.approx(19600.0)
+    assert tungsten["young_modulus_pa"] == pytest.approx(4.0e11)
+    assert tungsten["poisson_ratio"] == pytest.approx(0.28)
+    assert tungsten["yield_strength_pa"] == pytest.approx(7.5e8)
 
 
 def test_revolute_mated_occurrence_overrides_fastened_group() -> None:

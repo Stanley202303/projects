@@ -87,6 +87,7 @@ class CollisionDamageState:
     response_time_s: float = 1e-6
     failure_mode: str = "elastic_contact"
     accumulated_energy_j: float = 0.0
+    ongoing_contact_energy_j: float = 0.0
     created_step: int = 0
     elapsed_s: float = 0.0
 
@@ -125,7 +126,9 @@ class AeroComponent:
     deformation_reference_triangles: Optional[List[Triangle]] = None
     deformation_max_m: float = 0.0
     deformation_mean_m: float = 0.0
+    collision_family: Optional[str] = None
     collision_damage: List[CollisionDamageState] = field(default_factory=list)
+    collision_structural_state: Optional[Any] = None
 
 
 # ------------------------- small math helpers -------------------------

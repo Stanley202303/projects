@@ -1,11 +1,13 @@
 from pathlib import Path
 import xml.etree.ElementTree as ElementTree
 
+from cfd_motion.models import AeroComponent, MotionFreedom
 from cfd_motion.visualization import (
     _write_ascii_polydata_vtk,
     copy_minimal_stream_tracer_case_to_root,
     validate_preview_polydata,
     write_cfd_sampled_surface_preview_for_step,
+    write_panel_aero_preview_for_step,
 )
 
 
@@ -28,6 +30,71 @@ def test_polydata_fields_are_written_as_cell_data_for_shared_vertices(tmp_path: 
     assert len(values) == 2
     assert values == [1.0, 3.0]
     validate_preview_polydata(output)
+
+
+def test_panel_preview_initializes_structural_cell_fields(tmp_path: Path) -> None:
+    component = AeroComponent(
+        name="target",
+        patch="target",
+        triangles=[
+            (
+                (0.0, 0.0, 1.0),
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+            )
+        ],
+        cofr=(0.0, 0.0, 0.0),
+        lref=1.0,
+        aref=0.5,
+        freedom=MotionFreedom(),
+        linear_velocity=(1.0, 2.0, 2.0),
+    )
+
+    write_panel_aero_preview_for_step(tmp_path, [component], 0)
+
+    output = tmp_path / "panel_preview" / "combined_moving_surfaces.vtp"
+    validate_preview_polydata(output)
+    root = ElementTree.parse(output).getroot()
+    names = {
+        array.attrib.get("Name")
+        for array in root.findall(".//CellData/DataArray")
+    }
+    assert {
+        "structuralDisplacementM",
+        "perforationPlug",
+        "structuralFailedEdges",
+        "velocityX",
+        "velocityY",
+        "velocityZ",
+        "velocityMagnitude",
+        "speed",
+        "worldVelocityX",
+        "worldVelocityY",
+        "worldVelocityZ",
+        "worldSpeed",
+    }.issubset(names)
+    velocity = next(
+        array
+        for array in root.findall(".//CellData/DataArray")
+        if array.attrib.get("Name") == "velocity"
+    )
+    velocity_values = [float(value) for value in (velocity.text or "").split()]
+    assert velocity.attrib.get("NumberOfComponents") == "3"
+    assert velocity_values == [1.0, 2.0, 2.0]
+    world_velocity = next(
+        array
+        for array in root.findall(".//CellData/DataArray")
+        if array.attrib.get("Name") == "worldVelocity"
+    )
+    assert world_velocity.attrib.get("NumberOfComponents") == "3"
+    speed = next(
+        array
+        for array in root.findall(".//CellData/DataArray")
+        if array.attrib.get("Name") == "speed"
+    )
+    speed_values = [float(value) for value in (speed.text or "").split()]
+    assert speed_values == [3.0]
 
 
 def test_cfd_sampled_surface_vtp_preserves_u_vector_for_stream_tracer(tmp_path: Path) -> None:

@@ -31,6 +31,56 @@ from .geometry import *
 from .openfoam import *
 from .onshape import *
 from .motion import *
+from .structural import (
+    ExplicitShellState,
+    HybridShellCollisionState,
+    shell_fragment_triangles,
+    shell_fragment_velocity,
+)
+
+
+def visualization_components_with_fragments(
+    components: Sequence[AeroComponent],
+) -> List[AeroComponent]:
+    """Add detached collision fragments as independent visual surfaces."""
+    visual_components = list(components)
+    for component in components:
+        state = component.collision_structural_state
+        if not isinstance(state, (ExplicitShellState, HybridShellCollisionState)):
+            continue
+        if isinstance(state, HybridShellCollisionState):
+            visual_components.extend(
+                fragment.component for fragment in state.fragment_bodies
+            )
+            continue
+        triangles = shell_fragment_triangles(state)
+        if not triangles:
+            continue
+        area, length, centroid = component_references(triangles)
+        visual_components.append(
+            AeroComponent(
+                name=f"{component.name} detached fragments",
+                patch=f"{component.patch}_fragments",
+                triangles=triangles,
+                cofr=centroid,
+                lref=length,
+                aref=area,
+                material=component.material,
+                mass=state.emitted_fragment_mass_kg,
+                inertia=0.0,
+                linear_velocity=shell_fragment_velocity(state),
+                freedom=MotionFreedom(
+                    translate_axes=[
+                        (1.0, 0.0, 0.0),
+                        (0.0, 1.0, 0.0),
+                        (0.0, 0.0, 1.0),
+                    ],
+                    mate_type="COLLISION_FRAGMENT",
+                    source="explicit-shell-fragment",
+                ),
+            )
+        )
+    return visual_components
 
 def mirror_latest_step_to_root_case(latest_step_case: Path, root_case: Path) -> None:
     """Make root_case itself openable in ParaView by mirroring the latest solved step.
@@ -1081,6 +1131,22 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
         "movable": [],
         "anchored": [],
         "massKg": [],
+        "structuralDisplacementM": [],
+        "perforationPlug": [],
+        "structuralFailedEdges": [],
+        "velocityX": [],
+        "velocityY": [],
+        "velocityZ": [],
+        "velocityMagnitude": [],
+        "speed": [],
+        "worldVelocityX": [],
+        "worldVelocityY": [],
+        "worldVelocityZ": [],
+        "worldSpeed": [],
+    }
+    combined_vectors: Dict[str, List[Vec3]] = {
+        "velocity": [],
+        "worldVelocity": [],
     }
 
     for patch_index, comp in enumerate(components):
@@ -1103,10 +1169,34 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
         normal_y_vals: List[float] = []
         normal_z_vals: List[float] = []
         area_vals: List[float] = []
+        structural_displacement_vals: List[float] = []
+        perforation_plug_vals: List[float] = []
+        structural_failed_edge_vals: List[float] = []
+        velocity_x_vals: List[float] = []
+        velocity_y_vals: List[float] = []
+        velocity_z_vals: List[float] = []
+        velocity_magnitude_vals: List[float] = []
+        world_velocity_x_vals: List[float] = []
+        world_velocity_y_vals: List[float] = []
+        world_velocity_z_vals: List[float] = []
+        world_speed_vals: List[float] = []
+        velocity_vectors: List[Vec3] = []
+        world_velocity_vectors: List[Vec3] = []
         movable = 0.0 if (comp.is_assembly_anchor or (not comp.freedom.translate_axes and not comp.freedom.rotate_axes)) else 1.0
         anchored = 1.0 if comp.is_assembly_anchor else 0.0
+        component_velocity = comp.linear_velocity
+        component_speed = v_norm(component_velocity)
+        component_world_motion = component_world_velocity(comp)
+        component_world_speed = v_norm(component_world_motion)
+        shell_state = (
+            comp.collision_structural_state.shell_state
+            if isinstance(comp.collision_structural_state, HybridShellCollisionState)
+            else comp.collision_structural_state
+            if isinstance(comp.collision_structural_state, ExplicitShellState)
+            else None
+        )
 
-        for _normal, v1, v2, v3 in comp.triangles:
+        for triangle_index, (_normal, v1, v2, v3) in enumerate(comp.triangles):
             i = len(pts)
             pts.extend([v1, v2, v3])
             polys.append((i, i + 1, i + 2))
@@ -1145,6 +1235,41 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             normal_y_vals.append(n[1])
             normal_z_vals.append(n[2])
             area_vals.append(area)
+            if (
+                shell_state is not None
+                and triangle_index < len(shell_state.triangle_nodes)
+            ):
+                node_ids = shell_state.triangle_nodes[triangle_index]
+                structural_displacement = max(
+                    v_norm(
+                        v_sub(
+                            shell_state.positions[node],
+                            shell_state.reference_positions[node],
+                        )
+                    )
+                    for node in node_ids
+                )
+                perforation_plug = float(
+                    triangle_index in shell_state.plug_triangles
+                )
+                failed_edges = float(shell_state.failed_edges)
+            else:
+                structural_displacement = 0.0
+                perforation_plug = 0.0
+                failed_edges = 0.0
+            structural_displacement_vals.append(structural_displacement)
+            perforation_plug_vals.append(perforation_plug)
+            structural_failed_edge_vals.append(failed_edges)
+            velocity_x_vals.append(component_velocity[0])
+            velocity_y_vals.append(component_velocity[1])
+            velocity_z_vals.append(component_velocity[2])
+            velocity_magnitude_vals.append(component_speed)
+            world_velocity_x_vals.append(component_world_motion[0])
+            world_velocity_y_vals.append(component_world_motion[1])
+            world_velocity_z_vals.append(component_world_motion[2])
+            world_speed_vals.append(component_world_speed)
+            velocity_vectors.append(component_velocity)
+            world_velocity_vectors.append(component_world_motion)
 
             ci = len(combined_pts)
             combined_pts.extend([v1, v2, v3])
@@ -1172,6 +1297,22 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             combined_scalars["movable"].append(movable)
             combined_scalars["anchored"].append(anchored)
             combined_scalars["massKg"].append(float(comp.mass))
+            combined_scalars["structuralDisplacementM"].append(
+                structural_displacement
+            )
+            combined_scalars["perforationPlug"].append(perforation_plug)
+            combined_scalars["structuralFailedEdges"].append(failed_edges)
+            combined_scalars["velocityX"].append(component_velocity[0])
+            combined_scalars["velocityY"].append(component_velocity[1])
+            combined_scalars["velocityZ"].append(component_velocity[2])
+            combined_scalars["velocityMagnitude"].append(component_speed)
+            combined_scalars["speed"].append(component_speed)
+            combined_scalars["worldVelocityX"].append(component_world_motion[0])
+            combined_scalars["worldVelocityY"].append(component_world_motion[1])
+            combined_scalars["worldVelocityZ"].append(component_world_motion[2])
+            combined_scalars["worldSpeed"].append(component_world_speed)
+            combined_vectors["velocity"].append(component_velocity)
+            combined_vectors["worldVelocity"].append(component_world_motion)
 
         _write_ascii_polydata_vtk(
             out_dir / f"{safe_patch_name(comp.patch)}_panel_step_{step:03d}.vtp",
@@ -1196,6 +1337,22 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
                 "normalY": normal_y_vals,
                 "normalZ": normal_z_vals,
                 "triangleArea": area_vals,
+                "structuralDisplacementM": structural_displacement_vals,
+                "perforationPlug": perforation_plug_vals,
+                "structuralFailedEdges": structural_failed_edge_vals,
+                "velocityX": velocity_x_vals,
+                "velocityY": velocity_y_vals,
+                "velocityZ": velocity_z_vals,
+                "velocityMagnitude": velocity_magnitude_vals,
+                "speed": velocity_magnitude_vals,
+                "worldVelocityX": world_velocity_x_vals,
+                "worldVelocityY": world_velocity_y_vals,
+                "worldVelocityZ": world_velocity_z_vals,
+                "worldSpeed": world_speed_vals,
+            },
+            {
+                "velocity": velocity_vectors,
+                "worldVelocity": world_velocity_vectors,
             },
         )
 
@@ -1206,6 +1363,7 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             combined_pts,
             combined_polys,
             combined_scalars,
+            combined_vectors,
         )
         _write_pressure_preview_report(out_dir / "pressure_preview_report.txt", combined_scalars)
 

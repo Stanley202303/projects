@@ -1,17 +1,17 @@
 # Visualization validation report
-case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work
-numeric_time_dirs=['0', '5']
-selected_latest_time=5
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_0qecl_m5/step_work
+numeric_time_dirs=['0', '1']
+selected_latest_time=1
 sampled_surface_vtk_count=2
 foamToVTK_vtk_count=2
 
 field	min	max	range	file
-p	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work/5/p
-pPa	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work/5/pPa
-Cp	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work/5/Cp
-k	3.2464334e-14	9.999783e-13	9.67513966e-13	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work/5/k
-omega	6.0835318e-05	14272.968	14272.96794	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work/5/omega
-nut	2.2745328e-18	1.6431581e-08	1.6431581e-08	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_retxpv4c/step_work/5/nut
+p	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_0qecl_m5/step_work/1/p
+pPa	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_0qecl_m5/step_work/1/pPa
+Cp	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_0qecl_m5/step_work/1/Cp
+k	5.0226617e-13	9.99983e-13	4.9771683e-13	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_0qecl_m5/step_work/1/k
+omega	6.0839041e-05	729.95718	729.9571192	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_0qecl_m5/step_work/1/omega
+nut	6.8807622e-16	1.6431634e-08	1.643163331e-08	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_0qecl_m5/step_work/1/nut
 
 Interpretation:
 - If selected_latest_time is 0, you are still looking at startup fields, not solved CFD.

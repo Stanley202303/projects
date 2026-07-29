@@ -10,9 +10,12 @@ from cfd_motion.motion import (
     aabb_gap_along_axis,
     apply_collision_convergence_step,
     arrange_collision_convergence_initial_gap,
+    closest_point_on_triangle,
     collision_convergence_approach_axis,
     component_center_from_bounds,
     configure_collision_convergence_components,
+    component_bounds,
+    component_contact_compliance,
     contact_inverse_mass,
     deform_component_at_contact,
     build_eulerian_contact_grid,
@@ -22,12 +25,22 @@ from cfd_motion.motion import (
     register_collision_hole,
     resolve_part_collisions,
     swept_mesh_contact,
+    thin_shell_impact_response,
     triangle_area_centroid_normal,
     update_component_deformation,
     update_component_motion,
     write_collision_convergence_log_header,
 )
 from cfd_motion.runner import refine_collision_mesh_for_deformation, refine_thin_impact_target
+from cfd_motion.visualization import visualization_components_with_fragments
+from cfd_motion.structural import (
+    ExplicitShellState,
+    HybridShellCollisionState,
+    build_explicit_shell_state,
+    shell_fragment_triangles,
+    shell_fragment_velocity,
+    update_shell_perforation,
+)
 
 
 def box_component(name: str, xmin: float, xmax: float) -> AeroComponent:
@@ -82,6 +95,65 @@ def rectangular_component(
         ),
         mass=1.0,
     )
+
+
+def radial_distance_from_axis(point, origin, axis) -> float:
+    delta = tuple(point[index] - origin[index] for index in range(3))
+    axial = sum(delta[index] * axis[index] for index in range(3))
+    radial = tuple(delta[index] - axial * axis[index] for index in range(3))
+    return math.sqrt(sum(value * value for value in radial))
+
+
+def shell_core_state(component: AeroComponent) -> ExplicitShellState:
+    state = component.collision_structural_state
+    if isinstance(state, HybridShellCollisionState):
+        return state.shell_state
+    assert isinstance(state, ExplicitShellState)
+    return state
+
+
+def max_attached_shell_position_x(component: AeroComponent) -> float:
+    state = shell_core_state(component)
+    emitted_nodes = {
+        node
+        for triangle_index in state.emitted_triangles
+        for node in state.triangle_nodes[triangle_index]
+    }
+    return max(
+        state.positions[node_index][0]
+        for node_index in range(len(state.positions))
+        if node_index not in emitted_nodes
+    )
+
+
+def attached_shell_transverse_span(component: AeroComponent) -> float:
+    state = shell_core_state(component)
+    emitted_nodes = {
+        node
+        for triangle_index in state.emitted_triangles
+        for node in state.triangle_nodes[triangle_index]
+    }
+    transverse_values = [
+        state.positions[node_index][1]
+        for node_index in range(len(state.positions))
+        if node_index not in emitted_nodes
+    ]
+    return max(transverse_values) - min(transverse_values)
+
+
+def attached_shell_position_y_range(component: AeroComponent) -> tuple[float, float]:
+    state = shell_core_state(component)
+    emitted_nodes = {
+        node
+        for triangle_index in state.emitted_triangles
+        for node in state.triangle_nodes[triangle_index]
+    }
+    values = [
+        state.positions[node_index][1]
+        for node_index in range(len(state.positions))
+        if node_index not in emitted_nodes
+    ]
+    return min(values), max(values)
 
 
 def sphere_component(
@@ -161,6 +233,60 @@ def sphere_component(
 
 
 class CollisionConvergenceTest(TestCase):
+    def test_bom_material_properties_drive_contact_and_perforation_response(self) -> None:
+        impactor = box_component("impactor", -0.03, 0.0)
+        impactor.mass = 0.25
+        target = rectangular_component(
+            "bom_sheet",
+            0.1,
+            0.1001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        # These are the same fields populated by a matched BOM row.
+        target.material = MaterialProperties(
+            material_name="BOM polymer",
+            density_kg_m3=1200.0,
+            young_modulus_pa=2.0e9,
+            poisson_ratio=0.32,
+            thickness_m=0.001,
+            yield_strength_pa=1.0e6,
+            failure_strain=0.01,
+            source="bom",
+            structural_source="bom",
+        )
+
+        compliance = component_contact_compliance(target)
+        response = thin_shell_impact_response(
+            impactor,
+            target,
+            1000.0,
+            (0.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+        )
+        self.assertIsNotNone(response)
+        assert response is not None
+
+        target.material.young_modulus_pa = 4.0e9
+        stiffer_compliance = component_contact_compliance(target)
+        stiffer_response = thin_shell_impact_response(
+            impactor,
+            target,
+            1000.0,
+            (0.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+        )
+        self.assertIsNotNone(stiffer_response)
+        assert stiffer_response is not None
+
+        self.assertAlmostEqual(stiffer_compliance, compliance * 0.5)
+        self.assertNotEqual(
+            stiffer_response.absorbed_energy_j,
+            response.absorbed_energy_j,
+        )
+
     def test_swept_contact_builds_a_flat_face_manifold(self) -> None:
         moving = box_component("moving", 0.0, 1.0)
         stationary = box_component("stationary", 1.1, 2.1)
@@ -192,7 +318,7 @@ class CollisionConvergenceTest(TestCase):
         self.assertTrue(math.isinf(geometry.radius_b))
         self.assertAlmostEqual(geometry.footprint_radius, math.sqrt(1.0 / math.pi))
 
-    def test_two_mesh_spheres_use_curvature_and_both_deform(self) -> None:
+    def test_two_mesh_spheres_use_curvature_with_bounded_impactor_deformation(self) -> None:
         radius = 0.05
         moving = sphere_component("sphere_one", 0.0, radius)
         stationary = sphere_component("sphere_two", 0.2, radius)
@@ -237,8 +363,41 @@ class CollisionConvergenceTest(TestCase):
 
             self.assertTrue(contacts)
             self.assertGreater(moving.deformation_max_m, 0.0)
+            self.assertLessEqual(moving.deformation_max_m, 0.01)
             self.assertGreater(stationary.deformation_max_m, 0.0)
             self.assertEqual(stationary.linear_velocity, (0.0, 0.0, 0.0))
+
+            impact_triangles = list(moving.triangles)
+            impact_deformation = moving.deformation_max_m
+            with patch(
+                "cfd_motion.motion.triangle_pressure_force_for_deformation",
+                return_value=(1.0e8, 0.0, 0.0),
+            ):
+                reported_deformation, *_rest = update_component_deformation(
+                    moving,
+                    0.02,
+                )
+            self.assertEqual(moving.triangles, impact_triangles)
+            self.assertEqual(reported_deformation, impact_deformation)
+
+    def test_collision_impactor_ignores_panel_pressure_deformation(self) -> None:
+        moving = box_component("moving", 0.0, 1.0)
+        stationary = box_component("stationary", 1.1, 2.1)
+        with (
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_SPEED_MPS", 5.0),
+            patch(
+                "cfd_motion.motion.triangle_pressure_force_for_deformation",
+                return_value=(1.0e8, 0.0, 0.0),
+            ),
+        ):
+            pair = configure_collision_convergence_components([moving, stationary])
+            self.assertIsNotNone(pair)
+            original_triangles = list(moving.triangles)
+            max_deformation, *_rest = update_component_deformation(moving, 0.02)
+
+        self.assertEqual(max_deformation, 0.0)
+        self.assertEqual(moving.deformation_max_m, 0.0)
+        self.assertEqual(moving.triangles, original_triangles)
 
     def test_collision_dent_recovers_only_to_permanent_depth(self) -> None:
         component = box_component("soft_body", 0.0, 1.0)
@@ -317,6 +476,188 @@ class CollisionConvergenceTest(TestCase):
         self.assertGreater(refine_thin_impact_target(target), 0)
         initial_triangle_count = len(target.triangles)
         initial_triangles = list(target.triangles)
+        initial_mass = target.mass
+        damage = register_collision_hole(
+            target,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.015,
+            0.004,
+            0,
+            "plastic_membrane_perforation",
+            1.0,
+        )
+        shell_state = shell_core_state(target)
+        self.assertTrue(shell_state.membrane_elements)
+        shell_state.max_substeps = 16
+        initial_radius = damage.current_hole_radius_m
+        self.assertGreater(initial_radius, 0.0)
+        self.assertLess(initial_radius, damage.target_hole_radius_m)
+
+        advance_collision_damage_state(
+            target,
+            damage,
+            0.25 * damage.response_time_s,
+        )
+        first_radius = damage.current_hole_radius_m
+        self.assertGreater(first_radius, initial_radius)
+        self.assertLess(first_radius, damage.target_hole_radius_m)
+        first_geometry = list(target.triangles)
+
+        advance_collision_damage_state(
+            target,
+            damage,
+            10.0 * damage.response_time_s,
+        )
+        self.assertNotEqual(target.triangles, first_geometry)
+        shell_state = shell_core_state(target)
+        self.assertTrue(shell_state.plug_triangles)
+        self.assertGreater(shell_state.mass_scale, 1.0)
+        self.assertLessEqual(
+            shell_state.max_displacement_m,
+            shell_state.displacement_limit_m + 1e-12,
+        )
+        self.assertGreater(shell_state.displacement_limit_m, 0.01)
+        self.assertTrue(
+            all(
+                math.isfinite(value)
+                for triangle in target.triangles
+                for point in triangle[1:]
+                for value in point
+            )
+        )
+        self.assertAlmostEqual(
+            damage.current_hole_radius_m,
+            damage.target_hole_radius_m,
+            delta=1e-6,
+        )
+        self.assertGreater(damage.ongoing_contact_energy_j, 0.0)
+        self.assertLess(len(target.triangles), initial_triangle_count)
+        self.assertTrue(shell_fragment_triangles(shell_state))
+        first_fragment_centroid = component_center_from_bounds(
+            visualization_components_with_fragments([target])[1]
+        )
+        first_fragment_velocity = shell_fragment_velocity(shell_state)
+        first_fragment_speed = math.sqrt(
+            sum(value * value for value in first_fragment_velocity)
+        )
+        self.assertGreater(
+            first_fragment_speed,
+            0.0,
+        )
+        advance_collision_damage_state(
+            target,
+            damage,
+            damage.response_time_s,
+        )
+        moved_fragment_centroid = component_center_from_bounds(
+            visualization_components_with_fragments([target])[1]
+        )
+        moved_fragment_velocity = shell_fragment_velocity(shell_state)
+        moved_fragment_speed = math.sqrt(
+            sum(value * value for value in moved_fragment_velocity)
+        )
+        self.assertGreater(
+            abs(moved_fragment_centroid[0] - first_fragment_centroid[0]),
+            0.0,
+        )
+        self.assertAlmostEqual(
+            moved_fragment_speed,
+            first_fragment_speed,
+            delta=max(1e-9, 0.05 * first_fragment_speed),
+        )
+        driven_deformation = target.deformation_max_m
+        remaining_contact_energy = damage.ongoing_contact_energy_j
+        advance_collision_damage_state(
+            target,
+            damage,
+            damage.response_time_s,
+        )
+        self.assertGreaterEqual(target.deformation_max_m, driven_deformation)
+        self.assertLess(damage.ongoing_contact_energy_j, remaining_contact_energy)
+        self.assertLessEqual(
+            shell_state.max_displacement_m,
+            shell_state.displacement_limit_m + 1e-12,
+        )
+        self.assertLessEqual(
+            target.deformation_max_m,
+            shell_state.displacement_limit_m + 1e-12,
+        )
+        self.assertGreater(target.deformation_max_m, 0.01)
+        persistent_parent_x = max_attached_shell_position_x(target)
+        advance_collision_damage_state(
+            target,
+            damage,
+            5.0 * damage.response_time_s,
+        )
+        self.assertGreaterEqual(
+            max_attached_shell_position_x(target),
+            0.75 * persistent_parent_x,
+        )
+        self.assertGreater(
+            attached_shell_transverse_span(target),
+            0.03,
+        )
+        min_y, max_y = attached_shell_position_y_range(target)
+        self.assertLess(min_y, -0.03)
+        self.assertGreater(max_y, 0.03)
+        self.assertNotEqual(target.triangles, initial_triangles)
+        visual_components = visualization_components_with_fragments([target])
+        self.assertEqual(len(visual_components), 2)
+        self.assertEqual(visual_components[1].patch, "thin_target_fragment_0")
+        self.assertGreater(
+            math.sqrt(
+                sum(value * value for value in visual_components[1].linear_velocity)
+            ),
+            0.0,
+        )
+        self.assertGreater(visual_components[1].linear_velocity[0], 0.0)
+        self.assertLess(
+            math.hypot(
+                visual_components[1].linear_velocity[1],
+                visual_components[1].linear_velocity[2],
+            ),
+            0.25 * abs(visual_components[1].linear_velocity[0]),
+        )
+        self.assertTrue(visual_components[1].freedom.translate_axes)
+        self.assertEqual(
+            visual_components[1].triangles,
+            shell_fragment_triangles(target.collision_structural_state),
+        )
+        self.assertAlmostEqual(
+            sum(component.mass for component in visual_components),
+            initial_mass,
+        )
+        hybrid_state = target.collision_structural_state
+        if isinstance(hybrid_state, HybridShellCollisionState):
+            self.assertTrue(hybrid_state.shell_state.render_as_midsurface)
+            self.assertLessEqual(
+                len(target.triangles),
+                len(hybrid_state.shell_state.triangle_nodes)
+                - len(hybrid_state.shell_state.emitted_triangles),
+            )
+            largest_transverse_span = 0.0
+            for fragment in hybrid_state.fragment_bodies:
+                _xmin, _xmax, ymin, ymax, zmin, zmax = component_bounds(
+                    fragment.component.triangles
+                )
+                largest_transverse_span = max(
+                    largest_transverse_span,
+                    ymax - ymin,
+                    zmax - zmin,
+                )
+            self.assertLessEqual(largest_transverse_span, 0.04)
+
+    def test_shell_plug_separation_uses_damage_response_interval(self) -> None:
+        target = rectangular_component(
+            "thin_target",
+            0.0,
+            0.0001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
         damage = register_collision_hole(
             target,
             (0.0, 0.0, 0.0),
@@ -327,29 +668,94 @@ class CollisionConvergenceTest(TestCase):
             "plastic_membrane_perforation",
             1.0,
         )
+        shell_state = shell_core_state(target)
+        shell_state.plug_triangles.clear()
+        shell_state.emitted_triangles.clear()
+        shell_state.velocities = [
+            (0.0, 0.0, 0.0) for _position in shell_state.positions
+        ]
 
-        advance_collision_damage_state(
-            target,
-            damage,
-            0.25 * damage.response_time_s,
+        radial_growth = 0.002
+        response_interval = 0.01
+        update_shell_perforation(
+            shell_state,
+            1.0,
+            radial_growth,
+            response_interval,
         )
-        first_radius = damage.current_hole_radius_m
-        self.assertGreater(first_radius, 0.0)
-        self.assertLess(first_radius, damage.target_hole_radius_m)
 
-        advance_collision_damage_state(
-            target,
-            damage,
-            10.0 * damage.response_time_s,
-        )
-        self.assertGreater(damage.current_hole_radius_m, first_radius)
+        expected_speed = radial_growth / response_interval
+        self.assertTrue(shell_state.plug_triangles)
         self.assertAlmostEqual(
-            damage.current_hole_radius_m,
-            damage.target_hole_radius_m,
-            delta=1e-6,
+            max(
+                math.sqrt(sum(value * value for value in velocity))
+                for velocity in shell_state.velocities
+            ),
+            expected_speed,
         )
-        self.assertEqual(len(target.triangles), initial_triangle_count)
-        self.assertNotEqual(target.triangles, initial_triangles)
+
+    def test_explicit_shell_uses_target_midsurface_not_perimeter_walls(self) -> None:
+        target = rectangular_component(
+            "thin_target",
+            0.0,
+            0.0001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        target.is_assembly_anchor = True
+        state = build_explicit_shell_state(
+            target,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.015,
+            2.0e9,
+            0.0001,
+            0.35,
+            4.0e7,
+            0.2,
+            0.05,
+            0.5,
+            16,
+            0.03,
+        )
+
+        reference_x = [point[0] for point in state.reference_positions]
+        self.assertTrue(reference_x)
+        self.assertAlmostEqual(min(reference_x), 0.00005, delta=1e-8)
+        self.assertAlmostEqual(max(reference_x), 0.00005, delta=1e-8)
+        self.assertLess(len(state.triangle_nodes), len(target.triangles))
+        self.assertTrue(state.fixed_nodes)
+
+        refined_target = rectangular_component(
+            "refined_thin_target",
+            0.0,
+            0.0001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        refined_target.is_assembly_anchor = True
+        self.assertGreater(refine_thin_impact_target(refined_target), 0)
+        refined_state = build_explicit_shell_state(
+            refined_target,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.015,
+            2.0e9,
+            0.0001,
+            0.35,
+            4.0e7,
+            0.2,
+            0.05,
+            0.5,
+            16,
+            0.03,
+        )
+        self.assertTrue(refined_state.fixed_nodes)
+        self.assertLess(len(refined_state.fixed_nodes), len(refined_state.positions))
 
     def test_fracture_cuts_a_resolved_hole_in_coarse_sheet_mesh(self) -> None:
         target = rectangular_component(
@@ -483,6 +889,40 @@ class CollisionConvergenceTest(TestCase):
             )
             self.assertEqual(moving.linear_velocity, (0.0, 40.0, 0.0))
 
+    def test_auto_axis_uses_the_frontal_centerline_not_tilted_face_normal(self) -> None:
+        normal = (0.0, -math.sqrt(0.5), math.sqrt(0.5))
+        target_triangle = (
+            normal,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, math.sqrt(0.5), math.sqrt(0.5)),
+        )
+        stationary = AeroComponent(
+            name="tilted_target",
+            patch="tilted_target",
+            triangles=[target_triangle],
+            cofr=(0.5, math.sqrt(0.5) / 2.0, math.sqrt(0.5) / 2.0),
+            lref=1.0,
+            aref=0.5,
+            mass=1.0,
+        )
+        moving = rectangular_component(
+            "moving",
+            0.4,
+            0.6,
+            -1.16,
+            -0.96,
+            0.25,
+            0.45,
+        )
+
+        with patch("cfd_motion.motion.COLLISION_CONVERGENCE_AXIS", "auto"):
+            axis = collision_convergence_approach_axis((moving, stationary))
+
+        self.assertAlmostEqual(axis[0], 0.0)
+        self.assertAlmostEqual(axis[1], 1.0)
+        self.assertAlmostEqual(axis[2], 0.0)
+
     def test_single_swept_impact_does_not_reverse_the_driver(self) -> None:
         moving = box_component("moving", 0.0, 1.0)
         stationary = box_component("stationary", 1.1, 2.1)
@@ -548,6 +988,40 @@ class CollisionConvergenceTest(TestCase):
                 self.assertAlmostEqual(moving.linear_velocity[0], 0.0)
                 previous_x = moving.cofr[0]
 
+    def test_post_perforation_impactor_can_leave_the_approach_axis(self) -> None:
+        moving = box_component("moving", 0.0, 1.0)
+        moving.freedom = MotionFreedom(
+            translate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+            rotate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+            source="post-perforation-ballistic",
+        )
+        moving.linear_velocity = (12.0, 0.0, 0.0)
+        moving.angular_velocity = (0.0, 4.0, 0.0)
+
+        start = moving.cofr
+        _force, _moment, dpos, drot = update_component_motion(
+            moving,
+            {},
+            0.05,
+            load_override=((0.0, 200.0, 100.0), (0.0, 50.0, 25.0)),
+        )
+
+        self.assertGreater(dpos[0], 0.0)
+        self.assertGreater(moving.cofr[1], start[1])
+        self.assertGreater(moving.cofr[2], start[2])
+        self.assertGreater(moving.linear_velocity[1], 0.0)
+        self.assertGreater(moving.linear_velocity[2], 0.0)
+        self.assertNotEqual(drot, (0.0, 0.0, 0.0))
+        self.assertNotEqual(moving.angular_velocity, (0.0, 0.0, 0.0))
+
     def test_deformed_surfaces_close_to_mesh_contact(self) -> None:
         moving = box_component("moving", 0.0, 1.0)
         stationary = box_component("stationary", 1.1, 2.1)
@@ -577,11 +1051,78 @@ class CollisionConvergenceTest(TestCase):
             resolve_part_collisions([moving, stationary], 0, collision_log, contact, pair)
 
             self.assertGreater(moving.deformation_max_m, 0.0)
+            self.assertLessEqual(moving.deformation_max_m, 0.01)
             self.assertGreater(stationary.deformation_max_m, 0.0)
             post_contact = swept_mesh_contact(moving, stationary, axis, 0.005)
             self.assertIsNotNone(post_contact)
             assert post_contact is not None
             self.assertLessEqual(post_contact[0], 1e-4)
+
+    def test_collision_shock_affects_nearby_non_contact_part(self) -> None:
+        moving = box_component("moving", 0.0, 1.0)
+        stationary = box_component("stationary", 1.1, 2.1)
+        nearby = rectangular_component(
+            "nearby",
+            1.05,
+            1.25,
+            0.56,
+            0.76,
+            -0.1,
+            0.1,
+        )
+        nearby.freedom = MotionFreedom(
+            translate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+            rotate_axes=[],
+        )
+        nearby.material = MaterialProperties(
+            material_name="soft nearby polymer",
+            density_kg_m3=1000.0,
+            young_modulus_pa=2.0e7,
+            poisson_ratio=0.35,
+            yield_strength_pa=2.0e5,
+            failure_strain=0.10,
+        )
+
+        with (
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_SPEED_MPS", 5.0),
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_AXIS", "x"),
+            TemporaryDirectory() as tmpdir,
+        ):
+            pair = configure_collision_convergence_components([moving, stationary, nearby])
+            self.assertIsNotNone(pair)
+            assert pair is not None
+            convergence_log = Path(tmpdir) / "convergence.txt"
+            collision_log = Path(tmpdir) / "collisions.txt"
+            write_collision_convergence_log_header(convergence_log, pair)
+
+            _move, _target_move, contact = apply_collision_convergence_step(
+                pair,
+                0,
+                0.02,
+                convergence_log,
+                (1.0, 0.0, 0.0),
+            )
+            self.assertIsNotNone(contact)
+            assert contact is not None
+
+            resolve_part_collisions(
+                [moving, stationary, nearby],
+                0,
+                collision_log,
+                contact,
+                pair,
+            )
+
+        self.assertGreater(
+            math.sqrt(sum(value * value for value in nearby.linear_velocity)),
+            0.0,
+        )
+        self.assertTrue(nearby.collision_damage)
+        self.assertGreater(nearby.deformation_max_m, 0.0)
 
     def test_fixed_topology_deforms_coarse_triangle_containing_contact(self) -> None:
         component = rectangular_component(
@@ -686,23 +1227,52 @@ class CollisionConvergenceTest(TestCase):
             self.assertIsNotNone(contact)
             assert contact is not None
             self.assertTrue(contact.perforated)
+            self.assertGreaterEqual(contact.hole_radius, 0.015)
             self.assertGreater(contact.residual_speed, 45.0)
             self.assertGreater(refine_thin_impact_target(stationary), 0)
             triangle_count_before = len(stationary.triangles)
             triangles_before = list(stationary.triangles)
+            stationary_center_before = stationary.cofr
+            total_mass_before = moving.mass + stationary.mass
 
             lines = resolve_part_collisions([moving, stationary], 0, collision_log, contact, pair)
 
             self.assertTrue(lines)
-            self.assertEqual(len(stationary.triangles), triangle_count_before)
+            self.assertLess(len(stationary.triangles), triangle_count_before)
             self.assertNotEqual(stationary.triangles, triangles_before)
             self.assertGreater(stationary.deformation_max_m, 0.0)
             self.assertGreater(moving.deformation_max_m, 0.0)
+            self.assertLessEqual(moving.deformation_max_m, 0.01)
+            self.assertEqual(stationary.cofr, stationary_center_before)
+            self.assertEqual(stationary.linear_velocity, (0.0, 0.0, 0.0))
             self.assertTrue(stationary.collision_damage)
             damage = stationary.collision_damage[0]
+            self.assertGreater(damage.current_hole_radius_m, 0.0)
             self.assertLess(damage.current_hole_radius_m, damage.target_hole_radius_m)
+            self.assertGreaterEqual(
+                damage.current_hole_radius_m,
+                0.5 * damage.target_hole_radius_m,
+            )
+            for triangle in stationary.triangles:
+                closest = closest_point_on_triangle(damage.contact_point, triangle)
+                self.assertGreater(
+                    radial_distance_from_axis(
+                        closest,
+                        damage.contact_point,
+                        damage.inward_direction,
+                    ),
+                    damage.current_hole_radius_m,
+                )
+            visual_components = visualization_components_with_fragments([moving, stationary])
+            self.assertGreaterEqual(len(visual_components), 3)
+            self.assertAlmostEqual(
+                sum(component.mass for component in visual_components),
+                total_mass_before,
+            )
             first_radius = damage.current_hole_radius_m
+            first_triangles = list(stationary.triangles)
             advance_collision_damage_state(stationary, damage, damage.response_time_s)
             self.assertGreater(damage.current_hole_radius_m, first_radius)
+            self.assertNotEqual(stationary.triangles, first_triangles)
             self.assertGreater(moving.linear_velocity[0], 45.0)
             self.assertEqual(moving.freedom.source, "post-perforation-ballistic")

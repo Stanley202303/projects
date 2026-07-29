@@ -11,24 +11,36 @@ Cp	-0.35	1	1.35
 CpAbsPanel	0	1	1
 CpPanel	-0.35	1	1.35
 anchored	0	1	1
-massKg	0.004	0.0911849356	0.0871849356
+massKg	0.62448	1.78722474	1.16274474
 movable	0	1	1
 normalX	-1	1	2
-normalY	-1	1	2
-normalZ	-1	1	2
-p	-155.896708	444.928118	600.824826
-pPa	-190.973467	545.036945	736.010412
-pPaAbsPanel	0	545.638478	545.638478
-pPaPanel	-190.973467	545.036945	736.010412
+normalY	-1	0.99935961	1.99935961
+normalZ	-0.999048168	0.999048168	1.99809634
+p	-157.5	449.423833	606.923833
+pPa	-192.9375	550.544196	743.481696
+pPaAbsPanel	0	551.25	551.25
+pPaPanel	-192.9375	550.544196	743.481696
 patchId	0	1	1
+perforationPlug	0	0	0
 pressureCoeff	-0.35	1	1.35
 pressureCoeffAbs	0	1	1
-pressurePa	-190.973467	545.036945	736.010412
-pressurePaAbs	0	545.638478	545.638478
+pressurePa	-192.9375	550.544196	743.481696
+pressurePaAbs	0	551.25	551.25
 pressureVisible01	0	1	1
 skinFrictionPreview	0	1	1
-triangleArea	1.68678233e-10	0.000110254882	0.000110254713
+speed	0	30	30
+structuralDisplacementM	0	0	0
+structuralFailedEdges	0	0	0
+triangleArea	1.65550623e-10	0.0003125	0.000312499834
+velocityMagnitude	0	30	30
+velocityX	0	0	0
+velocityY	0	30	30
+velocityZ	0	0	0
 windExposure	0	1	1
+worldSpeed	0	30	30
+worldVelocityX	0	0	0
+worldVelocityY	0	30	30
+worldVelocityZ	0	0	0
 
 If pressureCoeff/pressurePa have a non-zero range but ParaView is blue:
   1) click Rescale to Data Range,
