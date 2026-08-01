@@ -3,12 +3,33 @@ import xml.etree.ElementTree as ElementTree
 
 from cfd_motion.models import AeroComponent, MotionFreedom
 from cfd_motion.visualization import (
+    CFD_SAMPLED_SURFACE_VTP_NAME,
+    COMBINED_SURFACE_VTK_NAME,
+    ROOT_CFD_SAMPLED_DIR_NAME,
+    ROOT_PANEL_PREVIEW_DIR_NAME,
     _write_ascii_polydata_vtk,
     copy_minimal_stream_tracer_case_to_root,
+    create_root_safe_pvd_from_copied_previews,
     validate_preview_polydata,
     write_cfd_sampled_surface_preview_for_step,
     write_panel_aero_preview_for_step,
 )
+
+
+def test_main_motion_pvd_keeps_combined_geometry_when_cfd_surface_exists(tmp_path: Path) -> None:
+    panel_dir = tmp_path / ROOT_PANEL_PREVIEW_DIR_NAME
+    sampled_dir = tmp_path / ROOT_CFD_SAMPLED_DIR_NAME
+    panel_dir.mkdir()
+    sampled_dir.mkdir()
+    (panel_dir / f"frame_000_{COMBINED_SURFACE_VTK_NAME}").write_text("panel")
+    (sampled_dir / f"frame_000_{CFD_SAMPLED_SURFACE_VTP_NAME}").write_text("sampled")
+
+    pvd = create_root_safe_pvd_from_copied_previews(tmp_path, 1)
+
+    assert pvd is not None
+    pvd_text = pvd.read_text()
+    assert ROOT_PANEL_PREVIEW_DIR_NAME in pvd_text
+    assert ROOT_CFD_SAMPLED_DIR_NAME not in pvd_text
 
 
 def test_polydata_fields_are_written_as_cell_data_for_shared_vertices(tmp_path: Path) -> None:

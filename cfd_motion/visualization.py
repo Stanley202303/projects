@@ -1920,9 +1920,11 @@ def copy_step_debug_reports_to_root(root_case: Path, step_case: Path, step: int)
 def create_root_safe_pvd_from_copied_previews(root_case: Path, total_steps: int) -> Optional[Path]:
     """Create main PVD from root-level compact frames.
 
-    v22 prefers high-definition real CFD sampled surfaces when available.  If
-    OpenFOAM sampling failed for a frame, it falls back to the robust panel
-    preview so the animation still opens.
+    The main motion PVD uses the combined panel preview generated from the
+    solver's live component list.  Unlike a remeshed CFD sampled surface, it
+    cannot silently omit an impactor or a newly detached fragment from one
+    frame.  CFD sampled surfaces are retained separately for pressure-field
+    inspection and remain a fallback if preview generation is unavailable.
     """
     if not PARAVIEW_PVD_TIMESERIES:
         return None
@@ -1932,7 +1934,7 @@ def create_root_safe_pvd_from_copied_previews(root_case: Path, total_steps: int)
         "ParaView safe surface PVD manifest", "",
         "This file references compact frames stored at root level.",
         "Full per-step OpenFOAM cases are not retained unless SAVE_MOTION_STEPS=1.",
-        "v24 prefers real CFD sampled/patch-only OpenFOAM surface data; panel preview is only a fallback.",
+        "The main animation uses stable combined solver geometry; CFD sampled surfaces are separate diagnostics.",
         "For visible pressure colour, use pressureCoeff, pressurePa, pressureVisible01, Cp, or pPa.", "",
         "time\tpart\tgroup\tfile",
     ]
@@ -1940,15 +1942,12 @@ def create_root_safe_pvd_from_copied_previews(root_case: Path, total_steps: int)
         t = step * MOTION_DT if PARAVIEW_TIME_MODE == "seconds" else float(step)
         cfd_vf = root_case / ROOT_CFD_SAMPLED_DIR_NAME / f"frame_{step:03d}_{CFD_SAMPLED_SURFACE_VTP_NAME}"
         panel_vf = root_case / ROOT_PANEL_PREVIEW_DIR_NAME / f"frame_{step:03d}_{COMBINED_SURFACE_VTK_NAME}"
-        prefer_cfd = PARAVIEW_PREFER_CFD_SAMPLED_SURFACES and not (
-            COLLISION_CONVERGENCE_SPEED_MPS > 0.0 and abs(VELOCITY) <= 1e-12
-        )
-        if prefer_cfd and cfd_vf.exists():
-            vf = cfd_vf
-            group = "sampled_cfd_surfaces"
-        elif panel_vf.exists():
+        if panel_vf.exists():
             vf = panel_vf
             group = "panel_preview_surfaces"
+        elif cfd_vf.exists():
+            vf = cfd_vf
+            group = "sampled_cfd_surfaces_fallback"
         else:
             manifest.append(f"# step_{step:03d}: missing both {cfd_vf} and {panel_vf}")
             continue
