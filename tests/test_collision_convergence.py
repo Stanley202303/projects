@@ -23,7 +23,9 @@ from cfd_motion.motion import (
     deform_component_at_contact,
     build_eulerian_contact_grid,
     fracture_thin_shell,
+    initial_same_source_overlap_pairs,
     local_contact_geometry,
+    move_component_rigidly,
     register_collision_dent,
     register_collision_hole,
     resolve_part_collisions,
@@ -259,6 +261,86 @@ def sphere_component(
 
 
 class CollisionConvergenceTest(TestCase):
+    def test_static_aabb_overlap_has_no_collision_energy_or_deformation(self) -> None:
+        outer = box_component("outer", 0.0, 1.0)
+        nested = box_component("nested", 0.25, 0.75)
+        outer_triangles = list(outer.triangles)
+        nested_triangles = list(nested.triangles)
+
+        with TemporaryDirectory() as tmpdir:
+            lines = resolve_part_collisions(
+                [outer, nested],
+                0,
+                Path(tmpdir) / "collisions.txt",
+            )
+
+        self.assertEqual(lines, [])
+        self.assertEqual(outer.triangles, outer_triangles)
+        self.assertEqual(nested.triangles, nested_triangles)
+        self.assertEqual(outer.deformation_max_m, 0.0)
+        self.assertEqual(nested.deformation_max_m, 0.0)
+        self.assertEqual(outer.collision_damage, [])
+        self.assertEqual(nested.collision_damage, [])
+
+    def test_initial_same_source_fit_is_stress_free_until_separation(self) -> None:
+        first = box_component("part1_a", 0.0, 1.0)
+        second = box_component("part1_b", 0.5, 1.5)
+        first.collision_source_index = 1
+        second.collision_source_index = 1
+        first.linear_velocity = (1.0, 0.0, 0.0)
+        components = [first, second]
+        initial_pairs = initial_same_source_overlap_pairs(components)
+        self.assertEqual(len(initial_pairs), 1)
+
+        with TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "collisions.txt"
+            self.assertEqual(
+                resolve_part_collisions(
+                    components,
+                    0,
+                    log_path,
+                    initial_overlap_pairs=initial_pairs,
+                ),
+                [],
+            )
+            self.assertEqual(first.deformation_max_m, 0.0)
+            self.assertEqual(second.deformation_max_m, 0.0)
+
+            move_component_rigidly(
+                second,
+                (2.0, 0.0, 0.0),
+                None,
+                0.0,
+                second.cofr,
+            )
+            resolve_part_collisions(
+                components,
+                1,
+                log_path,
+                initial_overlap_pairs=initial_pairs,
+            )
+            self.assertEqual(initial_pairs, {})
+
+            move_component_rigidly(
+                second,
+                (-2.0, 0.0, 0.0),
+                None,
+                0.0,
+                second.cofr,
+            )
+            lines = resolve_part_collisions(
+                components,
+                2,
+                log_path,
+                initial_overlap_pairs=initial_pairs,
+            )
+
+        self.assertTrue(lines)
+        self.assertGreater(
+            max(first.deformation_max_m, second.deformation_max_m),
+            0.0,
+        )
+
     def test_bom_material_pair_sets_default_restitution(self) -> None:
         steel = box_component("steel", 0.0, 0.1)
         steel.material.material_name = "stainless steel"

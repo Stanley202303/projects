@@ -94,6 +94,12 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
             f"{moving.patch} impacts stationary {stationary.patch}, "
             f"speed {COLLISION_CONVERGENCE_SPEED_MPS:g} m/s."
         )
+    initial_overlap_pairs = initial_same_source_overlap_pairs(components)
+    if initial_overlap_pairs:
+        print(
+            "Initial collision regularisation: treating "
+            f"{len(initial_overlap_pairs)} same-source CAD overlap(s) as stress-free."
+        )
     rigid_group_specs = (
         []
         if collision_convergence_pair is not None
@@ -193,6 +199,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         f"collision_sweep_penetration_m={COLLISION_SWEEP_PENETRATION_M}",
         f"collision_convergence_stop_after_contact={COLLISION_CONVERGENCE_STOP_AFTER_CONTACT}",
         f"collision_convergence_pair={(collision_convergence_pair[0].patch + ',' + collision_convergence_pair[1].patch) if collision_convergence_pair else '<disabled>'}",
+        f"stress_free_initial_same_source_overlaps={len(initial_overlap_pairs)}",
         f"aero_reference_frame={AERO_REFERENCE_FRAME}",
         f"body_moving_through_still_air={BODY_MOVING_THROUGH_STILL_AIR}",
         f"body_world_velocity_mps={BODY_WORLD_VELOCITY}",
@@ -461,6 +468,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     collision_log,
                     swept_contact if collision_convergence_active else None,
                     collision_convergence_pair,
+                    initial_overlap_pairs,
                 )
                 if collision_lines:
                     print(f"Collision resolution: {len(collision_lines)} contact event(s) handled at step {step}.")

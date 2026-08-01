@@ -2750,6 +2750,34 @@ def aabb_overlap_with_normal(a: AeroComponent, b: AeroComponent) -> Optional[Tup
     return depth, normal, contact
 
 
+def collision_pair_key(a: AeroComponent, b: AeroComponent) -> Tuple[int, int]:
+    first, second = sorted((id(a), id(b)))
+    return first, second
+
+
+def initial_same_source_overlap_pairs(
+    components: Sequence[AeroComponent],
+) -> Dict[Tuple[int, int], float]:
+    """Record intentional CAD fits as a stress-free initial configuration.
+
+    Separate occurrences in one imported source can have nested or overlapping
+    bounding boxes even when their triangle surfaces merely meet.  An AABB is a
+    broad phase, so its initial overlap must not be interpreted as stored elastic
+    penetration.  Only overlap beyond the initial depth is treated as new
+    penetration.  Once a pair separates, its offset is removed and later
+    re-contact is solved normally.
+    """
+    pairs: Dict[Tuple[int, int], float] = {}
+    for index, a in enumerate(components):
+        for b in components[index + 1:]:
+            if not components_share_collision_source(a, b):
+                continue
+            initial_overlap = aabb_overlap_with_normal(a, b)
+            if initial_overlap is not None:
+                pairs[collision_pair_key(a, b)] = initial_overlap[0]
+    return pairs
+
+
 def nearest_component_surface_point(component: AeroComponent, point: Vec3) -> Tuple[float, Vec3]:
     nearest_point = component.cofr
     nearest_distance = math.inf
@@ -2838,6 +2866,7 @@ def resolve_part_collisions(
     log_path: Path,
     swept_contact: Optional[SweptCollisionContact] = None,
     prescribed_pair: Optional[Tuple[AeroComponent, AeroComponent]] = None,
+    initial_overlap_pairs: Optional[Dict[Tuple[int, int], float]] = None,
 ) -> List[str]:
     if not ENABLE_PART_COLLISIONS or len(components) < 2:
         return []
@@ -2853,6 +2882,19 @@ def resolve_part_collisions(
             a = active_components[i]
             for j in range(i + 1, len(active_components)):
                 b = active_components[j]
+                pair_key = collision_pair_key(a, b)
+                initial_overlap_depth = 0.0
+                if initial_overlap_pairs is not None and pair_key in initial_overlap_pairs:
+                    # This pair started in an intentional CAD fit.  Do not turn
+                    # broad-phase overlap into strain energy.  Re-enable normal
+                    # collision handling after the bodies have truly separated.
+                    current_overlap = aabb_overlap_with_normal(a, b)
+                    if current_overlap is None:
+                        initial_overlap_pairs.pop(pair_key, None)
+                        continue
+                    initial_overlap_depth = initial_overlap_pairs[pair_key]
+                    if current_overlap[0] <= initial_overlap_depth + COLLISION_MIN_OVERLAP_M:
+                        continue
                 fragment_family_overlap = (
                     a.collision_family is not None
                     and a.collision_family == b.collision_family
@@ -2886,6 +2928,19 @@ def resolve_part_collisions(
                 if hit is None:
                     continue
                 depth, normal, contact = hit
+                depth = max(
+                    depth - initial_overlap_depth,
+                    COLLISION_MIN_OVERLAP_M,
+                )
+                if not is_swept_pair:
+                    relative_velocity = v_sub(
+                        contact_point_velocity(a, contact),
+                        contact_point_velocity(b, contact),
+                    )
+                    if v_dot(relative_velocity, normal) >= -1e-9:
+                        # Geometric broad-phase overlap alone contains no impact
+                        # energy.  Static or separating bodies must not dent.
+                        continue
                 any_collision = True
 
                 a_can_translate = component_has_translation_freedom(a)
