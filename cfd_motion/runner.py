@@ -377,7 +377,15 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     coeffs,
                     MOTION_DT,
                     load_override=load_override,
-                    hold_kinematics=prescribed_impact_motion,
+                    externally_applied_velocity=(
+                        v_mul(
+                            collision_convergence_axis,
+                            COLLISION_CONVERGENCE_SPEED_MPS,
+                        )
+                        if prescribed_impact_motion
+                        and collision_convergence_axis is not None
+                        else None
+                    ),
                 )
                 append_motion_log(motion_log, step, component, coeffs, force, moment, dpos, drot)
                 xmin, xmax, ymin, ymax, zmin, zmax = component_bounds(component.triangles)

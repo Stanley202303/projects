@@ -737,8 +737,10 @@ def test_apply_rigid_body_motion_moves_followers_with_root_rotation() -> None:
         (0.0, 0.0, math.pi / 2.0),
     )
 
-    assert root.cofr == pytest.approx((0.0, 1.0, 0.0))
-    assert fin.cofr == pytest.approx((-1.0, 1.0, 0.0))
+    # The mesh transform is x' = R(x - origin) + origin + translation.
+    # Centres of mass must use the same order as the surface vertices.
+    assert root.cofr == pytest.approx((1.0, 0.0, 0.0))
+    assert fin.cofr == pytest.approx((0.0, 0.0, 0.0))
     assert root.linear_velocity == pytest.approx((3.0, 0.0, 0.0))
     assert fin.angular_velocity == pytest.approx((0.0, 0.0, 2.0))
     assert fin.total_rotation == pytest.approx((0.0, 0.0, math.pi / 2.0))

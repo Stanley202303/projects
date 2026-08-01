@@ -1185,6 +1185,62 @@ class CollisionConvergenceTest(TestCase):
         moving_a.linear_velocity = (3.0, 4.0, 0.0)
         self.assertEqual(moving_b.linear_velocity, (10.0, 0.0, 0.0))
 
+    def test_prescribed_launch_preserves_independent_aerodynamic_motion(self) -> None:
+        moving = rectangular_component(
+            "part1_body", -0.2, -0.1, -0.1, 0.1, -0.1, 0.1
+        )
+        stationary = rectangular_component(
+            "part2", 1.0, 1.1, -0.5, 0.5, -0.5, 0.5
+        )
+        moving.collision_source_index = 1
+        stationary.collision_source_index = 2
+        moving.material.linear_damping_per_kg = 0.0
+        moving.material.angular_damping_per_kg = 0.0
+        components = [moving, stationary]
+
+        with (
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_SPEED_MPS", 10.0),
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_AXIS", "x"),
+            patch("cfd_motion.motion.COLLISION_SWEEP_CLAMPING", False),
+            TemporaryDirectory() as tmpdir,
+        ):
+            pair = configure_collision_convergence_components(components)
+            self.assertIsNotNone(pair)
+            assert pair is not None
+            start = moving.cofr
+            _force, _moment, aerodynamic_translation, aerodynamic_rotation = (
+                update_component_motion(
+                    moving,
+                    {},
+                    0.01,
+                    load_override=((0.0, 100.0, 0.0), (0.0, 0.0, 1.0)),
+                    externally_applied_velocity=(10.0, 0.0, 0.0),
+                )
+            )
+
+            self.assertAlmostEqual(aerodynamic_translation[0], 0.0)
+            self.assertGreater(aerodynamic_translation[1], 0.0)
+            self.assertGreater(math.sqrt(sum(v * v for v in aerodynamic_rotation)), 0.0)
+            self.assertAlmostEqual(moving.cofr[0], start[0])
+            aerodynamic_y = moving.cofr[1]
+            transverse_velocity = moving.linear_velocity[1]
+            angular_velocity = moving.angular_velocity
+
+            apply_collision_convergence_step(
+                pair,
+                0,
+                0.01,
+                Path(tmpdir) / "convergence.txt",
+                (1.0, 0.0, 0.0),
+                components,
+            )
+
+        self.assertAlmostEqual(moving.cofr[0], start[0] + 0.1)
+        self.assertAlmostEqual(moving.cofr[1], aerodynamic_y)
+        self.assertEqual(moving.linear_velocity[1], transverse_velocity)
+        self.assertEqual(moving.angular_velocity, angular_velocity)
+        self.assertEqual(stationary.cofr, (1.05, 0.0, 0.0))
+
     def test_auto_axis_uses_the_frontal_centerline_not_tilted_face_normal(self) -> None:
         normal = (0.0, -math.sqrt(0.5), math.sqrt(0.5))
         target_triangle = (

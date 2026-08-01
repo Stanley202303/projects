@@ -342,7 +342,6 @@ def move_component_rigidly(
             origin,
         )
     for damage in component.collision_damage:
-        damage.contact_point = v_add(damage.contact_point, translation)
         if rotation_axis is not None:
             damage.contact_point = rotate_point_around_axis(
                 damage.contact_point,
@@ -358,14 +357,15 @@ def move_component_rigidly(
                     rotation_angle,
                 )
             )
-    component.cofr = v_add(component.cofr, translation)
+        damage.contact_point = v_add(damage.contact_point, translation)
     if rotation_axis is not None:
         component.cofr = rotate_point_around_axis(component.cofr, origin, rotation_axis, rotation_angle)
+    component.cofr = v_add(component.cofr, translation)
 
     if component.mate_origin is not None:
-        component.mate_origin = v_add(component.mate_origin, translation)
         if rotation_axis is not None:
             component.mate_origin = rotate_point_around_axis(component.mate_origin, origin, rotation_axis, rotation_angle)
+        component.mate_origin = v_add(component.mate_origin, translation)
         component.motion_origin = component.mate_origin
     if rotation_axis is not None:
         for attr in ("mate_x_axis", "mate_y_axis", "mate_z_axis"):
@@ -566,6 +566,7 @@ def update_component_motion(
     dt: float,
     load_override: Optional[Tuple[Vec3, Vec3]] = None,
     hold_kinematics: bool = False,
+    externally_applied_velocity: Optional[Vec3] = None,
 ) -> Tuple[Vec3, Vec3, Vec3, Vec3]:
     force, foam_moment = resolve_aerodynamic_load(component, coeffs, load_override)
     free = component.freedom
@@ -598,7 +599,14 @@ def update_component_motion(
     # Foam/light materials are damped more strongly; dense metals retain velocity longer.
     linear_decay = math.exp(-max(component.material.linear_damping_per_kg, 0.0) * dt / max(component.mass, 1e-9))
     new_lv = v_mul(new_lv, linear_decay)
-    unconstrained_translation = v_mul(new_lv, dt)
+    # Collision-convergence applies the nominal launch translation separately
+    # after every body has been integrated.  Subtract only that common velocity
+    # here so CFD-induced relative translation and rotation remain independent
+    # without applying the forward speed twice.
+    integration_velocity = new_lv
+    if externally_applied_velocity is not None:
+        integration_velocity = v_sub(new_lv, externally_applied_velocity)
+    unconstrained_translation = v_mul(integration_velocity, dt)
     if component.freedom.source == "post-perforation-ballistic":
         translation_step = unconstrained_translation
     else:
@@ -3705,7 +3713,9 @@ def apply_collision_convergence_step(
     move_stationary = (0.0, 0.0, 0.0)
     for member in collision_source_group(moving, components):
         move_component_rigidly(member, move_moving, None, 0.0, member.cofr)
-        member.linear_velocity = v_mul(axis, COLLISION_CONVERGENCE_SPEED_MPS)
+        if components is None:
+            # Compatibility path for callers using a single prescribed body.
+            member.linear_velocity = v_mul(axis, COLLISION_CONVERGENCE_SPEED_MPS)
         member.total_translation = v_add(member.total_translation, move_moving)
     for member in collision_source_group(stationary, components):
         member.linear_velocity = (0.0, 0.0, 0.0)
