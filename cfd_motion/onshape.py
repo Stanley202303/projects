@@ -542,7 +542,21 @@ def path_to_key(path: Any) -> str:
 
 
 def is_suppressed_dict(d: Dict[str, Any]) -> bool:
-    return bool(d.get("suppressed") is True or d.get("isSuppressed") is True or str(d.get("suppressionState", "")).lower() == "suppressed")
+    return bool(
+        d.get("suppressed") is True
+        or d.get("isSuppressed") is True
+        or str(d.get("suppressed", "")).lower() == "true"
+        or str(d.get("isSuppressed", "")).lower() == "true"
+        or str(d.get("suppressionState", "")).lower() == "suppressed"
+    )
+
+
+def is_suppressed_mate_feature(feature: Dict[str, Any]) -> bool:
+    """Recognise suppression flags placed on either Onshape feature layer."""
+    if is_suppressed_dict(feature):
+        return True
+    feature_data = feature.get("featureData")
+    return isinstance(feature_data, dict) and is_suppressed_dict(feature_data)
 
 
 def collect_assembly_instances(assembly_def: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -937,6 +951,8 @@ def iter_mate_features(assembly_def: Dict[str, Any]) -> Iterable[Dict[str, Any]]
             if id(feature) in seen:
                 continue
             seen.add(id(feature))
+            if is_suppressed_mate_feature(feature):
+                continue
             feature_text = str(get_first(feature, ["featureType", "btType", "type"], "")).lower()
             if "mate" in feature_text or extract_mate_type(feature) is not None:
                 yield feature

@@ -122,6 +122,40 @@ def test_revolute_mated_occurrence_overrides_fastened_group() -> None:
     assert freedoms["flap"].rotate_axes == [(0.0, 0.0, 1.0)]
 
 
+def test_suppressed_mate_feature_is_ignored_as_if_unmated() -> None:
+    assembly_def = {
+        "rootAssembly": {
+            "occurrences": [
+                {"path": ["root"]},
+                {"path": ["free_part"]},
+            ],
+            "features": [
+                {
+                    "featureType": "mate",
+                    "featureData": {
+                        "mateType": "FASTENED",
+                        "isSuppressed": True,
+                        "matedEntities": [
+                            {"matedOccurrence": ["root"]},
+                            {"matedOccurrence": ["free_part"]},
+                        ],
+                    },
+                }
+            ],
+        }
+    }
+
+    freedoms, report = deduce_component_freedoms(
+        assembly_def,
+        assembly_def["rootAssembly"]["occurrences"],
+    )
+
+    assert freedoms["root"].source == "unmated"
+    assert freedoms["free_part"].source == "unmated"
+    assert len(freedoms["free_part"].translate_axes) == 3
+    assert not any(line.startswith("Mate ") for line in report)
+
+
 def test_revolute_mate_extracts_connector_origins_and_reference_occurrence() -> None:
     assembly_def = {
         "rootAssembly": {
