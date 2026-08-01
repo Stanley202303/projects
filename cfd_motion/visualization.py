@@ -417,6 +417,8 @@ def _write_ascii_polydata_vtk(
 
     valid_scalars: Dict[str, List[float]] = {}
     for name, vals in cell_scalars.items():
+        if name == "CpPanel":
+            continue
         if len(vals) != len(triangles):
             continue
         cleaned: List[float] = []
@@ -510,7 +512,7 @@ def _write_ascii_polydata_vtk(
         '  <PolyData>',
         # vtkXMLPolyDataReader determines CellData tuple counts from every
         # PolyData cell family.  Declare the unused families explicitly;
-        # omitting them can make VTK treat a valid CpPanel array as too short.
+        # omitting them can make VTK miscalculate point/cell tuple counts.
         f'    <Piece NumberOfPoints="{len(points)}" NumberOfVerts="0" '
         f'NumberOfLines="0" NumberOfStrips="0" NumberOfPolys="{len(triangles)}">',
     ]
@@ -720,7 +722,7 @@ def _write_pressure_preview_report(path: Path, scalar_map: Dict[str, List[float]
         "#   pressureCoeff", 
         "#   pressurePa", 
         "#   pressureVisible01", 
-        "#   CpPanel / pPaPanel", 
+        "#   Cp / pPaPanel", 
         "# not plain OpenFOAM p unless you are opening the raw case.foam volume.",
         "",
         "field\tmin\tmax\trange",
@@ -1146,7 +1148,6 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
     combined_pts: List[Vec3] = []
     combined_polys: List[Tuple[int, int, int]] = []
     combined_scalars: Dict[str, List[float]] = {
-        "CpPanel": [],
         "CpAbsPanel": [],
         "Cp": [],
         "p": [],
@@ -1190,7 +1191,6 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
     for patch_index, comp in enumerate(components):
         pts: List[Vec3] = []
         polys: List[Tuple[int, int, int]] = []
-        cp_vals: List[float] = []
         cp_abs_vals: List[float] = []
         cp_alias_vals: List[float] = []
         p_vals: List[float] = []
@@ -1253,7 +1253,6 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             cp_abs = exposure * exposure
             cp = cp_abs if facing >= 0.0 else -0.35 * cp_abs
             skin_preview = max(0.0, 1.0 - abs(v_dot(n, flow_dir)))
-            cp_vals.append(cp)
             cp_abs_vals.append(cp_abs)
             pressure_pa = cp * q
             pressure_pa_abs = cp_abs * q
@@ -1312,7 +1311,6 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             ci = len(combined_pts)
             combined_pts.extend([v1, v2, v3])
             combined_polys.append((ci, ci + 1, ci + 2))
-            combined_scalars["CpPanel"].append(cp)
             combined_scalars["CpAbsPanel"].append(cp_abs)
             combined_scalars["Cp"].append(cp)
             combined_scalars["p"].append(p_kinematic)
@@ -1357,7 +1355,6 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             pts,
             polys,
             {
-                "CpPanel": cp_vals,
                 "CpAbsPanel": cp_abs_vals,
                 "Cp": cp_alias_vals,
                 "p": p_vals,
@@ -1500,7 +1497,7 @@ def create_paraview_pvd_timeseries(root_case: Path, steps_dir: Path, total_steps
         "This is the recommended file to open:",
         f"  {pvd_path}", "",
         "It contains one clean combined moving-surface VTK per motion step.",
-        "Colour by pressureCoeff, pressurePa, pressureVisible01, CpPanel, pPaPanel, windExposure, skinFrictionPreview, patchId, movable, or massKg.",
+        "Colour by pressureCoeff, pressurePa, pressureVisible01, Cp, pPaPanel, windExposure, skinFrictionPreview, patchId, movable, or massKg.",
         "For raw CFD volume files, see paraview_raw_cfd_timeseries.pvd.", "",
         "time\tpart\tfile",
     ]

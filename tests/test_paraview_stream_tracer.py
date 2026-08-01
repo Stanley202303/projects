@@ -25,13 +25,13 @@ def test_main_motion_pvd_keeps_combined_geometry_when_cfd_surface_exists(tmp_pat
         panel_dir / f"frame_000_{COMBINED_SURFACE_VTK_NAME}",
         [],
         [],
-        {"CpPanel": []},
+        {"pressureCoeff": []},
     )
     _write_ascii_polydata_vtk(
         sampled_dir / f"frame_000_{CFD_SAMPLED_SURFACE_VTP_NAME}",
         [],
         [],
-        {"CpPanel": []},
+        {"pressureCoeff": []},
     )
 
     pvd = create_root_safe_pvd_from_copied_previews(tmp_path, 1)
@@ -63,7 +63,7 @@ def test_polydata_fields_are_written_as_point_data_for_triangle_vertices(tmp_pat
         output,
         [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)],
         [(0, 1, 2), (0, 2, 3)],
-        {"CpPanel": [1.0, 3.0]},
+        {"CpPanel": [99.0, 99.0], "pressureCoeff": [1.0, 3.0]},
     )
 
     root = ElementTree.parse(output).getroot()
@@ -75,7 +75,15 @@ def test_polydata_fields_are_written_as_point_data_for_triangle_vertices(tmp_pat
     assert piece.attrib["NumberOfPolys"] == "2"
     arrays = piece.find("PointData")
     assert arrays is not None
-    cp = next(array for array in arrays.findall("DataArray") if array.attrib.get("Name") == "CpPanel")
+    assert not any(
+        array.attrib.get("Name") == "CpPanel"
+        for array in arrays.findall("DataArray")
+    )
+    cp = next(
+        array
+        for array in arrays.findall("DataArray")
+        if array.attrib.get("Name") == "pressureCoeff"
+    )
     values = [float(value) for value in (cp.text or "").split()]
     assert len(values) == 6
     assert values == [1.0, 1.0, 1.0, 3.0, 3.0, 3.0]
