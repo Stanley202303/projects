@@ -1,7 +1,7 @@
 {
-  "seconds_per_assembly_step": 62.18163955603653,
-  "last_step_seconds": 61.97881016694009,
-  "samples": 1448,
+  "seconds_per_assembly_step": 61.03592230595702,
+  "last_step_seconds": 60.02381387492642,
+  "samples": 1451,
   "cfd_iterations": 1,
   "surface_refinement": [
     2,
@@ -10,5 +10,5 @@
   "region_refinement": 2,
   "max_global_cells": 3000000,
   "dynamic_steps_last_run": 10,
-  "updated_unix_time": 1785581858.243988
+  "updated_unix_time": 1785582044.531586
 }

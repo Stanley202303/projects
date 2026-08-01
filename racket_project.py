@@ -94,6 +94,7 @@ DISPLAY_YAW_OFFSET_DEGREES = 0.0
 # received from the Pico; 400 points is approximately 0.8 seconds at 500 Hz.
 ACCEL_GRAPH_SAMPLES = 400
 ACCEL_GRAPH_HALF_RANGE_G = 32.0
+ACCEL_GRAPH_TRIGGER_G = 2.5
 
 # Each axis mapping item is (source axis index, sign).
 # The same map is used for MPU6050 accelerometer and gyro data.
@@ -524,24 +525,23 @@ def draw_acceleration_graph(history, width, height):
     glVertex3f(right, zero_y, 0.0)
     glEnd()
 
+    graph_half_range = ACCEL_GRAPH_HALF_RANGE_G
     if history:
         colors = ((0.95, 0.25, 0.25), (0.25, 0.85, 0.35), (0.30, 0.55, 1.0))
         samples = tuple(history)
         denominator = max(1, len(samples) - 1)
+        peak = max(abs(value) for sample in samples for value in sample)
+        graph_half_range = max(ACCEL_GRAPH_HALF_RANGE_G, peak * 1.10)
 
         for axis, color in enumerate(colors):
             glColor3f(*color)
             glLineWidth(2.0)
             glBegin(GL_LINE_STRIP)
             for index, sample in enumerate(samples):
-                value = clamp(
-                    sample[axis],
-                    -ACCEL_GRAPH_HALF_RANGE_G,
-                    ACCEL_GRAPH_HALF_RANGE_G,
-                )
+                value = sample[axis]
                 x = left + graph_width * index / denominator
                 y = zero_y + (
-                    value / ACCEL_GRAPH_HALF_RANGE_G
+                    value / graph_half_range
                 ) * (graph_height * 0.5)
                 glVertex3f(x, y, 0.0)
             glEnd()
@@ -622,6 +622,8 @@ def main():
     orientation = KalmanOrientation()
     zero_inverse = (1.0, 0.0, 0.0, 0.0)
     acceleration_history = deque(maxlen=ACCEL_GRAPH_SAMPLES)
+    acceleration_triggered = False
+    graph_frozen = False
     window_width, window_height = WINDOW_SIZE
 
     clock = pygame.time.Clock()
@@ -634,7 +636,10 @@ def main():
     latest_temperature = 0.0
 
     print(f"Listening on UDP {LISTEN_IP}:{LISTEN_PORT}")
-    print("R = zero pose, C = calibrate magnetometer, L = clear calibration")
+    print(
+        "R = zero pose, C = calibrate magnetometer, L = clear calibration, "
+        "Space = restart acceleration capture"
+    )
     print("Escape = quit")
 
     while running:
@@ -661,8 +666,14 @@ def main():
                         calibration.start()
                 elif event.key == pygame.K_l:
                     calibration.clear()
+                elif event.key == pygame.K_SPACE:
+                    acceleration_history.clear()
+                    acceleration_triggered = False
+                    graph_frozen = False
+                    print("Acceleration graph capture restarted.")
 
-        # Drain queued UDP datagrams and process only the newest valid sample.
+        # Drain queued UDP datagrams. The orientation uses the newest sample,
+        # while the graph capture records every valid acceleration sample.
         newest_packet = None
         while True:
             try:
@@ -679,12 +690,21 @@ def main():
                 continue
 
             if validate_packet(packet):
-                acceleration_history.append(
-                    apply_axis_map(
-                        tuple(float(value) for value in packet["a"]),
-                        IMU_AXIS_MAP,
-                    )
+                packet_acceleration = apply_axis_map(
+                    tuple(float(value) for value in packet["a"]),
+                    IMU_AXIS_MAP,
                 )
+                if not graph_frozen:
+                    acceleration_history.append(packet_acceleration)
+                    acceleration_magnitude = vector_norm(packet_acceleration)
+                    if acceleration_magnitude > ACCEL_GRAPH_TRIGGER_G:
+                        acceleration_triggered = True
+                    elif acceleration_triggered:
+                        graph_frozen = True
+                        print(
+                            "Acceleration graph frozen after swing "
+                            f"({acceleration_magnitude:.2f} g). Press Space to restart."
+                        )
                 newest_packet = packet
             else:
                 malformed_count += 1
@@ -767,10 +787,10 @@ def main():
         glPopMatrix()
 
         draw_acceleration_graph(
-            acceleration_history,
-            window_width,
-            window_height,
-        )
+                acceleration_history,
+                window_width,
+                window_height,
+            )
 
         pygame.display.flip()
         clock.tick(60)
@@ -783,12 +803,16 @@ def main():
             status = "CONNECTED" if connected else "WAITING"
             if calibration.active:
                 status += " | CALIBRATING MAG"
+            if acceleration_triggered and not graph_frozen:
+                status += " | SWING DETECTED"
+            elif graph_frozen:
+                status += " | GRAPH FROZEN"
 
             pygame.display.set_caption(
                 "Pico IMU Cuboid | top-down Kalman | {} | packets {} | "
                 "roll {:+6.1f} pitch {:+6.1f} yaw {:+6.1f} deg | "
-                "temp {:.1f} C | graph X:red Y:green Z:blue (±32 g, 0.8 s) | "
-                "R zero, C calibrate, L clear".format(
+                "temp {:.1f} C | graph X:red Y:green Z:blue (auto ±32 g min, 0.8 s) | "
+                "R zero, C calibrate, L clear, Space restart".format(
                     status,
                     packet_count,
                     roll * DEG,

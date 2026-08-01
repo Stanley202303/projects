@@ -1,0 +1,11 @@
+final_moved geometry snapshot
+
+patchId	patch	name	massKg	movable	anchored
+0	object_1	object_1	5.6979662	1	0
+1	object_2	object_2	0.50285192	0	1
+2	object_2_fragment_0	object_2 detached fragment 0	0.00012753061	1	0
+3	object_2_fragment_1	object_2 detached fragment 1	0.00040900152	1	0
+4	object_2_fragment_2	object_2 detached fragment 2	0.000392887	1	0
+5	object_2_fragment_3	object_2 detached fragment 3	0.000392887	1	0
+6	object_2_fragment_4	object_2 detached fragment 4	0.00039288691	1	0
+7	object_2_fragment_5	object_2 detached fragment 5	0.00039288709	1	0

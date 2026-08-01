@@ -63,16 +63,16 @@ castellatedMeshControls
         object_1
         {
             mode distance;
-            levels ((0.245087 2));
+            levels ((0.244465 2));
         }
         object_2
         {
             mode distance;
-            levels ((0.245087 2));
+            levels ((0.244465 2));
         }
     }
 
-    locationInMesh (-1.34736 1.03913 1.03376);
+    locationInMesh (-1.32928 1.03645 1.03262);
 
     allowFreeStandingZoneFaces false;
 }
