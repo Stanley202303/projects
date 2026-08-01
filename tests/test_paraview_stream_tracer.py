@@ -69,6 +69,10 @@ def test_polydata_fields_are_written_as_cell_data_for_shared_vertices(tmp_path: 
     root = ElementTree.parse(output).getroot()
     piece = root.find(".//Piece")
     assert piece is not None
+    assert piece.attrib["NumberOfVerts"] == "0"
+    assert piece.attrib["NumberOfLines"] == "0"
+    assert piece.attrib["NumberOfStrips"] == "0"
+    assert piece.attrib["NumberOfPolys"] == "2"
     arrays = piece.find("CellData")
     assert arrays is not None
     cp = next(array for array in arrays.findall("DataArray") if array.attrib.get("Name") == "CpPanel")

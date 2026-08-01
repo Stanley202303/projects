@@ -471,7 +471,11 @@ def _write_ascii_polydata_vtk(
         '<?xml version="1.0"?>',
         '<VTKFile type="PolyData" version="0.1" byte_order="LittleEndian">',
         '  <PolyData>',
-        f'    <Piece NumberOfPoints="{len(points)}" NumberOfPolys="{len(triangles)}">',
+        # vtkXMLPolyDataReader determines CellData tuple counts from every
+        # PolyData cell family.  Declare the unused families explicitly;
+        # omitting them can make VTK treat a valid CpPanel array as too short.
+        f'    <Piece NumberOfPoints="{len(points)}" NumberOfVerts="0" '
+        f'NumberOfLines="0" NumberOfStrips="0" NumberOfPolys="{len(triangles)}">',
         '      <PointData/>',
     ]
     lines.append(f'      <CellData {cell_data_attrs}>')
