@@ -8,6 +8,7 @@ from cfd_motion.motion import (
     apply_aerodynamic_velocity_increment,
     apply_relative_motion_policy,
     apply_rigid_body_motion,
+    assembly_rigid_body_groups,
     enforce_attachment_constraints,
     enforce_component_attachment_constraint,
     surface_pressure_load,
@@ -572,8 +573,12 @@ def test_all_fastened_assembly_falls_back_to_rigid_body_motion(tmp_path) -> None
     )
     root.freedom.mate_type = "FASTENED"
     root.freedom.source = "mate:root"
+    root.source_occurrence = "root"
+    root.mate_reference_occurrence = "fin"
     fin.freedom.mate_type = "FASTENED"
     fin.freedom.source = "mate:fin"
+    fin.source_occurrence = "fin"
+    fin.mate_reference_occurrence = "root"
 
     apply_relative_motion_policy([root, fin], tmp_path)
 
@@ -584,6 +589,54 @@ def test_all_fastened_assembly_falls_back_to_rigid_body_motion(tmp_path) -> None
     assert fin.freedom.source == "assembly-rigid-body-follower"
     assert fin.freedom.translate_axes == []
     assert fin.freedom.rotate_axes == []
+
+
+def test_disconnected_fastened_mate_groups_remain_separate(tmp_path) -> None:
+    components = [
+        AeroComponent(
+            name=name,
+            patch=name,
+            triangles=[],
+            cofr=(float(index), 0.0, 0.0),
+            lref=1.0,
+            aref=1.0,
+            source_occurrence=name,
+        )
+        for index, name in enumerate(("a", "b", "c", "d"))
+    ]
+    by_name = {component.name: component for component in components}
+    for name, reference in (("a", "b"), ("b", "a"), ("c", "d"), ("d", "c")):
+        component = by_name[name]
+        component.freedom = MotionFreedom([], [], "FASTENED", f"mate:{name}")
+        component.mate_reference_occurrence = reference
+
+    apply_relative_motion_policy(components, tmp_path)
+
+    assert by_name["a"].rigid_body_group == by_name["b"].rigid_body_group
+    assert by_name["c"].rigid_body_group == by_name["d"].rigid_body_group
+    assert by_name["a"].rigid_body_group != by_name["c"].rigid_body_group
+
+    rigid_groups = assembly_rigid_body_groups(components)
+    assert len(rigid_groups) == 2
+    first_group, _first_root = next(
+        group
+        for group in rigid_groups
+        if by_name["a"] in group[0]
+    )
+    original_c = by_name["c"].cofr
+    apply_rigid_body_motion(
+        first_group,
+        (1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+    )
+    assert by_name["a"].cofr[0] == pytest.approx(1.0)
+    assert by_name["b"].cofr[0] == pytest.approx(2.0)
+    assert by_name["c"].cofr == original_c
 
 
 def test_unmated_components_remain_independent_bodies(tmp_path) -> None:
@@ -642,6 +695,10 @@ def test_unmated_part_is_not_absorbed_by_fastened_mate_group(tmp_path) -> None:
     )
     root.freedom = MotionFreedom([], [], "FASTENED", "mate:root")
     follower.freedom = MotionFreedom([], [], "FASTENED", "mate:follower")
+    root.source_occurrence = "root"
+    root.mate_reference_occurrence = "follower"
+    follower.source_occurrence = "follower"
+    follower.mate_reference_occurrence = "root"
 
     apply_relative_motion_policy([root, follower, free_part], tmp_path)
 

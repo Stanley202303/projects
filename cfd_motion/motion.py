@@ -21,7 +21,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from .config import *
 from .models import *
@@ -79,6 +79,29 @@ def assembly_rigid_body_root(components: Sequence[AeroComponent]) -> Optional[Ae
         if component.freedom.source == "assembly-rigid-body-root":
             return component
     return None
+
+
+def assembly_rigid_body_groups(
+    components: Sequence[AeroComponent],
+) -> List[Tuple[List[AeroComponent], AeroComponent]]:
+    """Return independently moving rigid groups created from connected mates."""
+    by_group: Dict[str, List[AeroComponent]] = {}
+    for component in components:
+        if component.rigid_body_group:
+            by_group.setdefault(component.rigid_body_group, []).append(component)
+    groups: List[Tuple[List[AeroComponent], AeroComponent]] = []
+    for group_components in by_group.values():
+        root = next(
+            (
+                component
+                for component in group_components
+                if component.freedom.source == "assembly-rigid-body-root"
+            ),
+            None,
+        )
+        if root is not None:
+            groups.append((group_components, root))
+    return groups
 
 
 def component_world_velocity_at_point(component: AeroComponent, point: Vec3) -> Vec3:
@@ -3628,6 +3651,51 @@ def component_has_decoded_assembly_mate(component: AeroComponent) -> bool:
     return component.freedom.source != "unmated"
 
 
+def connected_mate_component_groups(
+    components: Sequence[AeroComponent],
+) -> List[List[AeroComponent]]:
+    """Find connected components of the decoded Onshape mate graph."""
+    candidates = [
+        component
+        for component in components
+        if component_has_decoded_assembly_mate(component)
+    ]
+    by_occurrence = {
+        component.source_occurrence: component
+        for component in candidates
+        if component.source_occurrence
+    }
+    neighbours: Dict[int, Set[int]] = {id(component): set() for component in candidates}
+    by_id = {id(component): component for component in candidates}
+    for component in candidates:
+        reference = (
+            component.mate_reference_occurrence
+            or component.freedom.mate_reference_occurrence
+        )
+        other = by_occurrence.get(reference) if reference else None
+        if other is None or other is component:
+            continue
+        neighbours[id(component)].add(id(other))
+        neighbours[id(other)].add(id(component))
+
+    groups: List[List[AeroComponent]] = []
+    unseen = set(neighbours)
+    while unseen:
+        start = unseen.pop()
+        group_ids = {start}
+        frontier = [start]
+        while frontier:
+            current = frontier.pop()
+            for neighbour in neighbours[current]:
+                if neighbour in group_ids:
+                    continue
+                group_ids.add(neighbour)
+                unseen.discard(neighbour)
+                frontier.append(neighbour)
+        groups.append([by_id[component_id] for component_id in group_ids])
+    return groups
+
+
 def apply_relative_motion_policy(components: List[AeroComponent], root_case: Path) -> List[str]:
     lines = [
         "Assembly relative-motion policy report",
@@ -3687,34 +3755,43 @@ def apply_relative_motion_policy(components: List[AeroComponent], root_case: Pat
 
     if not any(component_has_motion_freedom(component) for component in mated_components):
         lines.append(
-            "No relative motion freedoms were decoded. Treating the imported assembly as one rigid free body so net fin/body loads can still spin it."
+            "No relative motion freedoms were decoded. Treating each connected mate group as a separate rigid free body."
         )
-        rigid_followers = 0
-        root.freedom = six_dof_motion_freedom("assembly-rigid-body-root")
-        root.is_assembly_anchor = False
-        root.motion_origin = root.cofr
-        for component in mated_components:
-            component.linear_velocity = (0.0, 0.0, 0.0)
-            component.angular_velocity = (0.0, 0.0, 0.0)
-            if component is root:
+        for group_index, group_components in enumerate(
+            connected_mate_component_groups(mated_components)
+        ):
+            group_root = select_assembly_root_component(group_components)
+            if group_root is None:
                 continue
-            component.is_assembly_anchor = False
-            component.freedom = MotionFreedom([], [], "FASTENED", "assembly-rigid-body-follower")
-            rigid_followers += 1
-        lines.append(
-            f"Rigid-body root component: patch={root.patch!r}, name={root.name!r}, follower_count={rigid_followers}"
-        )
+            group_name = f"mate-group-{group_index}-{group_root.patch}"
+            group_root.freedom = six_dof_motion_freedom("assembly-rigid-body-root")
+            group_root.is_assembly_anchor = False
+            group_root.motion_origin = group_root.cofr
+            for component in group_components:
+                component.rigid_body_group = group_name
+                component.linear_velocity = (0.0, 0.0, 0.0)
+                component.angular_velocity = (0.0, 0.0, 0.0)
+                if component is group_root:
+                    continue
+                component.is_assembly_anchor = False
+                component.freedom = MotionFreedom(
+                    [], [], "FASTENED", "assembly-rigid-body-follower"
+                )
+            lines.append(
+                f"Rigid mate group {group_name}: root={group_root.patch!r}, "
+                f"member_count={len(group_components)}"
+            )
         lines.append("")
         lines.append("Movable components after policy:")
         for c in components:
             axes = f"translate_axes={c.freedom.translate_axes}, rotate_axes={c.freedom.rotate_axes}"
             basis = motion_basis_debug(c)
-            if c is root:
-                lines.append(f"- {c.patch}: rigid-body root, mate_type={c.freedom.mate_type}, source={c.freedom.source}, {axes}, {basis}")
+            if c.freedom.source == "assembly-rigid-body-root":
+                lines.append(f"- {c.patch}: rigid-body root, group={c.rigid_body_group}, mate_type={c.freedom.mate_type}, source={c.freedom.source}, {axes}, {basis}")
             elif c not in mated_components:
                 lines.append(f"- {c.patch}: independent unmated body, mate_type={c.freedom.mate_type}, source={c.freedom.source}, {axes}, {basis}")
             else:
-                lines.append(f"- {c.patch}: rigid-body follower, mate_type={c.freedom.mate_type}, source={c.freedom.source}, {axes}, {basis}")
+                lines.append(f"- {c.patch}: rigid-body follower, group={c.rigid_body_group}, mate_type={c.freedom.mate_type}, source={c.freedom.source}, {axes}, {basis}")
         (root_case / MOTION_POLICY_REPORT_NAME).write_text("\n".join(lines) + "\n")
         return lines
 

@@ -122,6 +122,7 @@ class AeroComponent:
     mate_reference_x_axis: Optional[Vec3] = None
     mate_reference_y_axis: Optional[Vec3] = None
     mate_reference_z_axis: Optional[Vec3] = None
+    rigid_body_group: Optional[str] = None
     is_assembly_anchor: bool = False
     deformation_reference_triangles: Optional[List[Triangle]] = None
     deformation_max_m: float = 0.0

@@ -94,8 +94,20 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
             f"{moving.patch} impacts stationary {stationary.patch}, "
             f"speed {COLLISION_CONVERGENCE_SPEED_MPS:g} m/s."
         )
-    rigid_body_root = None if collision_convergence_pair is not None else assembly_rigid_body_root(components)
-    rigid_body_state = build_rigid_body_state(components, rigid_body_root) if rigid_body_root is not None else None
+    rigid_group_specs = (
+        []
+        if collision_convergence_pair is not None
+        else assembly_rigid_body_groups(components)
+    )
+    rigid_body_entries = [
+        (group_components, group_root, build_rigid_body_state(group_components, group_root))
+        for group_components, group_root in rigid_group_specs
+    ]
+    rigid_membership = {
+        id(component): group_index
+        for group_index, (group_components, _root, _state) in enumerate(rigid_body_entries)
+        for component in group_components
+    }
     write_motion_log_header(motion_log)
     if ENABLE_NONRIGID_DEFORMATION:
         write_deformation_log_header(deformation_log)
@@ -276,10 +288,12 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
             write_force_coeff_debug_report(step_case, coeffs_by_patch)
             write_force_load_debug_report(step_case, loads_by_patch)
 
-            rigid_component_rows: List[Tuple[AeroComponent, Dict[str, float], str, str, Vec3, Vec3]] = []
-            rigid_net_force = (0.0, 0.0, 0.0)
-            rigid_net_moment = (0.0, 0.0, 0.0)
-            rigid_origin = rigid_body_state.cofr if rigid_body_state is not None else (0.0, 0.0, 0.0)
+            rigid_component_rows: List[List[Tuple[AeroComponent, Dict[str, float], str, str, Vec3, Vec3]]] = [
+                [] for _entry in rigid_body_entries
+            ]
+            rigid_net_forces = [(0.0, 0.0, 0.0) for _entry in rigid_body_entries]
+            rigid_net_moments = [(0.0, 0.0, 0.0) for _entry in rigid_body_entries]
+            rigid_origins = [entry[2].cofr for entry in rigid_body_entries]
 
             for component in components:
                 coeffs = coeffs_by_patch.get(component.patch, {})
@@ -313,7 +327,9 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     load_override = surface_pressure_load(component)
                     load_source = "panel-aero-fallback-after-zero-openfoam" if own_openfoam_load is not None else "panel-aero-fallback"
 
-                if rigid_body_state is not None:
+                rigid_group_index = rigid_membership.get(id(component))
+                if rigid_group_index is not None:
+                    rigid_origin = rigid_origins[rigid_group_index]
                     force, source_moment = resolve_aerodynamic_load(component, coeffs, load_override)
                     component_moment = total_aerodynamic_moment_about_origin(
                         component,
@@ -322,9 +338,15 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                         rigid_origin,
                         load_override is not None,
                     )
-                    rigid_component_rows.append((component, coeffs, coeff_source, load_source, force, component_moment))
-                    rigid_net_force = v_add(rigid_net_force, force)
-                    rigid_net_moment = v_add(rigid_net_moment, component_moment)
+                    rigid_component_rows[rigid_group_index].append(
+                        (component, coeffs, coeff_source, load_source, force, component_moment)
+                    )
+                    rigid_net_forces[rigid_group_index] = v_add(
+                        rigid_net_forces[rigid_group_index], force
+                    )
+                    rigid_net_moments[rigid_group_index] = v_add(
+                        rigid_net_moments[rigid_group_index], component_moment
+                    )
                     continue
 
                 prescribed_impact_motion = (
@@ -350,37 +372,42 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                         f"{xmin:.8g}\t{xmax:.8g}\t{ymin:.8g}\t{ymax:.8g}\t{zmin:.8g}\t{zmax:.8g}\n"
                     )
 
-            if rigid_body_state is not None:
-                rigid_force, rigid_moment, rigid_dpos, rigid_drot = update_component_motion(
-                    rigid_body_state,
-                    {},
-                    MOTION_DT,
-                    load_override=(rigid_net_force, rigid_net_moment),
-                )
-                apply_rigid_body_motion(
-                    components,
-                    rigid_dpos,
-                    rigid_drot,
-                    rigid_origin,
-                    rigid_body_state.linear_velocity,
-                    rigid_body_state.angular_velocity,
-                    rigid_body_state.total_translation,
-                    rigid_body_state.total_rotation,
-                )
-                for component, coeffs, coeff_source, load_source, force, moment in rigid_component_rows:
-                    log_force = rigid_force if component is rigid_body_root else force
-                    log_moment = rigid_moment if component is rigid_body_root else moment
-                    log_load_source = "assembly-rigid-body-net" if component is rigid_body_root else load_source
-                    append_motion_log(motion_log, step, component, coeffs, log_force, log_moment, rigid_dpos, rigid_drot)
-                    xmin, xmax, ymin, ymax, zmin, zmax = component_bounds(component.triangles)
-                    with geometry_report.open("a") as gf:
-                        gf.write(
-                            f"{step}\t{component.patch}\t{coeff_source}\t{log_load_source}\t"
-                            f"{v_norm(log_force):.8g}\t{v_norm(log_moment):.8g}\t"
-                            f"{v_norm(rigid_dpos):.8g}\t{v_norm(rigid_drot):.8g}\t"
-                            f"{component.cofr[0]:.8g}\t{component.cofr[1]:.8g}\t{component.cofr[2]:.8g}\t"
-                            f"{xmin:.8g}\t{xmax:.8g}\t{ymin:.8g}\t{ymax:.8g}\t{zmin:.8g}\t{zmax:.8g}\n"
-                        )
+            if rigid_body_entries:
+                for group_index, (group_components, group_root, rigid_body_state) in enumerate(rigid_body_entries):
+                    rigid_origin = rigid_origins[group_index]
+                    rigid_force, rigid_moment, rigid_dpos, rigid_drot = update_component_motion(
+                        rigid_body_state,
+                        {},
+                        MOTION_DT,
+                        load_override=(
+                            rigid_net_forces[group_index],
+                            rigid_net_moments[group_index],
+                        ),
+                    )
+                    apply_rigid_body_motion(
+                        group_components,
+                        rigid_dpos,
+                        rigid_drot,
+                        rigid_origin,
+                        rigid_body_state.linear_velocity,
+                        rigid_body_state.angular_velocity,
+                        rigid_body_state.total_translation,
+                        rigid_body_state.total_rotation,
+                    )
+                    for component, coeffs, coeff_source, load_source, force, moment in rigid_component_rows[group_index]:
+                        log_force = rigid_force if component is group_root else force
+                        log_moment = rigid_moment if component is group_root else moment
+                        log_load_source = "assembly-rigid-body-net" if component is group_root else load_source
+                        append_motion_log(motion_log, step, component, coeffs, log_force, log_moment, rigid_dpos, rigid_drot)
+                        xmin, xmax, ymin, ymax, zmin, zmax = component_bounds(component.triangles)
+                        with geometry_report.open("a") as gf:
+                            gf.write(
+                                f"{step}\t{component.patch}\t{coeff_source}\t{log_load_source}\t"
+                                f"{v_norm(log_force):.8g}\t{v_norm(log_moment):.8g}\t"
+                                f"{v_norm(rigid_dpos):.8g}\t{v_norm(rigid_drot):.8g}\t"
+                                f"{component.cofr[0]:.8g}\t{component.cofr[1]:.8g}\t{component.cofr[2]:.8g}\t"
+                                f"{xmin:.8g}\t{xmax:.8g}\t{ymin:.8g}\t{ymax:.8g}\t{zmin:.8g}\t{zmax:.8g}\n"
+                            )
                 deformed_components = apply_nonrigid_deformations(components, step, deformation_log)
                 if deformed_components:
                     max_def = max(c.deformation_max_m for c in deformed_components)
