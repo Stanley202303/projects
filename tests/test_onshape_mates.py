@@ -5,6 +5,7 @@ import pytest
 from cfd_motion.geometry import bom_records_from_payload
 from cfd_motion.onshape import deduce_component_freedoms, transform_motion_freedom_to_world
 from cfd_motion.motion import (
+    apply_aerodynamic_velocity_increment,
     apply_relative_motion_policy,
     apply_rigid_body_motion,
     enforce_attachment_constraints,
@@ -398,6 +399,33 @@ def test_update_component_motion_filters_aerodynamic_loads_between_steps() -> No
 
     assert first_force == pytest.approx((10.0, 0.0, 0.0))
     assert 0.0 < second_force[0] < first_force[0]
+
+
+def test_aerodynamic_velocity_increment_changes_a_free_body_velocity() -> None:
+    component = AeroComponent(
+        name="fragment",
+        patch="fragment",
+        triangles=[],
+        cofr=(0.0, 0.0, 0.0),
+        lref=1.0,
+        aref=1.0,
+        mass=2.0,
+        freedom=MotionFreedom(
+            translate_axes=[(1.0, 0.0, 0.0)],
+            rotate_axes=[],
+            mate_type="COLLISION_FRAGMENT",
+            source="hybrid-shell-fragment",
+        ),
+    )
+
+    force, _moment = apply_aerodynamic_velocity_increment(
+        component,
+        0.5,
+        load_override=((4.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+    )
+
+    assert force == pytest.approx((4.0, 0.0, 0.0))
+    assert component.linear_velocity[0] > 0.9
 
 
 def test_update_component_motion_clamps_revolute_primary_limit() -> None:

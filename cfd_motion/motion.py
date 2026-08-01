@@ -627,6 +627,74 @@ def update_component_motion(
     )
 
 
+def apply_aerodynamic_velocity_increment(
+    component: AeroComponent,
+    dt: float,
+    load_override: Optional[Tuple[Vec3, Vec3]] = None,
+) -> Tuple[Vec3, Vec3]:
+    """Apply an aerodynamic impulse without translating the geometry.
+
+    Hybrid-shell fragments are translated by the structural update.  Applying
+    their air load as a velocity increment avoids moving them twice in the
+    same time interval while ensuring their next structural advance responds
+    to drag, lift, and aerodynamic torque from their current relative-air
+    velocity.
+    """
+    if dt <= 0.0 or component.is_assembly_anchor:
+        return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+    force, source_moment = load_override or surface_pressure_load(component)
+    allowed_force = project_vector_on_axes(force, component.freedom.translate_axes)
+    acceleration = v_mul(allowed_force, 1.0 / max(component.mass, 1e-9))
+    component.linear_velocity = v_add(
+        component.linear_velocity,
+        v_mul(acceleration, dt),
+    )
+    linear_decay = math.exp(
+        -max(component.material.linear_damping_per_kg, 0.0)
+        * dt
+        / max(component.mass, 1e-9)
+    )
+    component.linear_velocity = v_mul(component.linear_velocity, linear_decay)
+
+    total_moment = total_aerodynamic_moment_about_origin(
+        component,
+        force,
+        source_moment,
+        infer_motion_origin(component),
+        True,
+    )
+    allowed_moment = project_vector_on_axes(
+        total_moment,
+        component.freedom.rotate_axes,
+    )
+    angular_acceleration = angular_acceleration_from_moment(
+        component,
+        allowed_moment,
+        component.freedom.rotate_axes,
+    )
+    component.angular_velocity = v_add(
+        component.angular_velocity,
+        v_mul(angular_acceleration, dt),
+    )
+    return force, total_moment
+
+
+def advance_detached_fragment_aerodynamics(
+    components: Sequence[AeroComponent],
+    dt: float,
+) -> int:
+    """Apply relative-air loads to all live hybrid-shell fragment bodies."""
+    advanced = 0
+    for parent in components:
+        state = parent.collision_structural_state
+        if not isinstance(state, HybridShellCollisionState):
+            continue
+        for fragment in state.fragment_bodies:
+            apply_aerodynamic_velocity_increment(fragment.component, dt)
+            advanced += 1
+    return advanced
+
+
 def build_rigid_body_state(components: Sequence[AeroComponent], root: AeroComponent) -> AeroComponent:
     combined_triangles = [triangle for component in components for triangle in component.triangles]
     if combined_triangles:

@@ -435,6 +435,16 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                         collision_convergence_active = False
                         append_collision_convergence_stop(collision_convergence_log, step, "first_contact")
 
+            fragment_aero_count = advance_detached_fragment_aerodynamics(
+                components,
+                MOTION_DT,
+            )
+            if fragment_aero_count:
+                print(
+                    "Fragment aerodynamics: "
+                    f"updated {fragment_aero_count} detached body/bodies."
+                )
+
             # Write compact visualisation AFTER the motion and collision update so the frame
             # shows moved, non-interpenetrating geometry.
             write_panel_aero_preview_for_step(
