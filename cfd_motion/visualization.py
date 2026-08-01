@@ -1942,10 +1942,24 @@ def create_root_safe_pvd_from_copied_previews(root_case: Path, total_steps: int)
         t = step * MOTION_DT if PARAVIEW_TIME_MODE == "seconds" else float(step)
         cfd_vf = root_case / ROOT_CFD_SAMPLED_DIR_NAME / f"frame_{step:03d}_{CFD_SAMPLED_SURFACE_VTP_NAME}"
         panel_vf = root_case / ROOT_PANEL_PREVIEW_DIR_NAME / f"frame_{step:03d}_{COMBINED_SURFACE_VTK_NAME}"
+        panel_valid = False
+        cfd_valid = False
         if panel_vf.exists():
+            try:
+                validate_preview_polydata(panel_vf)
+                panel_valid = True
+            except (OSError, ValueError, ElementTree.ParseError) as exc:
+                manifest.append(f"# step_{step:03d}: invalid panel preview: {exc}")
+        if cfd_vf.exists():
+            try:
+                validate_preview_polydata(cfd_vf)
+                cfd_valid = True
+            except (OSError, ValueError, ElementTree.ParseError) as exc:
+                manifest.append(f"# step_{step:03d}: invalid CFD preview: {exc}")
+        if panel_valid:
             vf = panel_vf
             group = "panel_preview_surfaces"
-        elif cfd_vf.exists():
+        elif cfd_valid:
             vf = cfd_vf
             group = "sampled_cfd_surfaces_fallback"
         else:

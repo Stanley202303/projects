@@ -21,8 +21,18 @@ def test_main_motion_pvd_keeps_combined_geometry_when_cfd_surface_exists(tmp_pat
     sampled_dir = tmp_path / ROOT_CFD_SAMPLED_DIR_NAME
     panel_dir.mkdir()
     sampled_dir.mkdir()
-    (panel_dir / f"frame_000_{COMBINED_SURFACE_VTK_NAME}").write_text("panel")
-    (sampled_dir / f"frame_000_{CFD_SAMPLED_SURFACE_VTP_NAME}").write_text("sampled")
+    _write_ascii_polydata_vtk(
+        panel_dir / f"frame_000_{COMBINED_SURFACE_VTK_NAME}",
+        [],
+        [],
+        {"CpPanel": []},
+    )
+    _write_ascii_polydata_vtk(
+        sampled_dir / f"frame_000_{CFD_SAMPLED_SURFACE_VTP_NAME}",
+        [],
+        [],
+        {"CpPanel": []},
+    )
 
     pvd = create_root_safe_pvd_from_copied_previews(tmp_path, 1)
 
@@ -30,6 +40,21 @@ def test_main_motion_pvd_keeps_combined_geometry_when_cfd_surface_exists(tmp_pat
     pvd_text = pvd.read_text()
     assert ROOT_PANEL_PREVIEW_DIR_NAME in pvd_text
     assert ROOT_CFD_SAMPLED_DIR_NAME not in pvd_text
+
+
+def test_main_motion_pvd_skips_invalid_preview_frame(tmp_path: Path) -> None:
+    panel_dir = tmp_path / ROOT_PANEL_PREVIEW_DIR_NAME
+    panel_dir.mkdir()
+    (panel_dir / f"frame_000_{COMBINED_SURFACE_VTK_NAME}").write_text(
+        '<VTKFile type="PolyData"><PolyData><Piece NumberOfPoints="0" NumberOfPolys="1">'
+        '<CellData><DataArray Name="CpPanel">0</DataArray></CellData>'
+        '</Piece></PolyData></VTKFile>'
+    )
+
+    pvd = create_root_safe_pvd_from_copied_previews(tmp_path, 1)
+
+    assert pvd is None
+    assert "invalid panel preview" in (tmp_path / "paraview_pvd_manifest.txt").read_text()
 
 
 def test_polydata_fields_are_written_as_cell_data_for_shared_vertices(tmp_path: Path) -> None:
