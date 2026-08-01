@@ -352,7 +352,18 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                 prescribed_impact_motion = (
                     collision_convergence_active
                     and collision_convergence_pair is not None
-                    and component is collision_convergence_moving_and_stationary(collision_convergence_pair)[0]
+                    and (
+                        component
+                        is collision_convergence_moving_and_stationary(
+                            collision_convergence_pair
+                        )[0]
+                        or components_share_collision_source(
+                            component,
+                            collision_convergence_moving_and_stationary(
+                                collision_convergence_pair
+                            )[0],
+                        )
+                    )
                 )
                 force, moment, dpos, drot = update_component_motion(
                     component,
@@ -426,6 +437,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                         MOTION_DT,
                         collision_convergence_log,
                         collision_convergence_axis,
+                        components,
                     )
                     if (
                         ENABLE_COLLISION_TOPOLOGY_CHANGES
@@ -684,6 +696,80 @@ def _combined_source_component(name: str, patch: str, components: Sequence[AeroC
     return combined
 
 
+def _split_unmated_component_bodies(component: AeroComponent) -> List[AeroComponent]:
+    """Split disconnected STL solids into independent rigid collision bodies."""
+    body_ids = connected_surface_body_ids(component)
+    body_count = max(body_ids, default=-1) + 1
+    if body_count <= 1 or component.freedom.source.startswith("mate:"):
+        return [component]
+
+    triangle_groups = [
+        [
+            triangle
+            for triangle, triangle_body_id in zip(component.triangles, body_ids)
+            if triangle_body_id == body_id
+        ]
+        for body_id in range(body_count)
+    ]
+    volumes = [estimate_closed_mesh_volume(triangles) for triangles in triangle_groups]
+    areas = [
+        sum(
+            triangle_area_centroid_normal(triangle)[0]
+            for triangle in triangles
+        )
+        for triangles in triangle_groups
+    ]
+    weights = volumes if sum(volumes) > 1e-18 else areas
+    total_weight = max(sum(weights), 1e-18)
+    bodies: List[AeroComponent] = []
+    for body_id, (triangles, weight, volume) in enumerate(
+        zip(triangle_groups, weights, volumes)
+    ):
+        aref, lref, cofr = component_references(triangles)
+        mass = component.mass * weight / total_weight
+        material = MaterialProperties(**vars(component.material))
+        material.mass_kg = mass
+        material.volume_m3 = volume
+        body = AeroComponent(
+            name=f"{component.name} body {body_id + 1}",
+            patch=f"{component.patch}_body_{body_id + 1}",
+            triangles=list(triangles),
+            cofr=cofr,
+            lref=lref,
+            aref=aref,
+            freedom=MotionFreedom(
+                translate_axes=list(component.freedom.translate_axes),
+                rotate_axes=list(component.freedom.rotate_axes),
+                mate_type=component.freedom.mate_type,
+                source=component.freedom.source,
+                limits=dict(component.freedom.limits),
+                mate_origin=component.freedom.mate_origin,
+                mate_reference_origin=component.freedom.mate_reference_origin,
+                mate_reference_occurrence=(
+                    component.freedom.mate_reference_occurrence
+                ),
+                mate_x_axis=component.freedom.mate_x_axis,
+                mate_y_axis=component.freedom.mate_y_axis,
+                mate_z_axis=component.freedom.mate_z_axis,
+                mate_reference_x_axis=component.freedom.mate_reference_x_axis,
+                mate_reference_y_axis=component.freedom.mate_reference_y_axis,
+                mate_reference_z_axis=component.freedom.mate_reference_z_axis,
+            ),
+            material=material,
+            mass=mass,
+            inertia=estimate_scalar_inertia(mass, triangles),
+            linear_velocity=component.linear_velocity,
+            angular_velocity=component.angular_velocity,
+            source_occurrence=(
+                f"{component.source_occurrence or component.patch}/body_{body_id + 1}"
+            ),
+            collision_family=f"{component.patch}_body_{body_id + 1}",
+            collision_source_index=component.collision_source_index,
+        )
+        bodies.append(body)
+    return bodies
+
+
 def _subdivide_triangle(triangle: Triangle) -> List[Triangle]:
     _normal, a, b, c = triangle
     ab = v_mul(v_add(a, b), 0.5)
@@ -741,7 +827,7 @@ def refine_collision_mesh_for_deformation(component: AeroComponent) -> int:
     return len(triangles) - original_count
 
 
-def build_collision_source_component(source: str, index: int, workdir: Path, client: Optional[OnshapeClient] = None) -> AeroComponent:
+def build_collision_source_components(source: str, index: int, workdir: Path, client: Optional[OnshapeClient] = None) -> List[AeroComponent]:
     label = _source_label(source, index)
     patch = unique_patch_names([label])[0]
 
@@ -755,15 +841,29 @@ def build_collision_source_component(source: str, index: int, workdir: Path, cli
             source_dir.mkdir(parents=True, exist_ok=True)
             components, assembly_def = build_assembly_components(ref, client, source_dir)
             (workdir / f"source_{index:02d}_assembly_definition.json").write_text(json.dumps(assembly_def, indent=2))
-            return _combined_source_component(label, patch, components)
+            for component in components:
+                component.collision_source_index = index
+            return components
 
         stl_path = download_partstudio_stl(ref, client, workdir / f"source_{index:02d}.stl")
-        return _component_from_triangles(label, patch, read_stl_triangles(stl_path))
+        component = _component_from_triangles(label, patch, read_stl_triangles(stl_path))
+        component.collision_source_index = index
+        return _split_unmated_component_bodies(component)
 
     stl_path = Path(source).expanduser().resolve()
     if not stl_path.exists():
         raise FileNotFoundError(stl_path)
-    return _component_from_triangles(label, patch, read_stl_triangles(stl_path))
+    component = _component_from_triangles(label, patch, read_stl_triangles(stl_path))
+    component.collision_source_index = index
+    return _split_unmated_component_bodies(component)
+
+
+def build_collision_source_component(source: str, index: int, workdir: Path, client: Optional[OnshapeClient] = None) -> AeroComponent:
+    """Compatibility wrapper for callers that require one merged component."""
+    components = build_collision_source_components(source, index, workdir, client)
+    if len(components) == 1:
+        return components[0]
+    return _combined_source_component(_source_label(source, index), f"object_{index}", components)
 
 
 def run_sources(sources: Sequence[str]) -> int:
@@ -775,11 +875,18 @@ def run_sources(sources: Sequence[str]) -> int:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             client = get_onshape_client() if any(is_onshape_url(source) for source in sources) else None
-            components = [
-                build_collision_source_component(source, index + 1, tmp, client)
+            source_component_groups = [
+                build_collision_source_components(source, index + 1, tmp, client)
                 for index, source in enumerate(sources)
             ]
-            components[0].patch, components[1].patch = unique_patch_names([components[0].patch, components[1].patch])
+            components = [
+                component
+                for source_components in source_component_groups
+                for component in source_components
+            ]
+            patches = unique_patch_names([component.patch for component in components])
+            for component, unique_patch in zip(components, patches):
+                component.patch = unique_patch
             if COLLISION_CONVERGENCE_SPEED_MPS <= 0.0:
                 raise ValueError("Two-source collision runs need COLLISION_CONVERGENCE_SPEED_MPS > 0")
             pair = configure_collision_convergence_components(components)
@@ -791,7 +898,7 @@ def run_sources(sources: Sequence[str]) -> int:
                             f"Collision mesh refinement: {collision_component.patch} "
                             f"added {refined} fixed-topology triangles."
                         )
-                shift = arrange_collision_convergence_initial_gap(pair)
+                shift = arrange_collision_convergence_initial_gap(pair, components)
                 moving, stationary = collision_convergence_moving_and_stationary(pair)
                 axis = collision_convergence_approach_axis(pair)
                 print(

@@ -3223,6 +3223,32 @@ def _select_component_by_selector(components: Sequence[AeroComponent], selector:
     return next((component for component in components if _component_matches_selector(component, selector)), None)
 
 
+def collision_source_group(
+    component: AeroComponent,
+    components: Optional[Sequence[AeroComponent]] = None,
+) -> List[AeroComponent]:
+    """Return the independent bodies imported from the same collision source.
+
+    Membership here is only used to prescribe their common launch translation.
+    It is deliberately not a rigid-body or mate constraint, so collision impulses
+    can give each disconnected body a different trajectory after contact.
+    """
+    if components is None or component.collision_source_index is None:
+        return [component]
+    return [
+        candidate
+        for candidate in components
+        if candidate.collision_source_index == component.collision_source_index
+    ] or [component]
+
+
+def components_share_collision_source(a: AeroComponent, b: AeroComponent) -> bool:
+    return (
+        a.collision_source_index is not None
+        and a.collision_source_index == b.collision_source_index
+    )
+
+
 def select_collision_convergence_pair(components: Sequence[AeroComponent]) -> Optional[Tuple[AeroComponent, AeroComponent]]:
     if not collision_convergence_enabled() or len(components) < 2:
         return None
@@ -3242,6 +3268,24 @@ def select_collision_convergence_pair(components: Sequence[AeroComponent]) -> Op
             "using automatic pair selection."
         )
 
+    source_groups: Dict[int, List[AeroComponent]] = {}
+    source_order: List[int] = []
+    for component in components:
+        source_index = component.collision_source_index
+        if source_index is None:
+            continue
+        if source_index not in source_groups:
+            source_groups[source_index] = []
+            source_order.append(source_index)
+        source_groups[source_index].append(component)
+    if len(source_order) >= 2:
+        first_group = source_groups[source_order[0]]
+        second_group = source_groups[source_order[1]]
+        return (
+            max(first_group, key=_component_policy_size_score),
+            max(second_group, key=_component_policy_size_score),
+        )
+
     return components[0], components[1]
 
 
@@ -3251,19 +3295,23 @@ def configure_collision_convergence_components(components: Sequence[AeroComponen
         return None
     free = six_dof_motion_freedom("collision-convergence")
     moving, stationary = collision_convergence_moving_and_stationary(pair)
-    moving.is_assembly_anchor = False
-    moving.freedom = MotionFreedom(
-        translate_axes=list(free.translate_axes),
-        rotate_axes=list(free.rotate_axes),
-        mate_type="COLLISION_IMPACTOR",
-        source="collision-convergence-moving",
-    )
-    stationary.is_assembly_anchor = True
-    stationary.freedom = MotionFreedom([], [], "COLLISION_TARGET", "collision-convergence-stationary")
     axis = collision_convergence_approach_axis(pair)
-    moving.linear_velocity = v_mul(axis, COLLISION_CONVERGENCE_SPEED_MPS)
-    stationary.linear_velocity = (0.0, 0.0, 0.0)
-    stationary.angular_velocity = (0.0, 0.0, 0.0)
+    for member in collision_source_group(moving, components):
+        member.is_assembly_anchor = False
+        member.freedom = MotionFreedom(
+            translate_axes=list(free.translate_axes),
+            rotate_axes=list(free.rotate_axes),
+            mate_type="COLLISION_IMPACTOR",
+            source="collision-convergence-moving",
+        )
+        member.linear_velocity = v_mul(axis, COLLISION_CONVERGENCE_SPEED_MPS)
+    for member in collision_source_group(stationary, components):
+        member.is_assembly_anchor = True
+        member.freedom = MotionFreedom(
+            [], [], "COLLISION_TARGET", "collision-convergence-stationary"
+        )
+        member.linear_velocity = (0.0, 0.0, 0.0)
+        member.angular_velocity = (0.0, 0.0, 0.0)
     return pair
 
 
@@ -3430,17 +3478,37 @@ def aabb_gap_along_axis(a: AeroComponent, b: AeroComponent, axis: Vec3) -> float
     return max(min(b_vals) - max(a_vals), min(a_vals) - max(b_vals), 0.0)
 
 
-def arrange_collision_convergence_initial_gap(pair: Tuple[AeroComponent, AeroComponent]) -> Vec3:
+def arrange_collision_convergence_initial_gap(
+    pair: Tuple[AeroComponent, AeroComponent],
+    components: Optional[Sequence[AeroComponent]] = None,
+) -> Vec3:
     moving, stationary = collision_convergence_moving_and_stationary(pair)
     axis = collision_convergence_approach_axis(pair)
 
-    moving_points = stl_points(moving.triangles)
-    stationary_points = stl_points(stationary.triangles)
+    moving_group = collision_source_group(moving, components)
+    stationary_group = collision_source_group(stationary, components)
+    moving_points = [
+        point
+        for member in moving_group
+        for point in stl_points(member.triangles)
+    ]
+    stationary_points = [
+        point
+        for member in stationary_group
+        for point in stl_points(member.triangles)
+    ]
     if not moving_points or not stationary_points:
         return (0.0, 0.0, 0.0)
 
-    moving_center = component_center_from_bounds(moving)
-    stationary_center = component_center_from_bounds(stationary)
+    def points_center(points: Sequence[Vec3]) -> Vec3:
+        return (
+            0.5 * (min(point[0] for point in points) + max(point[0] for point in points)),
+            0.5 * (min(point[1] for point in points) + max(point[1] for point in points)),
+            0.5 * (min(point[2] for point in points) + max(point[2] for point in points)),
+        )
+
+    moving_center = points_center(moving_points)
+    stationary_center = points_center(stationary_points)
     center_correction = v_sub(stationary_center, moving_center)
     transverse_correction = v_sub(
         center_correction,
@@ -3454,8 +3522,9 @@ def arrange_collision_convergence_initial_gap(pair: Tuple[AeroComponent, AeroCom
     translation = v_add(transverse_correction, longitudinal_correction)
     if v_norm(translation) <= 1e-12:
         return (0.0, 0.0, 0.0)
-    move_component_rigidly(moving, translation, None, 0.0, moving.cofr)
-    moving.total_translation = v_add(moving.total_translation, translation)
+    for member in moving_group:
+        move_component_rigidly(member, translation, None, 0.0, member.cofr)
+        member.total_translation = v_add(member.total_translation, translation)
     return translation
 
 
@@ -3482,6 +3551,7 @@ def apply_collision_convergence_step(
     dt: float,
     log_path: Path,
     approach_axis: Optional[Vec3] = None,
+    components: Optional[Sequence[AeroComponent]] = None,
 ) -> Tuple[Vec3, Vec3, Optional[SweptCollisionContact]]:
     moving, stationary = collision_convergence_moving_and_stationary(pair)
     axis = v_unit(approach_axis) if approach_axis is not None else collision_convergence_approach_axis(pair)
@@ -3578,11 +3648,13 @@ def apply_collision_convergence_step(
             )
     move_moving = v_mul(axis, applied_distance)
     move_stationary = (0.0, 0.0, 0.0)
-    move_component_rigidly(moving, move_moving, None, 0.0, moving.cofr)
-    moving.linear_velocity = v_mul(axis, COLLISION_CONVERGENCE_SPEED_MPS)
-    stationary.linear_velocity = (0.0, 0.0, 0.0)
-    stationary.angular_velocity = (0.0, 0.0, 0.0)
-    moving.total_translation = v_add(moving.total_translation, move_moving)
+    for member in collision_source_group(moving, components):
+        move_component_rigidly(member, move_moving, None, 0.0, member.cofr)
+        member.linear_velocity = v_mul(axis, COLLISION_CONVERGENCE_SPEED_MPS)
+        member.total_translation = v_add(member.total_translation, move_moving)
+    for member in collision_source_group(stationary, components):
+        member.linear_velocity = (0.0, 0.0, 0.0)
+        member.angular_velocity = (0.0, 0.0, 0.0)
     gap_after = aabb_gap_along_axis(moving, stationary, axis)
 
     with log_path.open("a") as f:
@@ -3648,7 +3720,14 @@ def component_has_decoded_assembly_mate(component: AeroComponent) -> bool:
     the source is the reliable discriminator.  Local-STL and unmated Onshape
     parts must never be folded into an arbitrary assembly rigid body.
     """
-    return component.freedom.source != "unmated"
+    source = component.freedom.source
+    return bool(
+        source == "grounded"
+        or source.startswith("mate:")
+        or source.startswith("assembly-rigid-body")
+        or component.mate_reference_occurrence
+        or component.freedom.mate_reference_occurrence
+    )
 
 
 def connected_mate_component_groups(

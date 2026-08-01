@@ -128,6 +128,7 @@ class AeroComponent:
     deformation_max_m: float = 0.0
     deformation_mean_m: float = 0.0
     collision_family: Optional[str] = None
+    collision_source_index: Optional[int] = None
     collision_damage: List[CollisionDamageState] = field(default_factory=list)
     collision_structural_state: Optional[Any] = None
 

@@ -13,6 +13,7 @@ from cfd_motion.motion import (
     arrange_collision_convergence_initial_gap,
     closest_point_on_triangle,
     collision_convergence_approach_axis,
+    component_has_decoded_assembly_mate,
     component_center_from_bounds,
     configure_collision_convergence_components,
     component_bounds,
@@ -33,7 +34,11 @@ from cfd_motion.motion import (
     update_component_motion,
     write_collision_convergence_log_header,
 )
-from cfd_motion.runner import refine_collision_mesh_for_deformation, refine_thin_impact_target
+from cfd_motion.runner import (
+    _split_unmated_component_bodies,
+    refine_collision_mesh_for_deformation,
+    refine_thin_impact_target,
+)
 from cfd_motion.visualization import visualization_components_with_fragments
 from cfd_motion.structural import (
     ExplicitShellState,
@@ -1021,6 +1026,82 @@ class CollisionConvergenceTest(TestCase):
                 1.0,
             )
             self.assertEqual(moving.linear_velocity, (0.0, 40.0, 0.0))
+
+    def test_disconnected_unmated_solids_become_mass_conserving_bodies(self) -> None:
+        first = rectangular_component("first", -0.2, -0.1, -0.1, 0.1, -0.1, 0.1)
+        second = rectangular_component("second", 0.1, 0.3, -0.1, 0.1, -0.1, 0.1)
+        combined = rectangular_component("part1", -0.2, 0.3, -0.1, 0.1, -0.1, 0.1)
+        combined.triangles = first.triangles + second.triangles
+        combined.mass = 6.0
+        combined.material = MaterialProperties(
+            material_name="Tungsten",
+            density_kg_m3=19_250.0,
+            mass_kg=6.0,
+        )
+        combined.collision_source_index = 1
+
+        bodies = _split_unmated_component_bodies(combined)
+
+        self.assertEqual(len(bodies), 2)
+        self.assertEqual(sum(len(body.triangles) for body in bodies), 24)
+        self.assertAlmostEqual(sum(body.mass for body in bodies), combined.mass)
+        self.assertEqual({body.collision_source_index for body in bodies}, {1})
+        self.assertEqual(len({body.collision_family for body in bodies}), 2)
+        self.assertTrue(all(body.rigid_body_group is None for body in bodies))
+        self.assertTrue(
+            all(not component_has_decoded_assembly_mate(body) for body in bodies)
+        )
+
+    def test_unmated_source_bodies_share_launch_but_not_post_impact_state(self) -> None:
+        moving_a = rectangular_component(
+            "part1_a", -0.2, -0.1, -0.3, -0.1, -0.1, 0.1
+        )
+        moving_b = rectangular_component(
+            "part1_b", -0.2, -0.1, 0.1, 0.3, -0.1, 0.1
+        )
+        stationary = rectangular_component(
+            "part2", 0.5, 0.6, -0.5, 0.5, -0.5, 0.5
+        )
+        moving_a.collision_source_index = 1
+        moving_b.collision_source_index = 1
+        stationary.collision_source_index = 2
+        components = [moving_a, moving_b, stationary]
+
+        with (
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_SPEED_MPS", 10.0),
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_AXIS", "x"),
+            patch("cfd_motion.motion.COLLISION_SWEEP_CLAMPING", False),
+            TemporaryDirectory() as tmpdir,
+        ):
+            pair = configure_collision_convergence_components(components)
+            self.assertIsNotNone(pair)
+            assert pair is not None
+            self.assertIn(pair[0], (moving_a, moving_b))
+            self.assertIs(pair[1], stationary)
+            arrange_collision_convergence_initial_gap(pair, components)
+            before_a = moving_a.cofr
+            before_b = moving_b.cofr
+
+            apply_collision_convergence_step(
+                pair,
+                0,
+                0.01,
+                Path(tmpdir) / "convergence.txt",
+                (1.0, 0.0, 0.0),
+                components,
+            )
+
+        delta_a = tuple(moving_a.cofr[i] - before_a[i] for i in range(3))
+        delta_b = tuple(moving_b.cofr[i] - before_b[i] for i in range(3))
+        self.assertEqual(delta_a, delta_b)
+        self.assertEqual(moving_a.linear_velocity, (10.0, 0.0, 0.0))
+        self.assertEqual(moving_b.linear_velocity, (10.0, 0.0, 0.0))
+        self.assertIsNot(moving_a.freedom, moving_b.freedom)
+        self.assertIsNone(moving_a.rigid_body_group)
+        self.assertIsNone(moving_b.rigid_body_group)
+
+        moving_a.linear_velocity = (3.0, 4.0, 0.0)
+        self.assertEqual(moving_b.linear_velocity, (10.0, 0.0, 0.0))
 
     def test_auto_axis_uses_the_frontal_centerline_not_tilted_face_normal(self) -> None:
         normal = (0.0, -math.sqrt(0.5), math.sqrt(0.5))
