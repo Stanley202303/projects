@@ -519,19 +519,19 @@ def _write_ascii_polydata_vtk(
     lines.append(f'      <PointData {point_data_attrs}>')
     for name, vals in point_scalars.items():
         escaped = _xml_attr(name)
-        lines.append(f'        <DataArray type="Float32" Name="{escaped}" format="ascii">')
+        lines.append(f'        <DataArray type="Float64" Name="{escaped}" format="ascii">')
         lines.extend(values_text(vals))
         lines.append('        </DataArray>')
     for name, vals in point_vectors.items():
         escaped = _xml_attr(name)
-        lines.append(f'        <DataArray type="Float32" Name="{escaped}" NumberOfComponents="3" format="ascii">')
+        lines.append(f'        <DataArray type="Float64" Name="{escaped}" NumberOfComponents="3" format="ascii">')
         lines.extend(vector_values_text(vals))
         lines.append('        </DataArray>')
     lines.extend([
         '      </PointData>',
         '      <CellData/>',
         '      <Points>',
-        '        <DataArray type="Float32" NumberOfComponents="3" format="ascii">',
+        '        <DataArray type="Float64" NumberOfComponents="3" format="ascii">',
     ])
     lines.extend(values_text(point_values))
     lines.extend([

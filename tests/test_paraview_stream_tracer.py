@@ -85,9 +85,30 @@ def test_polydata_fields_are_written_as_point_data_for_triangle_vertices(tmp_pat
         for array in arrays.findall("DataArray")
         if array.attrib.get("Name") == "pressureCoeff"
     )
+    assert cp.attrib["type"] == "Float64"
     values = [float(value) for value in (cp.text or "").split()]
     assert len(values) == 6
     assert values == [1.0, 1.0, 1.0, 3.0, 3.0, 3.0]
+    validate_preview_polydata(output)
+
+
+def test_float64_preview_preserves_values_below_float32_range(tmp_path: Path) -> None:
+    output = tmp_path / "tiny_values.vtp"
+    _write_ascii_polydata_vtk(
+        output,
+        [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)],
+        [(0, 1, 2)],
+        {"pressureCoeff": [1.0e-55]},
+    )
+
+    root = ElementTree.parse(output).getroot()
+    array = next(
+        item
+        for item in root.findall(".//PointData/DataArray")
+        if item.attrib.get("Name") == "pressureCoeff"
+    )
+    assert array.attrib["type"] == "Float64"
+    assert [float(value) for value in (array.text or "").split()] == [1.0e-55] * 3
     validate_preview_polydata(output)
 
 
