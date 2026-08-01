@@ -284,6 +284,55 @@ def _shell_source_triangles(
     chunky plug fragments.
     """
     tolerance = max(component.lref * 1e-9, 1e-10)
+    alignment_threshold = 0.8
+    broad_faces: List[Tuple[Triangle, float]] = []
+    for triangle in component.triangles:
+        normal, a, b, c = triangle
+        geometric_normal = v_cross(v_sub(b, a), v_sub(c, a))
+        unit_normal = v_unit(
+            geometric_normal,
+            normal if v_norm(normal) > 0.0 else axis,
+        )
+        if abs(v_dot(unit_normal, axis)) < alignment_threshold:
+            continue
+        broad_faces.append((triangle, v_dot(_centroid((a, b, c)), axis)))
+
+    if not broad_faces:
+        return list(component.triangles)
+
+    # A closed thin-solid STL has two broad faces.  The old approach collapsed
+    # both, which only works when their triangle layouts are identical.  CAD
+    # exporters frequently tessellate each face differently; keeping both then
+    # produces two independently deforming sheets.  Choose one broad face and
+    # project it to the physical midsurface instead.
+    plane_values = [plane for _triangle, plane in broad_faces]
+    lower_plane = min(plane_values)
+    upper_plane = max(plane_values)
+    plane_tolerance = max(
+        0.25 * max(thickness_m, 0.0),
+        component.lref * 1e-7,
+        1e-10,
+    )
+    lower_faces = [
+        triangle
+        for triangle, plane in broad_faces
+        if abs(plane - lower_plane) <= plane_tolerance
+    ]
+    upper_faces = [
+        triangle
+        for triangle, plane in broad_faces
+        if abs(plane - upper_plane) <= plane_tolerance
+    ]
+    if upper_plane - lower_plane <= plane_tolerance:
+        source_faces = [triangle for triangle, _plane in broad_faces]
+        midsurface_plane = lower_plane
+    elif len(upper_faces) >= len(lower_faces):
+        source_faces = upper_faces
+        midsurface_plane = 0.5 * (lower_plane + upper_plane)
+    else:
+        source_faces = lower_faces
+        midsurface_plane = 0.5 * (lower_plane + upper_plane)
+
     collapsed: Dict[
         Tuple[
             Tuple[int, int, int],
@@ -293,16 +342,15 @@ def _shell_source_triangles(
         Triangle,
     ] = {}
     selected: List[Triangle] = []
-    half_thickness = 0.5 * max(thickness_m, 0.0)
-    alignment_threshold = 0.8
-    for triangle in component.triangles:
+    for triangle in source_faces:
         normal, a, b, c = triangle
         geometric_normal = v_cross(v_sub(b, a), v_sub(c, a))
-        unit_normal = v_unit(geometric_normal, normal if v_norm(normal) > 0.0 else (0.0, 0.0, 1.0))
-        alignment = v_dot(unit_normal, axis)
-        if abs(alignment) < alignment_threshold:
-            continue
-        shift = v_mul(axis, -math.copysign(half_thickness, alignment))
+        unit_normal = v_unit(
+            geometric_normal,
+            normal if v_norm(normal) > 0.0 else axis,
+        )
+        face_plane = v_dot(_centroid((a, b, c)), axis)
+        shift = v_mul(axis, midsurface_plane - face_plane)
         collapsed_points = (
             v_add(a, shift),
             v_add(b, shift),
@@ -312,14 +360,14 @@ def _shell_source_triangles(
         if key in collapsed:
             continue
         collapsed_triangle = (
-            axis if alignment >= 0.0 else v_mul(axis, -1.0),
+            unit_normal,
             collapsed_points[0],
             collapsed_points[1],
             collapsed_points[2],
         )
         collapsed[key] = collapsed_triangle
         selected.append(collapsed_triangle)
-    return selected if selected else list(component.triangles)
+    return selected or list(component.triangles)
 
 
 def build_explicit_shell_state(

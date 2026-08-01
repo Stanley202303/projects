@@ -757,6 +757,60 @@ class CollisionConvergenceTest(TestCase):
         self.assertTrue(refined_state.fixed_nodes)
         self.assertLess(len(refined_state.fixed_nodes), len(refined_state.positions))
 
+    def test_shell_uses_one_midsurface_when_plate_faces_have_different_tessellations(self) -> None:
+        thickness = 0.0001
+        low = (
+            (0.0, -0.05, -0.05),
+            (0.0, 0.05, -0.05),
+            (0.0, 0.05, 0.05),
+            (0.0, -0.05, 0.05),
+        )
+        high = tuple((thickness, point[1], point[2]) for point in low)
+        high_center = (thickness, 0.0, 0.0)
+        triangles = [
+            ((0.0, 0.0, 0.0), low[0], low[1], low[2]),
+            ((0.0, 0.0, 0.0), low[0], low[2], low[3]),
+            ((0.0, 0.0, 0.0), high[0], high[1], high_center),
+            ((0.0, 0.0, 0.0), high[1], high[2], high_center),
+            ((0.0, 0.0, 0.0), high[2], high[3], high_center),
+            ((0.0, 0.0, 0.0), high[3], high[0], high_center),
+        ]
+        target = AeroComponent(
+            name="mismatched_sheet",
+            patch="mismatched_sheet",
+            triangles=triangles,
+            cofr=(0.5 * thickness, 0.0, 0.0),
+            lref=0.1,
+            aref=0.01,
+            material=MaterialProperties(
+                material_name="ABS",
+                density_kg_m3=1040.0,
+                thickness_m=thickness,
+            ),
+            mass=0.001,
+        )
+
+        state = build_explicit_shell_state(
+            target,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.01,
+            2.0e9,
+            thickness,
+            0.35,
+            4.0e7,
+            0.2,
+            0.05,
+            0.5,
+            16,
+            0.03,
+        )
+
+        self.assertEqual(len(state.triangle_nodes), 4)
+        self.assertTrue(state.reference_positions)
+        for point in state.reference_positions:
+            self.assertAlmostEqual(point[0], 0.5 * thickness, delta=1e-10)
+
     def test_fracture_cuts_a_resolved_hole_in_coarse_sheet_mesh(self) -> None:
         target = rectangular_component(
             "coarse_sheet",
