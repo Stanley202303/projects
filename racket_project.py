@@ -28,6 +28,7 @@ import json
 import math
 import socket
 import time
+from collections import deque
 
 try:
     import pygame
@@ -45,6 +46,7 @@ try:
         GL_DEPTH_TEST,
         GL_LINES,
         GL_LINE_LOOP,
+        GL_LINE_STRIP,
         GL_MODELVIEW,
         GL_PROJECTION,
         GL_QUADS,
@@ -52,6 +54,7 @@ try:
         glClear,
         glClearColor,
         glColor3f,
+        glDisable,
         glEnable,
         glEnd,
         glLineWidth,
@@ -86,6 +89,11 @@ ORTHO_HALF_HEIGHT = 3.4
 SIMPLE_TOP_DOWN_VIEW = True
 DISPLAY_YAW_SIGN = 1.0
 DISPLAY_YAW_OFFSET_DEGREES = 0.0
+
+# Acceleration history shown in the lower-left overlay. Keep every packet
+# received from the Pico; 400 points is approximately 0.8 seconds at 500 Hz.
+ACCEL_GRAPH_SAMPLES = 400
+ACCEL_GRAPH_HALF_RANGE_G = 32.0
 
 # Each axis mapping item is (source axis index, sign).
 # The same map is used for MPU6050 accelerometer and gyro data.
@@ -470,6 +478,81 @@ def draw_world_axes():
     glEnd()
 
 
+def draw_acceleration_graph(history, width, height):
+    """Draw recent X/Y/Z acceleration traces as a 2D OpenGL overlay."""
+    graph_width = min(700.0, max(320.0, width * 0.70))
+    graph_height = 180.0
+    left = 20.0
+    bottom = 20.0
+    right = left + graph_width
+    top = bottom + graph_height
+
+    glDisable(GL_DEPTH_TEST)
+
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    glOrtho(0.0, float(width), 0.0, float(height), -1.0, 1.0)
+
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+
+    # Graph background and border.
+    glColor3f(0.04, 0.05, 0.07)
+    glBegin(GL_QUADS)
+    glVertex3f(left, bottom, 0.0)
+    glVertex3f(right, bottom, 0.0)
+    glVertex3f(right, top, 0.0)
+    glVertex3f(left, top, 0.0)
+    glEnd()
+
+    glColor3f(0.35, 0.37, 0.42)
+    glLineWidth(1.0)
+    glBegin(GL_LINE_LOOP)
+    glVertex3f(left, bottom, 0.0)
+    glVertex3f(right, bottom, 0.0)
+    glVertex3f(right, top, 0.0)
+    glVertex3f(left, top, 0.0)
+    glEnd()
+
+    # Zero-g reference line.
+    zero_y = bottom + graph_height * 0.5
+    glColor3f(0.28, 0.29, 0.33)
+    glBegin(GL_LINES)
+    glVertex3f(left, zero_y, 0.0)
+    glVertex3f(right, zero_y, 0.0)
+    glEnd()
+
+    if history:
+        colors = ((0.95, 0.25, 0.25), (0.25, 0.85, 0.35), (0.30, 0.55, 1.0))
+        samples = tuple(history)
+        denominator = max(1, len(samples) - 1)
+
+        for axis, color in enumerate(colors):
+            glColor3f(*color)
+            glLineWidth(2.0)
+            glBegin(GL_LINE_STRIP)
+            for index, sample in enumerate(samples):
+                value = clamp(
+                    sample[axis],
+                    -ACCEL_GRAPH_HALF_RANGE_G,
+                    ACCEL_GRAPH_HALF_RANGE_G,
+                )
+                x = left + graph_width * index / denominator
+                y = zero_y + (
+                    value / ACCEL_GRAPH_HALF_RANGE_G
+                ) * (graph_height * 0.5)
+                glVertex3f(x, y, 0.0)
+            glEnd()
+
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+    glEnable(GL_DEPTH_TEST)
+
+
 def configure_projection(width, height):
     height = max(height, 1)
     aspect = width / height
@@ -538,6 +621,8 @@ def main():
     calibration = MagnetometerCalibration()
     orientation = KalmanOrientation()
     zero_inverse = (1.0, 0.0, 0.0, 0.0)
+    acceleration_history = deque(maxlen=ACCEL_GRAPH_SAMPLES)
+    window_width, window_height = WINDOW_SIZE
 
     clock = pygame.time.Clock()
     running = True
@@ -561,6 +646,7 @@ def main():
                     (event.w, event.h),
                     DOUBLEBUF | OPENGL | RESIZABLE,
                 )
+                window_width, window_height = event.w, event.h
                 configure_rendering(event.w, event.h)
             elif event.type == KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
@@ -593,6 +679,12 @@ def main():
                 continue
 
             if validate_packet(packet):
+                acceleration_history.append(
+                    apply_axis_map(
+                        tuple(float(value) for value in packet["a"]),
+                        IMU_AXIS_MAP,
+                    )
+                )
                 newest_packet = packet
             else:
                 malformed_count += 1
@@ -639,7 +731,6 @@ def main():
                 dt,
                 use_magnetometer=not calibration.active,
             )
-
             latest_temperature = float(newest_packet.get("temp", 0.0))
             packet_count += 1
 
@@ -675,6 +766,12 @@ def main():
         draw_cuboid()
         glPopMatrix()
 
+        draw_acceleration_graph(
+            acceleration_history,
+            window_width,
+            window_height,
+        )
+
         pygame.display.flip()
         clock.tick(60)
 
@@ -690,7 +787,8 @@ def main():
             pygame.display.set_caption(
                 "Pico IMU Cuboid | top-down Kalman | {} | packets {} | "
                 "roll {:+6.1f} pitch {:+6.1f} yaw {:+6.1f} deg | "
-                "temp {:.1f} C | R zero, C calibrate, L clear".format(
+                "temp {:.1f} C | graph X:red Y:green Z:blue (±32 g, 0.8 s) | "
+                "R zero, C calibrate, L clear".format(
                     status,
                     packet_count,
                     roll * DEG,
