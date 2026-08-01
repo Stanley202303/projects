@@ -524,6 +524,71 @@ def test_all_fastened_assembly_falls_back_to_rigid_body_motion(tmp_path) -> None
     assert fin.freedom.rotate_axes == []
 
 
+def test_unmated_components_remain_independent_bodies(tmp_path) -> None:
+    first = AeroComponent(
+        name="free-first",
+        patch="free-first",
+        triangles=[],
+        cofr=(0.0, 0.0, 0.0),
+        lref=1.0,
+        aref=1.0,
+    )
+    second = AeroComponent(
+        name="free-second",
+        patch="free-second",
+        triangles=[],
+        cofr=(1.0, 0.0, 0.0),
+        lref=1.0,
+        aref=1.0,
+    )
+
+    lines = apply_relative_motion_policy([first, second], tmp_path)
+
+    assert not first.is_assembly_anchor
+    assert not second.is_assembly_anchor
+    assert first.freedom.source == "unmated"
+    assert second.freedom.source == "unmated"
+    assert len(first.freedom.translate_axes) == 3
+    assert len(second.freedom.rotate_axes) == 3
+    assert "independent free body" in "\n".join(lines)
+
+
+def test_unmated_part_is_not_absorbed_by_fastened_mate_group(tmp_path) -> None:
+    root = AeroComponent(
+        name="mated-root",
+        patch="mated-root",
+        triangles=[],
+        cofr=(0.0, 0.0, 0.0),
+        lref=1.0,
+        aref=1.0,
+    )
+    follower = AeroComponent(
+        name="mated-follower",
+        patch="mated-follower",
+        triangles=[],
+        cofr=(0.0, 1.0, 0.0),
+        lref=1.0,
+        aref=1.0,
+    )
+    free_part = AeroComponent(
+        name="free-part",
+        patch="free-part",
+        triangles=[],
+        cofr=(5.0, 0.0, 0.0),
+        lref=10.0,
+        aref=10.0,
+    )
+    root.freedom = MotionFreedom([], [], "FASTENED", "mate:root")
+    follower.freedom = MotionFreedom([], [], "FASTENED", "mate:follower")
+
+    apply_relative_motion_policy([root, follower, free_part], tmp_path)
+
+    assert root.freedom.source == "assembly-rigid-body-root"
+    assert follower.freedom.source == "assembly-rigid-body-follower"
+    assert free_part.freedom.source == "unmated"
+    assert len(free_part.freedom.translate_axes) == 3
+
+
 def test_apply_rigid_body_motion_moves_followers_with_root_rotation() -> None:
     root = AeroComponent(
         name="body",

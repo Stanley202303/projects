@@ -3550,6 +3550,16 @@ def select_assembly_root_component(components: Sequence[AeroComponent]) -> Optio
     return max(components, key=_component_policy_size_score)
 
 
+def component_has_decoded_assembly_mate(component: AeroComponent) -> bool:
+    """Return whether the component belongs to an imported mate graph.
+
+    ``FREE`` is also the natural state of an unconnected Onshape occurrence, so
+    the source is the reliable discriminator.  Local-STL and unmated Onshape
+    parts must never be folded into an arbitrary assembly rigid body.
+    """
+    return component.freedom.source != "unmated"
+
+
 def apply_relative_motion_policy(components: List[AeroComponent], root_case: Path) -> List[str]:
     lines = [
         "Assembly relative-motion policy report",
@@ -3572,13 +3582,42 @@ def apply_relative_motion_policy(components: List[AeroComponent], root_case: Pat
             "WARNING: only one aerodynamic component/patch was created. Relative assembly motion is impossible unless the script can export or split separate parts."
         )
 
-    root = select_assembly_root_component(components)
+    # A local STL has no Onshape mate record, and an unmated assembly
+    # occurrence is intentionally free.  Give either case explicit six-DOF
+    # axes so it can participate in motion and collision resolution as its own
+    # body rather than being silently stationary.
+    for component in components:
+        if (
+            component.freedom.source == "unmated"
+            and not component.freedom.translate_axes
+            and not component.freedom.rotate_axes
+        ):
+            component.freedom = MotionFreedom(
+                translate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+                rotate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+                mate_type="FREE",
+                source="unmated",
+            )
+
+    mated_components = [
+        component
+        for component in components
+        if component_has_decoded_assembly_mate(component)
+    ]
+    if not mated_components:
+        lines.append(
+            "No imported mates were decoded. Every component is retained as an independent free body."
+        )
+        (root_case / MOTION_POLICY_REPORT_NAME).write_text("\n".join(lines) + "\n")
+        return lines
+
+    root = select_assembly_root_component(mated_components)
     if root is None:
         lines.append("No root component could be selected; no assembly motion policy applied.")
         (root_case / MOTION_POLICY_REPORT_NAME).write_text("\n".join(lines) + "\n")
         return lines
 
-    if not any(component_has_motion_freedom(component) for component in components):
+    if not any(component_has_motion_freedom(component) for component in mated_components):
         lines.append(
             "No relative motion freedoms were decoded. Treating the imported assembly as one rigid free body so net fin/body loads can still spin it."
         )
@@ -3586,7 +3625,7 @@ def apply_relative_motion_policy(components: List[AeroComponent], root_case: Pat
         root.freedom = six_dof_motion_freedom("assembly-rigid-body-root")
         root.is_assembly_anchor = False
         root.motion_origin = root.cofr
-        for component in components:
+        for component in mated_components:
             component.linear_velocity = (0.0, 0.0, 0.0)
             component.angular_velocity = (0.0, 0.0, 0.0)
             if component is root:
@@ -3604,6 +3643,8 @@ def apply_relative_motion_policy(components: List[AeroComponent], root_case: Pat
             basis = motion_basis_debug(c)
             if c is root:
                 lines.append(f"- {c.patch}: rigid-body root, mate_type={c.freedom.mate_type}, source={c.freedom.source}, {axes}, {basis}")
+            elif c not in mated_components:
+                lines.append(f"- {c.patch}: independent unmated body, mate_type={c.freedom.mate_type}, source={c.freedom.source}, {axes}, {basis}")
             else:
                 lines.append(f"- {c.patch}: rigid-body follower, mate_type={c.freedom.mate_type}, source={c.freedom.source}, {axes}, {basis}")
         (root_case / MOTION_POLICY_REPORT_NAME).write_text("\n".join(lines) + "\n")
