@@ -320,9 +320,11 @@ def _xml_attr(value: str) -> str:
 def validate_preview_polydata(path: Path) -> None:
     """Validate the restricted VTP dialect used by the animation PVD files.
 
-    The preview intentionally stores face fields only in CellData.  Keeping the
-    format narrow avoids ParaView array-association and length failures when a
-    collision changes surface topology between frames.
+    Preview vertices are deliberately duplicated for every triangle.  Fields
+    are therefore stored as PointData with each face value repeated at its
+    three vertices.  This avoids a vtkXMLPolyDataReader CellData tuple-count
+    failure seen in time-varying collision previews while retaining exact
+    face-wise colouring.
     """
     root = ElementTree.parse(path).getroot()
     piece = root.find(".//Piece")
@@ -334,8 +336,13 @@ def validate_preview_polydata(path: Path) -> None:
         raise ValueError(f"Preview VTP has invalid geometry counts: {path}")
 
     point_data = piece.find("PointData")
-    if point_data is not None and point_data.findall("DataArray"):
-        raise ValueError(f"Preview VTP must not contain PointData arrays: {path}")
+    if point_data is None:
+        raise ValueError(f"Preview VTP has no PointData: {path}")
+    for array in point_data.findall("DataArray"):
+        components = int(array.attrib.get("NumberOfComponents", "1"))
+        if len((array.text or "").split()) != point_count * components:
+            name = array.attrib.get("Name", "unnamed")
+            raise ValueError(f"Preview VTP PointData array {name!r} has the wrong length: {path}")
 
     points_array = piece.find("Points/DataArray")
     if points_array is None or len((points_array.text or "").split()) != 3 * point_count:
@@ -354,10 +361,9 @@ def validate_preview_polydata(path: Path) -> None:
     if cell_data is None:
         raise ValueError(f"Preview VTP has no CellData: {path}")
     for array in cell_data.findall("DataArray"):
-        components = int(array.attrib.get("NumberOfComponents", "1"))
-        if len((array.text or "").split()) != polygon_count * components:
-            name = array.attrib.get("Name", "unnamed")
-            raise ValueError(f"Preview VTP CellData array {name!r} has the wrong length: {path}")
+        raise ValueError(
+            f"Preview VTP must not contain CellData array {array.attrib.get('Name', 'unnamed')!r}: {path}"
+        )
 
 
 def _write_ascii_polydata_vtk(
@@ -378,13 +384,36 @@ def _write_ascii_polydata_vtk(
 
     This function keeps the old name so the rest of the script needs minimal
     changes, but it now writes a proper .vtp XML PolyData file.  The preview
-    fields are face quantities, so they are written only as CellData.  Duplicating
-    them into PointData is both physically misleading at shared vertices and a
-    recurring source of VTK XML array-length failures during large remeshes.
+    fields are face quantities.  The preview deliberately duplicates each
+    triangle's vertices, so face values can safely be written as three equal
+    PointData tuples.  This avoids the VTK CellData reader failure that occurs
+    when changing collision topology between animation frames.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() != ".vtp":
         path = path.with_suffix(".vtp")
+
+    # A point attribute represents one value per vertex.  Panel/CFD inputs can
+    # share vertices while carrying one pressure value per face, so normalise to
+    # independent triangle vertices before repeating each face value three
+    # times.  This makes the association unambiguous for every VTK reader.
+    needs_triangle_vertices = (
+        len(points) != 3 * len(triangles)
+        or any(triangle != (3 * index, 3 * index + 1, 3 * index + 2)
+               for index, triangle in enumerate(triangles))
+    )
+    if needs_triangle_vertices:
+        source_points = points
+        expanded_points: List[Vec3] = []
+        expanded_triangles: List[Tuple[int, int, int]] = []
+        for triangle in triangles:
+            if len(triangle) != 3 or any(index < 0 or index >= len(source_points) for index in triangle):
+                raise ValueError(f"Invalid PolyData triangle index while writing {path}")
+            start = len(expanded_points)
+            expanded_points.extend(source_points[index] for index in triangle)
+            expanded_triangles.append((start, start + 1, start + 2))
+        points = expanded_points
+        triangles = expanded_triangles
 
     valid_scalars: Dict[str, List[float]] = {}
     for name, vals in cell_scalars.items():
@@ -461,11 +490,19 @@ def _write_ascii_polydata_vtk(
     for x, y, z in points:
         point_values.extend([x, y, z])
 
-    active_vectors = "U" if "U" in valid_vectors else (next(iter(valid_vectors)) if valid_vectors else "")
-    cell_data_attrs = 'Scalars="pressureCoeff"'
+    point_scalars = {
+        name: [value for value in values for _vertex in range(3)]
+        for name, values in valid_scalars.items()
+    }
+    point_vectors = {
+        name: [value for value in values for _vertex in range(3)]
+        for name, values in valid_vectors.items()
+    }
+    active_vectors = "U" if "U" in point_vectors else (next(iter(point_vectors)) if point_vectors else "")
+    point_data_attrs = 'Scalars="pressureCoeff"'
     if active_vectors:
         escaped_vectors = _xml_attr(active_vectors)
-        cell_data_attrs += f' Vectors="{escaped_vectors}"'
+        point_data_attrs += f' Vectors="{escaped_vectors}"'
 
     lines: List[str] = [
         '<?xml version="1.0"?>',
@@ -476,24 +513,21 @@ def _write_ascii_polydata_vtk(
         # omitting them can make VTK treat a valid CpPanel array as too short.
         f'    <Piece NumberOfPoints="{len(points)}" NumberOfVerts="0" '
         f'NumberOfLines="0" NumberOfStrips="0" NumberOfPolys="{len(triangles)}">',
-        '      <PointData/>',
     ]
-    lines.append(f'      <CellData {cell_data_attrs}>')
-
-    for name, vals in valid_scalars.items():
+    lines.append(f'      <PointData {point_data_attrs}>')
+    for name, vals in point_scalars.items():
         escaped = _xml_attr(name)
         lines.append(f'        <DataArray type="Float32" Name="{escaped}" format="ascii">')
         lines.extend(values_text(vals))
         lines.append('        </DataArray>')
-
-    for name, vals in valid_vectors.items():
+    for name, vals in point_vectors.items():
         escaped = _xml_attr(name)
         lines.append(f'        <DataArray type="Float32" Name="{escaped}" NumberOfComponents="3" format="ascii">')
         lines.extend(vector_values_text(vals))
         lines.append('        </DataArray>')
-
     lines.extend([
-        '      </CellData>',
+        '      </PointData>',
+        '      <CellData/>',
         '      <Points>',
         '        <DataArray type="Float32" NumberOfComponents="3" format="ascii">',
     ])

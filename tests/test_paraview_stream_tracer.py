@@ -57,7 +57,7 @@ def test_main_motion_pvd_skips_invalid_preview_frame(tmp_path: Path) -> None:
     assert "invalid panel preview" in (tmp_path / "paraview_pvd_manifest.txt").read_text()
 
 
-def test_polydata_fields_are_written_as_cell_data_for_shared_vertices(tmp_path: Path) -> None:
+def test_polydata_fields_are_written_as_point_data_for_triangle_vertices(tmp_path: Path) -> None:
     output = tmp_path / "shared_vertices.vtp"
     _write_ascii_polydata_vtk(
         output,
@@ -73,12 +73,12 @@ def test_polydata_fields_are_written_as_cell_data_for_shared_vertices(tmp_path: 
     assert piece.attrib["NumberOfLines"] == "0"
     assert piece.attrib["NumberOfStrips"] == "0"
     assert piece.attrib["NumberOfPolys"] == "2"
-    arrays = piece.find("CellData")
+    arrays = piece.find("PointData")
     assert arrays is not None
     cp = next(array for array in arrays.findall("DataArray") if array.attrib.get("Name") == "CpPanel")
     values = [float(value) for value in (cp.text or "").split()]
-    assert len(values) == 2
-    assert values == [1.0, 3.0]
+    assert len(values) == 6
+    assert values == [1.0, 1.0, 1.0, 3.0, 3.0, 3.0]
     validate_preview_polydata(output)
 
 
@@ -108,7 +108,7 @@ def test_panel_preview_initializes_structural_cell_fields(tmp_path: Path) -> Non
     root = ElementTree.parse(output).getroot()
     names = {
         array.attrib.get("Name")
-        for array in root.findall(".//CellData/DataArray")
+        for array in root.findall(".//PointData/DataArray")
     }
     assert {
         "structuralDisplacementM",
@@ -126,25 +126,25 @@ def test_panel_preview_initializes_structural_cell_fields(tmp_path: Path) -> Non
     }.issubset(names)
     velocity = next(
         array
-        for array in root.findall(".//CellData/DataArray")
+        for array in root.findall(".//PointData/DataArray")
         if array.attrib.get("Name") == "velocity"
     )
     velocity_values = [float(value) for value in (velocity.text or "").split()]
     assert velocity.attrib.get("NumberOfComponents") == "3"
-    assert velocity_values == [1.0, 2.0, 2.0]
+    assert velocity_values == [1.0, 2.0, 2.0] * 3
     world_velocity = next(
         array
-        for array in root.findall(".//CellData/DataArray")
+        for array in root.findall(".//PointData/DataArray")
         if array.attrib.get("Name") == "worldVelocity"
     )
     assert world_velocity.attrib.get("NumberOfComponents") == "3"
     speed = next(
         array
-        for array in root.findall(".//CellData/DataArray")
+        for array in root.findall(".//PointData/DataArray")
         if array.attrib.get("Name") == "speed"
     )
     speed_values = [float(value) for value in (speed.text or "").split()]
-    assert speed_values == [3.0]
+    assert speed_values == [3.0, 3.0, 3.0]
 
 
 def test_cfd_sampled_surface_vtp_preserves_u_vector_for_stream_tracer(tmp_path: Path) -> None:
@@ -181,8 +181,8 @@ def test_cfd_sampled_surface_vtp_preserves_u_vector_for_stream_tracer(tmp_path: 
 
     assert out is not None
     text = out.read_text()
-    assert '<PointData/>' in text
-    assert '<CellData Scalars="pressureCoeff" Vectors="U">' in text
+    assert '<PointData Scalars="pressureCoeff" Vectors="U">' in text
+    assert '<CellData/>' in text
     assert 'Name="U" NumberOfComponents="3"' in text
     assert "0.333333333 0.666666667 1" in text
 
