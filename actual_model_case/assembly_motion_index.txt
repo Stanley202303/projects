@@ -2,7 +2,7 @@ Assembly quasi-dynamic CFD run
 
 cfd_solver_mode=steady
 solver_application=simpleFoam
-dynamic_steps=5
+dynamic_steps=12
 motion_dt=0.0015
 enable_nonrigid_deformation=True
 deform_anchored_components=True
@@ -29,7 +29,7 @@ hinge_torque_min_nm=1e-05
 enable_part_collisions=True
 collision_method=aabb
 collision_margin_m=0.0005
-collision_restitution=0.05
+collision_restitution=-1.0
 collision_prescribed_impact_restitution=0.0
 collision_friction_coefficient=<material-pair>
 collision_manifold_tolerance_m=1e-05
