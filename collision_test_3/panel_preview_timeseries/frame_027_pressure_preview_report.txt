@@ -1,0 +1,50 @@
+# Pressure preview / ParaView colouring report
+# The compact PVD is a surface preview.  For visible pressure colouring, use:
+#   pressureCoeff
+#   pressurePa
+#   pressureVisible01
+#   CpPanel / pPaPanel
+# not plain OpenFOAM p unless you are opening the raw case.foam volume.
+
+field	min	max	range
+Cp	-0.349999332	0.998844638	1.34884397
+CpAbsPanel	0	0.999998092	0.999998092
+CpPanel	-0.349999332	0.998844638	1.34884397
+anchored	0	1	1
+massKg	0.00248914616	1.78722474	1.78473559
+movable	0	1	1
+normalX	-0.998219825	0.982267592	1.98048742
+normalY	-0.999999539	0.999416163	1.9994157
+normalZ	-0.99902482	0.999024818	1.99804964
+p	-35.1199542	100.19176	135.311714
+pPa	-43.0219439	122.734906	165.75685
+pPaAbsPanel	0	122.91984	122.91984
+pPaPanel	-43.0219439	122.734906	165.75685
+patchId	0	5	5
+perforationPlug	0	1	1
+pressureCoeff	-0.349999332	0.998844638	1.34884397
+pressureCoeffAbs	0	0.999998092	0.999998092
+pressurePa	-43.0219439	122.734906	165.75685
+pressurePaAbs	0	122.91984	122.91984
+pressureVisible01	0	1	1
+skinFrictionPreview	9.54233372e-07	1	0.999999046
+speed	0	14.1653276	14.1653276
+structuralDisplacementM	0	0.448513371	0.448513371
+structuralFailedEdges	0	689	689
+triangleArea	1.39594144e-10	0.00612811845	0.00612811831
+velocityMagnitude	0	14.1653276	14.1653276
+velocityX	-0.00546395905	0.377215394	0.382679353
+velocityY	0	14.1653276	14.1653276
+velocityZ	-0.292294754	0.268721117	0.561015871
+windExposure	0	0.999999046	0.999999046
+worldSpeed	0	14.1653276	14.1653276
+worldVelocityX	-0.00546395905	0.377215394	0.382679353
+worldVelocityY	0	14.1653276	14.1653276
+worldVelocityZ	-0.292294754	0.268721117	0.561015871
+
+If pressureCoeff/pressurePa have a non-zero range but ParaView is blue:
+  1) click Rescale to Data Range,
+  2) make sure the selected source is paraview_motion_timeseries.pvd,
+  3) choose the Point Data version of pressureCoeff/pressurePa if ParaView shows both Point and Cell arrays.
+
+If pressureCoeff/pressurePa range is zero, the current frame genuinely has no visible pressure variation in this preview.

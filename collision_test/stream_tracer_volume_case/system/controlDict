@@ -44,7 +44,7 @@ functions
         rhoInf          1.225;
         pRef            0;
 
-        CofR            (0.000314343 0.048431 -0.000423553);
+        CofR            (0.000316974 0.0655107 -0.000438368);
 
         enabled         true;
         writeToFile     true;
@@ -67,15 +67,15 @@ functions
         rhoInf          1.225;
         pRef            0;
 
-        CofR            (0.000314343 0.048431 -0.000423553);
+        CofR            (0.000316974 0.0655107 -0.000438368);
 
         dragDir         (1 0 0);
         liftDir         (0 0 1);
         pitchAxis       (0 1 0);
 
         magUInf         0;
-        lRef            0.108815;
-        Aref            0.00402948;
+        lRef            0.108622;
+        Aref            0.0040199;
 
         enabled         true;
         writeToFile     true;
@@ -128,8 +128,8 @@ functions
         pitchAxis       (0 1 0);
 
         magUInf         0;
-        lRef            0.402928;
-        Aref            0.145272;
+        lRef            0.402824;
+        Aref            0.144964;
 
         enabled         true;
         writeToFile     true;
@@ -152,7 +152,7 @@ functions
         rhoInf          1.225;
         pRef            0;
 
-        CofR            (0.00177787 0.0355093 -0.00623832);
+        CofR            (0.00172599 0.0550706 -0.00496508);
 
         enabled         true;
         writeToFile     true;
@@ -175,15 +175,15 @@ functions
         rhoInf          1.225;
         pRef            0;
 
-        CofR            (0.00177787 0.0355093 -0.00623832);
+        CofR            (0.00172599 0.0550706 -0.00496508);
 
         dragDir         (1 0 0);
         liftDir         (0 0 1);
         pitchAxis       (0 1 0);
 
         magUInf         0;
-        lRef            0.402928;
-        Aref            0.0909342;
+        lRef            0.402824;
+        Aref            0.104844;
 
         enabled         true;
         writeToFile     true;

@@ -1,5 +1,5 @@
 # forceCoeffs debug report
-case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_0qecl_m5/step_work
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_gr2g7lu4/step_work
 
 Detected coefficient data by patch:
 - all: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
@@ -35,34 +35,34 @@ OpenFOAM boundary file exists: True
       inlet
       {
           type            patch;
-          nFaces          4356;
-          startFace       1604625;
+          nFaces          4225;
+          startFace       1557473;
       }
       outlet
       {
           type            patch;
-          nFaces          4356;
-          startFace       1608981;
+          nFaces          4225;
+          startFace       1561698;
       }
       farfield
       {
           type            patch;
-          nFaces          30360;
-          startFace       1613337;
+          nFaces          29900;
+          startFace       1565923;
       }
       object_1
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          43;
-          startFace       1643697;
+          nFaces          38;
+          startFace       1595823;
       }
       object_2
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          1138;
-          startFace       1643740;
+          nFaces          1126;
+          startFace       1595861;
       }
   )
   // ************************************************************************* //

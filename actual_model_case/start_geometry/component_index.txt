@@ -1,0 +1,5 @@
+start geometry snapshot
+
+patchId	patch	name	massKg	movable	anchored
+0	object_1	object_1	5.6979662	1	0
+1	object_2	object_2	0.50496	0	1

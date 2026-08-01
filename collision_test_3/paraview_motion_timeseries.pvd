@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">
+  <Collection>
+    <DataSet timestep="0" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_000_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="1" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_001_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="2" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_002_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="3" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_003_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="4" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_004_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="5" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_005_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="6" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_006_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="7" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_007_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="8" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_008_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="9" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_009_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="10" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_010_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="11" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_011_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="12" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_012_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="13" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_013_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="14" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_014_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="15" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_015_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="16" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_016_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="17" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_017_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="18" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_018_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="19" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_019_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="20" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_020_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="21" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_021_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="22" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_022_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="23" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_023_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="24" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_024_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="25" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_025_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="26" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_026_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="27" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_027_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="28" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_028_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="29" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_029_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="30" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_030_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="31" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_031_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="32" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_032_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="33" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_033_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="34" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_034_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="35" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_035_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="36" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_036_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="37" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_037_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="38" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_038_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="39" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_039_combined_moving_surfaces.vtp"/>
+  </Collection>
+</VTKFile>

@@ -1,0 +1,50 @@
+# Pressure preview / ParaView colouring report
+# The compact PVD is a surface preview.  For visible pressure colouring, use:
+#   pressureCoeff
+#   pressurePa
+#   pressureVisible01
+#   CpPanel / pPaPanel
+# not plain OpenFOAM p unless you are opening the raw case.foam volume.
+
+field	min	max	range
+Cp	-0.3499997	0.998888304	1.348888
+CpAbsPanel	0	0.999999144	0.999999144
+CpPanel	-0.3499997	0.998888304	1.348888
+anchored	0	1	1
+massKg	0.00248914616	1.78722474	1.78473559
+movable	0	1	1
+normalX	-0.998923676	0.994326342	1.99325002
+normalY	-0.999999873	0.999437005	1.99943688
+normalZ	-0.99904369	0.99904369	1.99808738
+p	-35.1321698	100.239586	135.371755
+pPa	-43.0369081	122.793492	165.8304
+pPaAbsPanel	0	122.962594	122.962594
+pPaPanel	-43.0369081	122.793492	165.8304
+patchId	0	5	5
+perforationPlug	0	1	1
+pressureCoeff	-0.3499997	0.998888304	1.348888
+pressureCoeffAbs	0	0.999999144	0.999999144
+pressurePa	-43.0369081	122.793492	165.8304
+pressurePaAbs	0	122.962594	122.962594
+pressureVisible01	0	1	1
+skinFrictionPreview	4.2816947e-07	1	0.999999572
+speed	0	14.1677904	14.1677904
+structuralDisplacementM	0	0.256652841	0.256652841
+structuralFailedEdges	0	689	689
+triangleArea	1.55357131e-10	0.00611927836	0.0061192782
+velocityMagnitude	0	14.1677904	14.1677904
+velocityX	-0.00546395905	0.377215394	0.382679353
+velocityY	0	14.1677904	14.1677904
+velocityZ	-0.292294754	0.268721117	0.561015871
+windExposure	0	0.999999572	0.999999572
+worldSpeed	0	14.1677904	14.1677904
+worldVelocityX	-0.00546395905	0.377215394	0.382679353
+worldVelocityY	0	14.1677904	14.1677904
+worldVelocityZ	-0.292294754	0.268721117	0.561015871
+
+If pressureCoeff/pressurePa have a non-zero range but ParaView is blue:
+  1) click Rescale to Data Range,
+  2) make sure the selected source is paraview_motion_timeseries.pvd,
+  3) choose the Point Data version of pressureCoeff/pressurePa if ParaView shows both Point and Cell arrays.
+
+If pressureCoeff/pressurePa range is zero, the current frame genuinely has no visible pressure variation in this preview.

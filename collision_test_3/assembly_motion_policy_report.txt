@@ -1,0 +1,18 @@
+Assembly relative-motion policy report
+
+ANCHOR_ASSEMBLY_ROOT=True
+ASSEMBLY_ROOT_PATCH=<auto>
+ASSEMBLY_ROOT_NAME_CONTAINS=<auto>
+ASSEMBLY_ROOT_MODE=largest_mass
+FORCE_NON_ROOT_COMPONENTS_FREE=False
+USE_FORCE_LEVER_ARM_TORQUE=True
+AUTO_HINGE_ORIGINS=True
+USE_ALL_COEFFS_FALLBACK=True
+MOTION_FORCE_GAIN=1.0
+MOTION_MOMENT_GAIN=1.0
+
+Anchored root component: patch='object_1', name='object_1', mass=1.78722 kg, density=19600 kg/m^3
+
+Movable components after policy:
+- object_1: ANCHORED, no motion, translate_axes=[], rotate_axes=[], origin=(0.000314005,-0.139729,-0.000435762), cofr=(0.000314005,-0.139729,-0.000435762), bbox=(-0.018186,0.018814,-0.19426,-0.0851967,-0.0189358,0.0180642)
+- object_2: fixed/no decoded motion, mate_type=COLLISION_TARGET, source=collision-convergence-stationary, translate_axes=[], rotate_axes=[], origin=(0.000314005,0.0161024,-0.000435762), cofr=(0.000314005,0.0161024,-0.000435762), bbox=(-0.199686,0.200314,-0.0851967,0.117401,-0.174391,0.173519)

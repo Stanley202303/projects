@@ -1,0 +1,19 @@
+# Pressure diagnostic report
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_3_step_work_icqhon9j/step_work
+latest_solver_time=10
+# In incompressible OpenFOAM simpleFoam, p is kinematic pressure p/rho, not Pa.
+# v16 also writes pPa=rho*p and Cp=p/(0.5*Uinf^2) for ParaView colouring.
+
+field	min	max	range
+p	0	0	0
+pPa	0	0	0
+Cp	0	0	0
+
+If p/pPa/Cp ranges are near zero, then ParaView will show a single colour.
+That usually means one of these is true:
+  1) the selected time is the initial/unsolved field,
+  2) the solver did not converge enough to create a pressure gradient,
+  3) the object patches are not part of the solved fluid mesh,
+  4) you are viewing a stitched OpenFOAM case where remeshed times confuse ParaView.
+  5) the inlet/outlet are reversed for the sign of VELOCITY; v18 fixes this automatically.
+For remeshed moving geometry, open paraview_motion_timeseries.pvd for the most reliable view.

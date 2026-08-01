@@ -1,0 +1,50 @@
+# Pressure preview / ParaView colouring report
+# The compact PVD is a surface preview.  For visible pressure colouring, use:
+#   pressureCoeff
+#   pressurePa
+#   pressureVisible01
+#   CpPanel / pPaPanel
+# not plain OpenFOAM p unless you are opening the raw case.foam volume.
+
+field	min	max	range
+Cp	-0.349998591	0.998736345	1.34873494
+CpAbsPanel	0	0.999995975	0.999995975
+CpPanel	-0.349998591	0.998736345	1.34873494
+anchored	0	1	1
+massKg	0.00248914616	1.78722474	1.78473559
+movable	0	1	1
+normalX	-0.997525873	0.988911311	1.98643718
+normalY	-0.999998737	0.999366204	1.99936494
+normalZ	-0.998968079	0.999408551	1.99837663
+p	-35.1030955	100.126671	135.229766
+pPa	-43.001292	122.655172	165.656464
+pPaAbsPanel	0	122.860834	122.860834
+pPaPanel	-43.001292	122.655172	165.656464
+patchId	0	5	5
+perforationPlug	0	1	1
+pressureCoeff	-0.349998591	0.998736345	1.34873494
+pressureCoeffAbs	0	0.999995975	0.999995975
+pressurePa	-43.001292	122.655172	165.656464
+pressurePaAbs	0	122.860834	122.860834
+pressureVisible01	0	1	1
+skinFrictionPreview	2.01225324e-06	1	0.999997988
+speed	0	14.1619367	14.1619367
+structuralDisplacementM	0	0.712870519	0.712870519
+structuralFailedEdges	0	689	689
+triangleArea	6.08022301e-11	0.00613882182	0.00613882176
+velocityMagnitude	0	14.1619367	14.1619367
+velocityX	-0.00546395905	0.377215394	0.382679353
+velocityY	0	14.1619367	14.1619367
+velocityZ	-0.292294754	0.268721117	0.561015871
+windExposure	0	0.999997988	0.999997988
+worldSpeed	0	14.1619367	14.1619367
+worldVelocityX	-0.00546395905	0.377215394	0.382679353
+worldVelocityY	0	14.1619367	14.1619367
+worldVelocityZ	-0.292294754	0.268721117	0.561015871
+
+If pressureCoeff/pressurePa have a non-zero range but ParaView is blue:
+  1) click Rescale to Data Range,
+  2) make sure the selected source is paraview_motion_timeseries.pvd,
+  3) choose the Point Data version of pressureCoeff/pressurePa if ParaView shows both Point and Cell arrays.
+
+If pressureCoeff/pressurePa range is zero, the current frame genuinely has no visible pressure variation in this preview.

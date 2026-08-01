@@ -40,7 +40,7 @@ castellatedMeshControls
     {
         object_1
         {
-            level (2 2);
+            level (1 1);
             patchInfo
             {
                 type wall;
@@ -48,7 +48,7 @@ castellatedMeshControls
         }
         object_2
         {
-            level (2 2);
+            level (1 1);
             patchInfo
             {
                 type wall;
@@ -63,16 +63,16 @@ castellatedMeshControls
         object_1
         {
             mode distance;
-            levels ((0.201464 2));
+            levels ((0.201412 2));
         }
         object_2
         {
             mode distance;
-            levels ((0.201464 2));
+            levels ((0.201412 2));
         }
     }
 
-    locationInMesh (-1.36818 0.881657 0.83991);
+    locationInMesh (-1.36788 0.901001 0.840965);
 
     allowFreeStandingZoneFaces false;
 }

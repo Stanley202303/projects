@@ -20,33 +20,33 @@ FoamFile
     {
         type            patch;
         nFaces          4356;
-        startFace       1604625;
+        startFace       1605679;
     }
     outlet
     {
         type            patch;
         nFaces          4356;
-        startFace       1608981;
+        startFace       1610035;
     }
     farfield
     {
         type            patch;
         nFaces          30360;
-        startFace       1613337;
+        startFace       1614391;
     }
     object_1
     {
         type            wall;
         inGroups        List<word> 1(wall);
-        nFaces          43;
-        startFace       1643697;
+        nFaces          38;
+        startFace       1644751;
     }
     object_2
     {
         type            wall;
         inGroups        List<word> 1(wall);
-        nFaces          1138;
-        startFace       1643740;
+        nFaces          1210;
+        startFace       1644789;
     }
 )
 

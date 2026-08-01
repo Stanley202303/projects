@@ -1,0 +1,15 @@
+# Quasi-dynamic assembly motion log
+# dt=0.0015 s, default_mass=0.05 kg, default_inertia=0.0001 kg m^2
+# Rigid-body motion is driven by OpenFOAM forces.dat/log loads, with panel fallback only if OpenFOAM loads are unavailable.
+# Optional non-rigid deformation is logged separately in assembly_deformation_log.txt.
+step	patch	material	material_source	mass_kg	density_kg_m3	mate_type	freedom_source	Cd	Cs	Cl	CmRoll	CmPitch	CmYaw	Fx_N	Fy_N	Fz_N	Mx_Nm	My_Nm	Mz_Nm	dx_m	dy_m	dz_m	droll_rad	dpitch_rad	dyaw_rad	total_x_m	total_y_m	total_z_m
+0	object_1	Tungsten	combined-source/bom	5.6979662	19600	COLLISION_IMPACTOR	collision-convergence-moving	nan	0	nan	0	0	0	-8.7237374	1.3313373e-07	8.7229109e-12	3.9619593e-07	5.447055e-10	-8.268529e-09	0	0	0	0	0	0	-0.028592098	0.055398763	-0.0069225351
+0	object_2	ABS	combined-source/bom	0.50496	1052	COLLISION_TARGET	collision-convergence-stationary	nan	0	nan	0	0	0	nan	nan	nan	0	0	0	0	0	0	0	0	0	0	0	0
+1	object_1	Tungsten	combined-source/bom	5.6979662	19600	COLLISION_IMPACTOR	collision-convergence-moving	nan	0	nan	0	0	0	-8.7237374	1.3313373e-07	8.7229109e-12	3.9619593e-07	5.4470549e-10	-8.268529e-09	0	0	0	0	0	0	0.016407902	0.055398763	-0.0069225351
+1	object_2	ABS	combined-source/bom	0.50496	1052	COLLISION_TARGET	collision-convergence-stationary	nan	0	nan	0	0	0	nan	nan	nan	0	0	0	0	0	0	0	0	0	0	0	0
+2	object_1	Tungsten	combined-source/bom	5.6979662	19600	COLLISION_IMPACTOR	post-perforation-ballistic	nan	0	nan	0	0	0	-6.0713228	9.2551021e-08	6.200381e-12	2.7559168e-07	3.7904497e-10	-5.7505335e-09	0.0375255	3.6545665e-14	2.4483473e-18	1.1304486e-10	8.6893111e-14	-1.3182651e-12	0.092292147	0.055398763	-0.0069225351
+2	object_2	ABS	combined-source/bom	0.48927342	1052	COLLISION_TARGET	collision-convergence-stationary	nan	0	nan	0	0	0	nan	nan	nan	0	0	0	0	0	0	0	0	0	0	0	0
+3	object_1	Tungsten	combined-source/bom	5.6979662	19600	COLLISION_IMPACTOR	post-perforation-ballistic	nan	0	nan	0	0	0	-6.068095	-7.8976136e-05	-0.00019478866	2.8374072e-07	2.2034019e-05	6.044214e-06	0.037522412	-3.1148798e-11	-7.6916287e-11	2.2943185e-10	5.1069518e-09	1.3995603e-09	0.12981456	0.055398763	-0.0069225352
+3	object_2	ABS	combined-source/bom	0.48927342	1052	COLLISION_TARGET	collision-convergence-stationary	nan	0	nan	0	0	0	nan	nan	nan	0	0	0	0	0	0	0	0	0	0	0	0
+4	object_1	Tungsten	combined-source/bom	5.6979662	19600	COLLISION_IMPACTOR	post-perforation-ballistic	nan	0	nan	0	0	0	-6.0657074	-0.00011300431	-0.0003169257	3.059999e-07	3.69836e-05	1.1110499e-05	0.037519326	-7.5770287e-11	-2.0205947e-10	3.5494879e-10	1.3676383e-08	3.9739629e-09	0.16733389	0.055398763	-0.0069225354
+4	object_2	ABS	combined-source/bom	0.48927342	1052	COLLISION_TARGET	collision-convergence-stationary	nan	0	nan	0	0	0	nan	nan	nan	0	0	0	0	0	0	0	0	0	0	0	0

@@ -1,0 +1,62 @@
+# OpenFOAM dimensional load debug report
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/collision_test_step_work_gr2g7lu4/step_work
+use_openfoam_forces_dat=True
+run_postprocess_force_objects=False
+openfoam_force_zero_tol=1e-12
+
+Detected force/moment loads by patch:
+- all: F=(0.0, 0.0, 0.0) N, M=(0.0, 0.0, 0.0) N*m
+- object_1: F=(0.0, 0.0, 0.0) N, M=(0.0, 0.0, 0.0) N*m
+- object_2: F=(0.0, 0.0, 0.0) N, M=(0.0, 0.0, 0.0) N*m
+
+Recovered loads from log.simpleFoam, log.pimpleFoam and log.postProcess:
+- all: F=(0.0, 0.0, 0.0) N, M=(0.0, 0.0, 0.0) N*m
+- object_1: F=(0.0, 0.0, 0.0) N, M=(0.0, 0.0, 0.0) N*m
+- object_2: F=(0.0, 0.0, 0.0) N, M=(0.0, 0.0, 0.0) N*m
+
+postProcessing force .dat files:
+- postProcessing/forces_all/0/forces.dat
+    # Time          forces(pressure viscous)	moments(pressure viscous)
+    0               	((0.00000000e+00 0.00000000e+00 0.00000000e+00) (0.00000000e+00 0.00000000e+00 0.00000000e+00)) ((0.00000000e+00 0.00000000e+00 0.00000000e+00) (0.00000000e+00 0.00000000e+00 0.00000000e+00))
+    1               	((0.00000000e+00 0.00000000e+00 0.00000000e+00) (0.00000000e+00 0.00000000e+00 0.00000000e+00)) ((0.00000000e+00 0.00000000e+00 0.00000000e+00) (0.00000000e+00 0.00000000e+00 0.00000000e+00))
+- postProcessing/forces_object_1/0/forces.dat
+    # Time          forces(pressure viscous)	moments(pressure viscous)
+    0               	((0.00000000e+00 0.00000000e+00 0.00000000e+00) (0.00000000e+00 0.00000000e+00 0.00000000e+00)) ((0.00000000e+00 0.00000000e+00 0.00000000e+00) (0.00000000e+00 0.00000000e+00 0.00000000e+00))
+    1               	((0.00000000e+00 0.00000000e+00 0.00000000e+00) (0.00000000e+00 0.00000000e+00 0.00000000e+00)) ((0.00000000e+00 0.00000000e+00 0.00000000e+00) (0.00000000e+00 0.00000000e+00 0.00000000e+00))
+- postProcessing/forces_object_2/0/forces.dat
+    # Time          forces(pressure viscous)	moments(pressure viscous)
+    0               	((0.00000000e+00 0.00000000e+00 0.00000000e+00) (0.00000000e+00 0.00000000e+00 0.00000000e+00)) ((0.00000000e+00 0.00000000e+00 0.00000000e+00) (0.00000000e+00 0.00000000e+00 0.00000000e+00))
+    1               	((0.00000000e+00 0.00000000e+00 0.00000000e+00) (0.00000000e+00 0.00000000e+00 0.00000000e+00)) ((0.00000000e+00 0.00000000e+00 0.00000000e+00) (0.00000000e+00 0.00000000e+00 0.00000000e+00))
+
+log.simpleFoam exists: True
+  forces forces_object_1:
+  forces forceCoeffs_object_1:
+  forceCoeffs forceCoeffs_object_1:
+  forces forces_object_2:
+  forces forceCoeffs_object_2:
+  forceCoeffs forceCoeffs_object_2:
+  forces forces_all:
+  forces forceCoeffs_all:
+  forceCoeffs forceCoeffs_all:
+  forces forces_object_1 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_object_1 write:
+  forces forces_object_2 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_object_2 write:
+  forces forces_all write:
+      sum of forces:
+  forceCoeffs forceCoeffs_all write:
+  forces forces_object_1 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_object_1 write:
+  forces forces_object_2 write:
+      sum of forces:
+  forceCoeffs forceCoeffs_object_2 write:
+  forces forces_all write:
+      sum of forces:
+  forceCoeffs forceCoeffs_all write:
+
+log.pimpleFoam exists: False
+
+log.postProcess exists: False

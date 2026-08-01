@@ -94,24 +94,15 @@ IMU_AXIS_MAP = ((0, 1.0), (1, 1.0), (2, 1.0))
 # Change this when the MMC5603 breakout has a different physical orientation.
 MAG_AXIS_MAP = ((0, 1.0), (1, 1.0), (2, 1.0))
 
-# Complementary filter tuning. Smaller time constants follow the absolute
-# sensors more quickly; larger values trust gyro integration more.
-ACCEL_CORRECTION_TIME_CONSTANT = 0.65
-MAG_CORRECTION_TIME_CONSTANT = 2.5
+# Kalman tuning values are variances in radians. Larger process noise trusts
+# the gyro prediction less; larger measurement noise trusts that sensor less.
+KALMAN_PROCESS_NOISE = math.radians(2.0) ** 2
+KALMAN_ACCEL_MEASUREMENT_NOISE = math.radians(4.0) ** 2
+KALMAN_MAG_MEASUREMENT_NOISE = math.radians(10.0) ** 2
 
-# Gyro bias is learned slowly while absolute-sensor corrections are accepted.
-GYRO_BIAS_LEARNING_RATE = 0.03
-GYRO_BIAS_LIMIT_DPS = 8.0
-
-# Reject accelerometer correction while the device is clearly accelerating.
-ACCEL_MIN_G = 0.82
-ACCEL_MAX_G = 1.18
-
-# Reject obviously bad magnetic samples and large one-frame compass jumps.
+# Reject obviously bad magnetic samples.
 MAG_MIN_FIELD = 5.0
 MAG_MAX_FIELD = 120.0
-MAG_OUTLIER_FRACTION = 0.35
-MAG_HEADING_GATE = math.radians(55.0)
 
 # -----------------------------------------------------------------------------
 
@@ -335,7 +326,7 @@ class KalmanOrientation:
         roll, pitch = accel_tilt(acceleration)
         yaw = 0.0
 
-        if 5.0 <= vector_norm(magnetic) <= 120.0:
+        if MAG_MIN_FIELD <= vector_norm(magnetic) <= MAG_MAX_FIELD:
             yaw = tilt_compensated_heading(magnetic, roll, pitch)
 
         self.q = quaternion_from_euler(roll, pitch, yaw)
@@ -379,7 +370,10 @@ class KalmanOrientation:
 
         # Correct long-term yaw drift from the magnetometer.
         magnetic_magnitude = vector_norm(magnetic)
-        if use_magnetometer and 5.0 <= magnetic_magnitude <= 120.0:
+        if (
+            use_magnetometer
+            and MAG_MIN_FIELD <= magnetic_magnitude <= MAG_MAX_FIELD
+        ):
             measured_yaw = tilt_compensated_heading(
                 magnetic,
                 roll,

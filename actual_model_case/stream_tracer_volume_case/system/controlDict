@@ -1,0 +1,197 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      controlDict;
+}
+
+application     simpleFoam;
+
+startFrom       startTime;
+startTime       0;
+
+stopAt          endTime;
+endTime         1;
+
+deltaT          1;
+
+writeControl    timeStep;
+writeInterval   1;
+
+// Keep only the latest written solution time. This prevents a 5M+ cell case
+// from filling the Docker/host disk with 0,1,2,3,... field folders.
+purgeWrite      1;
+writeFormat     ascii;
+writePrecision  8;
+writeCompression off;
+timeFormat      general;
+timePrecision   6;
+
+runTimeModifiable true;
+
+functions
+{
+    forces_object_1
+    {
+        type            forces;
+        libs            ("libforces.so");
+        patches         (object_1);
+
+        p               p;
+        U               U;
+        rho             rhoInf;
+        rhoInf          1.225;
+        pRef            0;
+
+        CofR            (0.139777 0.00935355 0.00463972);
+
+        enabled         true;
+        writeToFile     true;
+        writeFields     no;
+        executeControl  timeStep;
+        executeInterval 1;
+        writeControl    timeStep;
+        writeInterval   1;
+        log             true;
+    }
+    forceCoeffs_object_1
+    {
+        type            forceCoeffs;
+        libs            ("libforces.so");
+        patches         (object_1);
+
+        p               p;
+        U               U;
+        rho             rhoInf;
+        rhoInf          1.225;
+        pRef            0;
+
+        CofR            (0.139777 0.00935355 0.00463972);
+
+        dragDir         (1 0 0);
+        liftDir         (0 0 1);
+        pitchAxis       (0 1 0);
+
+        magUInf         0;
+        lRef            0.121137;
+        Aref            0.00920643;
+
+        enabled         true;
+        writeToFile     true;
+        writeFields     no;
+        executeControl  timeStep;
+        executeInterval 1;
+        writeControl    timeStep;
+        writeInterval   1;
+        log             true;
+    }
+    forces_object_2
+    {
+        type            forces;
+        libs            ("libforces.so");
+        patches         (object_2);
+
+        p               p;
+        U               U;
+        rho             rhoInf;
+        rhoInf          1.225;
+        pRef            0;
+
+        CofR            (0.0939024 0.00935355 0.00463972);
+
+        enabled         true;
+        writeToFile     true;
+        writeFields     no;
+        executeControl  timeStep;
+        executeInterval 1;
+        writeControl    timeStep;
+        writeInterval   1;
+        log             true;
+    }
+    forceCoeffs_object_2
+    {
+        type            forceCoeffs;
+        libs            ("libforces.so");
+        patches         (object_2);
+
+        p               p;
+        U               U;
+        rho             rhoInf;
+        rhoInf          1.225;
+        pRef            0;
+
+        CofR            (0.0939024 0.00935355 0.00463972);
+
+        dragDir         (1 0 0);
+        liftDir         (0 0 1);
+        pitchAxis       (0 1 0);
+
+        magUInf         0;
+        lRef            0.405938;
+        Aref            0.164785;
+
+        enabled         true;
+        writeToFile     true;
+        writeFields     no;
+        executeControl  timeStep;
+        executeInterval 1;
+        writeControl    timeStep;
+        writeInterval   1;
+        log             true;
+    }
+    forces_all
+    {
+        type            forces;
+        libs            ("libforces.so");
+        patches         (object_1 object_2);
+
+        p               p;
+        U               U;
+        rho             rhoInf;
+        rhoInf          1.225;
+        pRef            0;
+
+        CofR            (0.139314 0.00935411 0.00464032);
+
+        enabled         true;
+        writeToFile     true;
+        writeFields     no;
+        executeControl  timeStep;
+        executeInterval 1;
+        writeControl    timeStep;
+        writeInterval   1;
+        log             true;
+    }
+    forceCoeffs_all
+    {
+        type            forceCoeffs;
+        libs            ("libforces.so");
+        patches         (object_1 object_2);
+
+        p               p;
+        U               U;
+        rho             rhoInf;
+        rhoInf          1.225;
+        pRef            0;
+
+        CofR            (0.139314 0.00935411 0.00464032);
+
+        dragDir         (1 0 0);
+        liftDir         (0 0 1);
+        pitchAxis       (0 1 0);
+
+        magUInf         0;
+        lRef            0.405938;
+        Aref            0.164785;
+
+        enabled         true;
+        writeToFile     true;
+        writeFields     no;
+        executeControl  timeStep;
+        executeInterval 1;
+        writeControl    timeStep;
+        writeInterval   1;
+        log             true;
+    }
+}

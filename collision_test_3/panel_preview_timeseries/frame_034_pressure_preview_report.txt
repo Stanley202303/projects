@@ -1,0 +1,50 @@
+# Pressure preview / ParaView colouring report
+# The compact PVD is a surface preview.  For visible pressure colouring, use:
+#   pressureCoeff
+#   pressurePa
+#   pressureVisible01
+#   CpPanel / pPaPanel
+# not plain OpenFOAM p unless you are opening the raw case.foam volume.
+
+field	min	max	range
+Cp	-0.349998891	0.998790305	1.3487892
+CpAbsPanel	0	0.999996832	0.999996832
+CpPanel	-0.349998891	0.998790305	1.3487892
+anchored	0	1	1
+massKg	0.00248914616	1.78722474	1.78473559
+movable	0	1	1
+normalX	-0.997525873	0.983413222	1.98093909
+normalY	-0.999999074	0.999387845	1.99938692
+normalZ	-0.998992826	0.998993061	1.99798589
+p	-35.1092411	100.15048	135.259721
+pPa	-43.0088203	122.684338	165.693158
+pPaAbsPanel	0	122.882344	122.882344
+pPaPanel	-43.0088203	122.684338	165.693158
+patchId	0	5	5
+perforationPlug	0	1	1
+pressureCoeff	-0.349998891	0.998790305	1.3487892
+pressureCoeffAbs	0	0.999996832	0.999996832
+pressurePa	-43.0088203	122.684338	165.693158
+pressurePaAbs	0	122.882344	122.882344
+pressureVisible01	0	1	1
+skinFrictionPreview	1.58389839e-06	1	0.999998416
+speed	0	14.1631711	14.1631711
+structuralDisplacementM	0	0.616710067	0.616710067
+structuralFailedEdges	0	689	689
+triangleArea	1.16908073e-10	0.00614089965	0.00614089954
+velocityMagnitude	0	14.1631711	14.1631711
+velocityX	-0.00546395905	0.377215394	0.382679353
+velocityY	0	14.1631711	14.1631711
+velocityZ	-0.292294754	0.268721117	0.561015871
+windExposure	0	0.999998416	0.999998416
+worldSpeed	0	14.1631711	14.1631711
+worldVelocityX	-0.00546395905	0.377215394	0.382679353
+worldVelocityY	0	14.1631711	14.1631711
+worldVelocityZ	-0.292294754	0.268721117	0.561015871
+
+If pressureCoeff/pressurePa have a non-zero range but ParaView is blue:
+  1) click Rescale to Data Range,
+  2) make sure the selected source is paraview_motion_timeseries.pvd,
+  3) choose the Point Data version of pressureCoeff/pressurePa if ParaView shows both Point and Cell arrays.
+
+If pressureCoeff/pressurePa range is zero, the current frame genuinely has no visible pressure variation in this preview.
