@@ -570,6 +570,53 @@ def _write_ascii_polydata_vtk(
     os.replace(temporary_path, path)
 
 
+def connected_surface_body_ids(component: AeroComponent) -> List[int]:
+    """Return a connected-surface ID for every triangle in a component."""
+    triangles = component.triangles
+    if not triangles:
+        return []
+    tolerance = max(1e-10, max(component.lref, 1e-6) * 1e-9)
+
+    def vertex_key(point: Vec3) -> Tuple[int, int, int]:
+        scaled = tuple(int(round(value / tolerance)) for value in point)
+        return scaled[0], scaled[1], scaled[2]
+
+    parents = list(range(len(triangles)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(first: int, second: int) -> None:
+        first_root = find(first)
+        second_root = find(second)
+        if first_root != second_root:
+            parents[second_root] = first_root
+
+    edge_owner: Dict[Tuple[Tuple[int, int, int], Tuple[int, int, int]], int] = {}
+    for triangle_index, (_normal, a, b, c) in enumerate(triangles):
+        keys = (vertex_key(a), vertex_key(b), vertex_key(c))
+        for first, second in (
+            (keys[0], keys[1]),
+            (keys[1], keys[2]),
+            (keys[2], keys[0]),
+        ):
+            edge = tuple(sorted((first, second)))
+            previous = edge_owner.setdefault(edge, triangle_index)
+            union(triangle_index, previous)
+
+    root_to_body: Dict[int, int] = {}
+    body_ids: List[int] = []
+    for triangle_index in range(len(triangles)):
+        root = find(triangle_index)
+        if root not in root_to_body:
+            root_to_body[root] = len(root_to_body)
+        body_ids.append(root_to_body[root])
+    return body_ids
+
+
 def directory_size_bytes(path: Path) -> int:
     total = 0
     if not path.exists():
@@ -673,20 +720,30 @@ def write_components_geometry_snapshot(root_case: Path, components: Sequence[Aer
         "triangleArea": [],
     }
     name_lines = [f"{label} geometry snapshot", "", "patchId	patch	name	massKg	movable	anchored"]
-    for patch_index, comp in enumerate(components):
+    next_patch_id = 0
+    for comp in components:
         movable = 0.0 if comp.is_assembly_anchor or (not comp.freedom.translate_axes and not comp.freedom.rotate_axes) else 1.0
         anchored = 1.0 if comp.is_assembly_anchor else 0.0
-        name_lines.append(f"{patch_index}	{comp.patch}	{comp.name}	{comp.mass:.8g}	{int(movable)}	{int(anchored)}")
-        for _normal, v1, v2, v3 in comp.triangles:
+        body_ids = connected_surface_body_ids(comp)
+        body_count = max(body_ids, default=-1) + 1
+        for body_index in range(body_count):
+            name_lines.append(
+                f"{next_patch_id + body_index}	{comp.patch}#body_{body_index}	"
+                f"{comp.name}	{comp.mass:.8g}	{int(movable)}	{int(anchored)}"
+            )
+        for triangle_index, (_normal, v1, v2, v3) in enumerate(comp.triangles):
             base = len(pts)
             pts.extend([v1, v2, v3])
             polys.append((base, base + 1, base + 2))
             area, _cent, _n = triangle_area_centroid_normal((_normal, v1, v2, v3))
-            scalars["patchId"].append(float(patch_index))
+            scalars["patchId"].append(
+                float(next_patch_id + body_ids[triangle_index])
+            )
             scalars["movable"].append(movable)
             scalars["anchored"].append(anchored)
             scalars["massKg"].append(float(comp.mass))
             scalars["triangleArea"].append(float(area))
+        next_patch_id += body_count
 
     out = out_dir / GEOMETRY_SNAPSHOT_FILE_NAME
     _write_ascii_polydata_vtk(out, pts, polys, scalars)
@@ -1188,7 +1245,8 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
         "worldVelocity": [],
     }
 
-    for patch_index, comp in enumerate(components):
+    next_patch_id = 0
+    for comp in components:
         pts: List[Vec3] = []
         polys: List[Tuple[int, int, int]] = []
         cp_abs_vals: List[float] = []
@@ -1233,6 +1291,8 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             if isinstance(comp.collision_structural_state, ExplicitShellState)
             else None
         )
+        surface_body_ids = connected_surface_body_ids(comp)
+        surface_body_count = max(surface_body_ids, default=-1) + 1
 
         for triangle_index, (_normal, v1, v2, v3) in enumerate(comp.triangles):
             i = len(pts)
@@ -1329,7 +1389,9 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             combined_scalars["normalY"].append(n[1])
             combined_scalars["normalZ"].append(n[2])
             combined_scalars["triangleArea"].append(area)
-            combined_scalars["patchId"].append(float(patch_index))
+            combined_scalars["patchId"].append(
+                float(next_patch_id + surface_body_ids[triangle_index])
+            )
             combined_scalars["movable"].append(movable)
             combined_scalars["anchored"].append(anchored)
             combined_scalars["massKg"].append(float(comp.mass))
@@ -1390,6 +1452,7 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
                 "worldVelocity": world_velocity_vectors,
             },
         )
+        next_patch_id += surface_body_count
 
     if combined_polys:
         combined_scalars["pressureVisible01"] = _normalise_for_display(combined_scalars.get("pressureCoeff", []))

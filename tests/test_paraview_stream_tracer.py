@@ -8,6 +8,7 @@ from cfd_motion.visualization import (
     ROOT_CFD_SAMPLED_DIR_NAME,
     ROOT_PANEL_PREVIEW_DIR_NAME,
     _write_ascii_polydata_vtk,
+    connected_surface_body_ids,
     copy_minimal_stream_tracer_case_to_root,
     create_root_safe_pvd_from_copied_previews,
     validate_preview_polydata,
@@ -153,6 +154,44 @@ def test_panel_preview_initializes_structural_cell_fields(tmp_path: Path) -> Non
     )
     speed_values = [float(value) for value in (speed.text or "").split()]
     assert speed_values == [3.0, 3.0, 3.0]
+
+
+def test_patch_id_distinguishes_disconnected_bodies_in_one_component(tmp_path: Path) -> None:
+    component = AeroComponent(
+        name="multi-body",
+        patch="multi-body",
+        triangles=[
+            (
+                (0.0, 0.0, 1.0),
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+            ),
+            (
+                (0.0, 0.0, 1.0),
+                (10.0, 0.0, 0.0),
+                (11.0, 0.0, 0.0),
+                (10.0, 1.0, 0.0),
+            ),
+        ],
+        cofr=(5.5, 0.5, 0.0),
+        lref=11.0,
+        aref=1.0,
+    )
+
+    assert connected_surface_body_ids(component) == [0, 1]
+    write_panel_aero_preview_for_step(tmp_path, [component], 0)
+
+    root = ElementTree.parse(
+        tmp_path / "panel_preview" / "combined_moving_surfaces.vtp"
+    ).getroot()
+    patch_ids = next(
+        array
+        for array in root.findall(".//PointData/DataArray")
+        if array.attrib.get("Name") == "patchId"
+    )
+    values = [float(value) for value in (patch_ids.text or "").split()]
+    assert values == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
 
 
 def test_cfd_sampled_surface_vtp_preserves_u_vector_for_stream_tracer(tmp_path: Path) -> None:
