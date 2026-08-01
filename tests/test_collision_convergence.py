@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
+from cfd_motion.math_utils import v_cross, v_dot, v_sub, v_unit
 from cfd_motion.models import AeroComponent, MaterialProperties, MotionFreedom
 from cfd_motion.motion import (
     advance_collision_damage_state,
@@ -822,6 +823,18 @@ class CollisionConvergenceTest(TestCase):
         self.assertTrue(state.reference_positions)
         for point in state.reference_positions:
             self.assertAlmostEqual(point[0], 0.5 * thickness, delta=1e-10)
+        surface_normals = []
+        for node_a, node_b, node_c in state.triangle_nodes:
+            a, b, c = (
+                state.reference_positions[node_a],
+                state.reference_positions[node_b],
+                state.reference_positions[node_c],
+            )
+            surface_normals.append(
+                v_unit(v_cross(v_sub(b, a), v_sub(c, a)))
+            )
+        for normal in surface_normals:
+            self.assertGreater(v_dot(normal, surface_normals[0]), 0.99)
 
     def test_fracture_cuts_a_resolved_hole_in_coarse_sheet_mesh(self) -> None:
         target = rectangular_component(

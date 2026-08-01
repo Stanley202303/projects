@@ -333,6 +333,16 @@ def _shell_source_triangles(
         source_faces = lower_faces
         midsurface_plane = 0.5 * (lower_plane + upper_plane)
 
+    orientation_sum = 0.0
+    for normal, a, b, c in source_faces:
+        geometric_normal = v_cross(v_sub(b, a), v_sub(c, a))
+        unit_normal = v_unit(
+            geometric_normal,
+            normal if v_norm(normal) > 0.0 else axis,
+        )
+        orientation_sum += v_dot(unit_normal, axis)
+    surface_normal = axis if orientation_sum >= 0.0 else v_mul(axis, -1.0)
+
     collapsed: Dict[
         Tuple[
             Tuple[int, int, int],
@@ -343,12 +353,9 @@ def _shell_source_triangles(
     ] = {}
     selected: List[Triangle] = []
     for triangle in source_faces:
-        normal, a, b, c = triangle
-        geometric_normal = v_cross(v_sub(b, a), v_sub(c, a))
-        unit_normal = v_unit(
-            geometric_normal,
-            normal if v_norm(normal) > 0.0 else axis,
-        )
+        _normal, a, b, c = triangle
+        if v_dot(v_cross(v_sub(b, a), v_sub(c, a)), surface_normal) < 0.0:
+            b, c = c, b
         face_plane = v_dot(_centroid((a, b, c)), axis)
         shift = v_mul(axis, midsurface_plane - face_plane)
         collapsed_points = (
@@ -360,7 +367,7 @@ def _shell_source_triangles(
         if key in collapsed:
             continue
         collapsed_triangle = (
-            unit_normal,
+            surface_normal,
             collapsed_points[0],
             collapsed_points[1],
             collapsed_points[2],
