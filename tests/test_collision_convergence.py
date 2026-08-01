@@ -16,6 +16,7 @@ from cfd_motion.motion import (
     configure_collision_convergence_components,
     component_bounds,
     component_contact_compliance,
+    contact_restitution_coefficient,
     contact_inverse_mass,
     deform_component_at_contact,
     build_eulerian_contact_grid,
@@ -233,6 +234,17 @@ def sphere_component(
 
 
 class CollisionConvergenceTest(TestCase):
+    def test_bom_material_pair_sets_default_restitution(self) -> None:
+        steel = box_component("steel", 0.0, 0.1)
+        steel.material.material_name = "stainless steel"
+        rubber = box_component("rubber", 0.2, 0.3)
+        rubber.material.material_name = "rubber"
+
+        restitution = contact_restitution_coefficient(steel, rubber, -1.0)
+
+        self.assertAlmostEqual(restitution, math.sqrt(0.24 * 0.72))
+        self.assertEqual(contact_restitution_coefficient(steel, rubber, 0.1), 0.1)
+
     def test_bom_material_properties_drive_contact_and_perforation_response(self) -> None:
         impactor = box_component("impactor", -0.03, 0.0)
         impactor.mass = 0.25

@@ -831,6 +831,45 @@ def contact_friction_coefficient(a: AeroComponent, b: AeroComponent) -> float:
     )
 
 
+def material_restitution_coefficient(component: AeroComponent) -> float:
+    """Return a conservative dry-impact restitution for a BOM material."""
+    name = component.material.material_name.lower()
+    values = {
+        "rubber": 0.72,
+        "silicone": 0.65,
+        "ptfe": 0.35,
+        "nylon": 0.30,
+        "petg": 0.28,
+        "abs": 0.24,
+        "pla": 0.20,
+        "wood": 0.25,
+        "aluminum": 0.20,
+        "aluminium": 0.20,
+        "titanium": 0.22,
+        "steel": 0.24,
+        "iron": 0.22,
+        "tungsten": 0.18,
+        "wolfram": 0.18,
+        "glass": 0.16,
+        "ceramic": 0.14,
+    }
+    return next((value for key, value in values.items() if key in name), 0.20)
+
+
+def contact_restitution_coefficient(
+    a: AeroComponent,
+    b: AeroComponent,
+    configured_restitution: float,
+) -> float:
+    """Resolve an explicit override or a bounded BOM-derived material pair."""
+    if configured_restitution >= 0.0:
+        return min(configured_restitution, 1.0)
+    return math.sqrt(
+        material_restitution_coefficient(a)
+        * material_restitution_coefficient(b)
+    )
+
+
 def component_contact_compliance(component: AeroComponent) -> float:
     young = max(inferred_deformation_young_modulus(component), 1.0)
     poisson = inferred_deformation_poisson_ratio(component)
@@ -2939,7 +2978,11 @@ def resolve_part_collisions(
                     restitution = (
                         COLLISION_PRESCRIBED_IMPACT_RESTITUTION
                         if is_swept_pair
-                        else max(0.0, COLLISION_RESTITUTION)
+                        else contact_restitution_coefficient(
+                            a,
+                            b,
+                            COLLISION_RESTITUTION,
+                        )
                     )
                     impulse_mag = -(1.0 + restitution) * rel_normal / normal_inverse_mass
                     impulse = v_mul(normal, impulse_mag)

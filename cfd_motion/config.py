@@ -417,7 +417,12 @@ ENABLE_PART_COLLISIONS = os.environ.get("ENABLE_PART_COLLISIONS", "1").strip().l
 COLLISION_METHOD = os.environ.get("COLLISION_METHOD", "aabb").strip().lower()
 COLLISION_MARGIN_M = float(os.environ.get("COLLISION_MARGIN_M", "0.0005"))
 COLLISION_POSITION_CORRECTION = float(os.environ.get("COLLISION_POSITION_CORRECTION", "1.0"))
-COLLISION_RESTITUTION = float(os.environ.get("COLLISION_RESTITUTION", "0.05"))
+# A negative value selects a conservative material-pair restitution; zero to
+# one remains an explicit user override for controlled experiments.
+COLLISION_RESTITUTION = max(
+    -1.0,
+    min(1.0, float(os.environ.get("COLLISION_RESTITUTION", "-1"))),
+)
 COLLISION_PRESCRIBED_IMPACT_RESTITUTION = max(
     0.0,
     float(os.environ.get("COLLISION_PRESCRIBED_IMPACT_RESTITUTION", "0")),
