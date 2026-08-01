@@ -1786,11 +1786,16 @@ def _add_membrane_element_forces(
             force_y = 0.5 * state.thickness_m * (
                 c_coefficient * stress_yy + b_coefficient * stress_xy
             )
-            force = v_add(
+            # ``B.T @ stress`` is the element's internal resisting force.
+            # The equation of motion needs its negative.  Applying this with
+            # the same sign as the displacement stiffness injects energy into
+            # a stretched element and produces the alternating, accordion-like
+            # deformation seen in impacted plates.
+            internal_force = v_add(
                 v_mul(element.basis_x, force_x),
                 v_mul(element.basis_y, force_y),
             )
-            forces[node] = v_add(forces[node], force)
+            forces[node] = v_sub(forces[node], internal_force)
 
 
 def _add_bending_spring_forces(

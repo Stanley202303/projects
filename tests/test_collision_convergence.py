@@ -38,6 +38,7 @@ from cfd_motion.visualization import visualization_components_with_fragments
 from cfd_motion.structural import (
     ExplicitShellState,
     HybridShellCollisionState,
+    _add_membrane_element_forces,
     build_explicit_shell_state,
     shell_fragment_triangles,
     shell_fragment_velocity,
@@ -156,6 +157,24 @@ def attached_shell_position_y_range(component: AeroComponent) -> tuple[float, fl
         if node_index not in emitted_nodes
     ]
     return min(values), max(values)
+
+
+def membrane_force_work_for_in_plane_displacement(
+    state: ExplicitShellState,
+    node_index: int,
+    displacement: tuple[float, float, float],
+) -> float:
+    """Return internal-force work for a small prescribed node displacement."""
+    state.positions[node_index] = tuple(
+        state.positions[node_index][coordinate] + displacement[coordinate]
+        for coordinate in range(3)
+    )
+    forces = [(0.0, 0.0, 0.0) for _position in state.positions]
+    _add_membrane_element_forces(state, forces)
+    return sum(
+        forces[node_index][coordinate] * displacement[coordinate]
+        for coordinate in range(3)
+    )
 
 
 def sphere_component(
@@ -769,6 +788,41 @@ class CollisionConvergenceTest(TestCase):
         )
         self.assertTrue(refined_state.fixed_nodes)
         self.assertLess(len(refined_state.fixed_nodes), len(refined_state.positions))
+
+    def test_membrane_fem_force_resists_in_plane_displacement(self) -> None:
+        """A stretched triangle must return energy, never amplify the stretch."""
+        target = rectangular_component(
+            "membrane_force_plate",
+            0.0,
+            0.0001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        state = build_explicit_shell_state(
+            target,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.015,
+            2.0e9,
+            0.0001,
+            0.35,
+            4.0e7,
+            0.2,
+            0.05,
+            0.5,
+            16,
+            0.03,
+        )
+        element = state.membrane_elements[0]
+        displacement = tuple(1e-6 * value for value in element.basis_x)
+        work = membrane_force_work_for_in_plane_displacement(
+            state,
+            element.nodes[0],
+            displacement,
+        )
+        self.assertLess(work, 0.0)
 
     def test_shell_uses_one_midsurface_when_plate_faces_have_different_tessellations(self) -> None:
         thickness = 0.0001
