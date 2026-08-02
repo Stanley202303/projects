@@ -377,6 +377,65 @@ def _shell_source_triangles(
     return selected or list(component.triangles)
 
 
+def _subdivide_shell_triangle(triangle: Triangle) -> List[Triangle]:
+    normal, a, b, c = triangle
+    ab = v_mul(v_add(a, b), 0.5)
+    bc = v_mul(v_add(b, c), 0.5)
+    ca = v_mul(v_add(c, a), 0.5)
+    children = ((a, ab, ca), (ab, b, bc), (ca, bc, c), (ab, bc, ca))
+    return [
+        (
+            v_unit(v_cross(v_sub(child_b, child_a), v_sub(child_c, child_a)), normal),
+            child_a,
+            child_b,
+            child_c,
+        )
+        for child_a, child_b, child_c in children
+    ]
+
+
+def _maximum_triangle_edge_m(triangle: Triangle) -> float:
+    _normal, a, b, c = triangle
+    return max(
+        v_norm(v_sub(b, a)),
+        v_norm(v_sub(c, b)),
+        v_norm(v_sub(a, c)),
+    )
+
+
+def _resolve_small_perforation_mesh(
+    triangles: Sequence[Triangle],
+    perforation_radius_m: float,
+    thickness_m: float,
+) -> List[Triangle]:
+    """Uniformly refine a coarse shell enough to represent a small opening.
+
+    Uniform midpoint subdivision is deliberately used instead of a
+    non-conforming local remesh. It preserves shared edges, so the classic
+    triangular membrane FEM does not acquire artificial cracks or fixed nodes
+    around the refinement boundary. The cap bounds collision runtime.
+    """
+    if perforation_radius_m <= 0.0 or not triangles:
+        return list(triangles)
+    # Keep every element edge no larger than the nominal hole diameter. The
+    # failed-face intersection test then exposes the opening without an
+    # expensive global remesh merely to draw a slightly rounder rim.
+    target_edge_m = max(2.0 * perforation_radius_m, 4.0 * thickness_m)
+    maximum_triangles = 16384
+    refined = list(triangles)
+    while (
+        len(refined) * 4 <= maximum_triangles
+        and max(_maximum_triangle_edge_m(triangle) for triangle in refined)
+        > target_edge_m
+    ):
+        refined = [
+            child
+            for triangle in refined
+            for child in _subdivide_shell_triangle(triangle)
+        ]
+    return refined
+
+
 def build_explicit_shell_state(
     component: AeroComponent,
     contact_point: Vec3,
@@ -391,6 +450,7 @@ def build_explicit_shell_state(
     cfl: float,
     max_substeps: int,
     displacement_limit_m: float,
+    perforation_radius_m: float = 0.0,
 ) -> ExplicitShellState:
     """Build a lumped-mass explicit triangular shell from an STL surface.
 
@@ -402,7 +462,11 @@ def build_explicit_shell_state(
     density = max(component.material.density_kg_m3, 1.0)
     thickness = max(thickness_m, 1e-9)
     young = max(young_modulus_pa, 1.0)
-    source_triangles = _shell_source_triangles(component, axis, thickness)
+    source_triangles = _resolve_small_perforation_mesh(
+        _shell_source_triangles(component, axis, thickness),
+        perforation_radius_m,
+        thickness,
+    )
     positions: List[Vec3] = []
     masses: List[float] = []
     triangle_nodes: List[Tuple[int, int, int]] = []
@@ -638,6 +702,7 @@ def build_hybrid_shell_collision_state(
     cfl: float,
     max_substeps: int,
     displacement_limit_m: float,
+    perforation_radius_m: float = 0.0,
 ) -> HybridShellCollisionState:
     shell_state = build_explicit_shell_state(
         component,
@@ -653,6 +718,7 @@ def build_hybrid_shell_collision_state(
         cfl,
         max_substeps,
         displacement_limit_m,
+        perforation_radius_m,
     )
     shell_state.solver_backend = "explicit_shell"
     shell_state.render_as_midsurface = True

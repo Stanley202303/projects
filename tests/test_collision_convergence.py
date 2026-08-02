@@ -32,6 +32,7 @@ from cfd_motion.motion import (
     swept_mesh_contact,
     thin_shell_impact_response,
     triangle_area_centroid_normal,
+    triangle_max_edge_length,
     update_component_deformation,
     update_component_motion,
     write_collision_convergence_log_header,
@@ -766,6 +767,114 @@ class CollisionConvergenceTest(TestCase):
                     zmax - zmin,
                 )
             self.assertLessEqual(largest_transverse_span, 0.04)
+
+    def test_five_mm_projectile_leaves_a_visible_mass_conserving_hole(self) -> None:
+        target = rectangular_component(
+            "small_hole_target",
+            0.0,
+            0.0001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        target.material = MaterialProperties(
+            material_name="steel",
+            density_kg_m3=7850.0,
+            young_modulus_pa=2.0e11,
+            poisson_ratio=0.30,
+            thickness_m=0.0001,
+            yield_strength_pa=2.5e8,
+            failure_strain=0.20,
+        )
+        projectile = sphere_component("five_mm_dart", -0.0025, 0.0025)
+        projectile.mass = 0.05
+        projectile.material = MaterialProperties(
+            material_name="tungsten",
+            density_kg_m3=19300.0,
+            mass_kg=projectile.mass,
+            young_modulus_pa=4.11e11,
+            poisson_ratio=0.28,
+            yield_strength_pa=7.5e8,
+            failure_strain=0.01,
+        )
+        initial_mass = target.mass
+        projectile_radius = 0.0025
+        response = thin_shell_impact_response(
+            projectile,
+            target,
+            100.0,
+            (0.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+        )
+        self.assertIsNotNone(response)
+        assert response is not None
+        self.assertTrue(response.perforated)
+        self.assertGreaterEqual(response.hole_radius, 1.05 * projectile_radius)
+
+        damage = register_collision_hole(
+            target,
+            (0.00005, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            response.hole_radius,
+            projectile_radius,
+            0,
+            "plastic_membrane_perforation",
+            2.0,
+        )
+        shell_state = shell_core_state(target)
+        visual_components = visualization_components_with_fragments([target])
+
+        self.assertGreaterEqual(
+            damage.current_hole_radius_m,
+            projectile_radius,
+        )
+        self.assertTrue(target.triangles)
+        self.assertTrue(shell_state.emitted_triangles)
+        self.assertLessEqual(
+            max(
+                triangle_max_edge_length(
+                    (
+                        shell_state.triangle_normals[index],
+                        *(shell_state.reference_positions[node] for node in nodes),
+                    )
+                )
+                for index, nodes in enumerate(shell_state.triangle_nodes)
+            ),
+            2.0 * response.hole_radius + 1e-12,
+        )
+        for triangle in target.triangles:
+            closest = closest_point_on_triangle(damage.contact_point, triangle)
+            self.assertGreater(
+                radial_distance_from_axis(
+                    closest,
+                    damage.contact_point,
+                    damage.inward_direction,
+                ),
+                projectile_radius,
+            )
+        self.assertAlmostEqual(
+            sum(component.mass for component in visual_components),
+            initial_mass,
+        )
+
+        shell_state.max_substeps = 1
+        advance_collision_damage_state(
+            target,
+            damage,
+            10.0 * damage.response_time_s,
+        )
+        self.assertTrue(target.triangles)
+        for triangle in target.triangles:
+            closest = closest_point_on_triangle(damage.contact_point, triangle)
+            self.assertGreater(
+                radial_distance_from_axis(
+                    closest,
+                    damage.contact_point,
+                    damage.inward_direction,
+                ),
+                projectile_radius,
+            )
 
     def test_shell_plug_separation_uses_damage_response_interval(self) -> None:
         target = rectangular_component(

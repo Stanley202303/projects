@@ -1788,6 +1788,9 @@ def impactor_projected_clearance_radius(
     return 0.5 * max(span_x, span_y, 0.0)
 
 
+THIN_SHELL_HOLE_CLEARANCE_FACTOR = 1.05
+
+
 def thin_shell_impact_response(
     impactor: AeroComponent,
     target: AeroComponent,
@@ -1868,7 +1871,7 @@ def thin_shell_impact_response(
             indentation=min(affected_radius, MAX_TOTAL_DEFORMATION),
             absorbed_energy_j=absorbed_energy,
             residual_speed=residual_speed,
-            hole_radius=1.05 * clearance_radius,
+            hole_radius=THIN_SHELL_HOLE_CLEARANCE_FACTOR * clearance_radius,
             failure_mode="plastic_membrane_perforation",
         )
 
@@ -2401,9 +2404,19 @@ def register_collision_hole(
             COLLISION_HOLE_INITIAL_RADIUS_FRACTION
             * damage.target_hole_radius_m
         )
+        # Once the projectile is released into post-perforation ballistic
+        # motion, the failed topology must already clear its projected width.
+        # The former 65% growth seed was smaller than a 5 mm projectile and a
+        # coarse detached plug could therefore visually cap the opening even
+        # while the projectile passed through it. The extra tear allowance
+        # still evolves over subsequent damage steps.
+        projectile_clearance_radius = (
+            damage.target_hole_radius_m
+            / THIN_SHELL_HOLE_CLEARANCE_FACTOR
+        )
         visible_initial_radius = max(
-            min(radius, initial_radius_limit),
             initial_radius_limit,
+            projectile_clearance_radius,
         )
         damage.current_hole_radius_m = min(
             damage.target_hole_radius_m,
@@ -2434,6 +2447,7 @@ def register_collision_hole(
             COLLISION_SHELL_CFL,
             COLLISION_SHELL_MAX_SUBSTEPS,
             collision_shell_displacement_limit(component, target_hole_radius, radius),
+            damage.target_hole_radius_m,
         )
         if COLLISION_STRUCTURAL_SOLVER == "hybrid_shell":
             state = build_hybrid_shell_collision_state(*build_args)
