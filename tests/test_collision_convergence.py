@@ -1240,6 +1240,44 @@ class CollisionConvergenceTest(TestCase):
         self.assertEqual(moving.linear_velocity[1], transverse_velocity)
         self.assertEqual(moving.angular_velocity, angular_velocity)
         self.assertEqual(stationary.cofr, (1.05, 0.0, 0.0))
+        displacement = tuple(moving.cofr[i] - start[i] for i in range(3))
+        for axis in range(3):
+            self.assertAlmostEqual(
+                displacement[axis] / 0.01,
+                moving.linear_velocity[axis],
+            )
+
+    def test_free_body_displacement_matches_recorded_high_speed(self) -> None:
+        component = rectangular_component(
+            "fast_body", -0.1, 0.1, -0.1, 0.1, -0.1, 0.1
+        )
+        component.freedom = MotionFreedom(
+            translate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+            rotate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+        )
+        component.material.linear_damping_per_kg = 0.0
+        component.material.angular_damping_per_kg = 0.0
+        component.linear_velocity = (30.0, 0.0, 0.0)
+        start = component.cofr
+
+        _force, _moment, displacement, _rotation = update_component_motion(
+            component,
+            {},
+            0.005,
+            load_override=((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+        )
+
+        self.assertEqual(component.linear_velocity, (30.0, 0.0, 0.0))
+        self.assertAlmostEqual(displacement[0], 0.15)
+        self.assertAlmostEqual(component.cofr[0] - start[0], 0.15)
 
     def test_auto_axis_uses_the_frontal_centerline_not_tilted_face_normal(self) -> None:
         normal = (0.0, -math.sqrt(0.5), math.sqrt(0.5))

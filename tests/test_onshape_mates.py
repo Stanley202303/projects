@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from cfd_motion.geometry import bom_records_from_payload
+from cfd_motion.geometry import best_bom_record_for_occurrence, bom_records_from_payload
 from cfd_motion.onshape import deduce_component_freedoms, transform_motion_freedom_to_world
 from cfd_motion.motion import (
     apply_aerodynamic_velocity_increment,
@@ -72,6 +72,91 @@ def test_onshape_bom_material_library_properties_are_parsed() -> None:
     assert tungsten["young_modulus_pa"] == pytest.approx(4.0e11)
     assert tungsten["poisson_ratio"] == pytest.approx(0.28)
     assert tungsten["yield_strength_pa"] == pytest.approx(7.5e8)
+
+
+def test_bom_rows_match_related_occurrences_before_shared_part_ids() -> None:
+    payload = {
+        "headers": [
+            {"id": "material_id", "name": "Material"},
+            {"id": "mass_id", "name": "Mass"},
+        ],
+        "rows": [
+            {
+                "itemSource": {
+                    "partId": "JHD",
+                    "elementId": "element_a",
+                    "partIdentity": "identity_a",
+                },
+                "relatedOccurrences": ["moving_instance"],
+                "headerIdToValue": {
+                    "material_id": {
+                        "displayName": "Tungsten",
+                        "properties": [
+                            {"displayName": "Density", "value": "19600"},
+                            {
+                                "displayName": "Young's Modulus",
+                                "value": "400000000000",
+                            },
+                        ],
+                    },
+                    "mass_id": "3.95 lb",
+                },
+            },
+            {
+                "itemSource": {
+                    "partId": "JHD",
+                    "elementId": "element_b",
+                    "partIdentity": "identity_b",
+                },
+                "relatedOccurrences": ["target_instance"],
+                "headerIdToValue": {
+                    "material_id": {
+                        "displayName": "ABS",
+                        "properties": [
+                            {"displayName": "Density", "value": "1052"},
+                            {
+                                "displayName": "Young's Modulus",
+                                "value": "2310000000",
+                            },
+                        ],
+                    },
+                    "mass_id": "2.01984 kg",
+                },
+            },
+        ],
+    }
+
+    records = bom_records_from_payload(payload)
+    moving = best_bom_record_for_occurrence(
+        records,
+        {
+            "_sourceInstanceId": "moving_instance",
+            "partId": "JHD",
+            "elementId": "element_a",
+        },
+        "Part 1 <1>",
+        "JHD",
+    )
+    target = best_bom_record_for_occurrence(
+        records,
+        {
+            "_sourceInstanceId": "target_instance",
+            "partId": "JHD",
+            "elementId": "element_b",
+        },
+        "Part 1 <1>",
+        "JHD",
+    )
+
+    assert len(records) == 2
+    assert moving is not None
+    assert target is not None
+    assert moving["material"] == "Tungsten"
+    assert moving["mass_kg"] == pytest.approx(1.7916898615)
+    assert moving["density_kg_m3"] == pytest.approx(19600.0)
+    assert moving["young_modulus_pa"] == pytest.approx(4.0e11)
+    assert target["material"] == "ABS"
+    assert target["mass_kg"] == pytest.approx(2.01984)
 
 
 def test_revolute_mated_occurrence_overrides_fastened_group() -> None:

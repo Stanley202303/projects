@@ -398,9 +398,11 @@ def parse_mass_kg(value: Any) -> Optional[float]:
     if number is None:
         return None
     text = str(value or "").lower()
+    if "kg" in text or "kilogram" in text:
+        return number
     if " mg" in text or text.endswith("mg"):
         return number / 1_000_000.0
-    if " g" in text or text.endswith("g"):
+    if " gram" in text or re.search(r"(?:^|\s)g(?:$|\s)", text):
         return number / 1000.0
     if "lb" in text or "pound" in text:
         return number * 0.45359237
@@ -504,6 +506,12 @@ def text_from_any(value: Any) -> str:
 
 
 def flatten_candidate_bom_rows(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, dict) and isinstance(payload.get("rows"), list):
+        # Onshape BOM format 2.x exposes the authoritative item records here.
+        # Do not recursively mistake itemSource, header, or category metadata
+        # for standalone rows.
+        return [row for row in payload["rows"] if isinstance(row, dict)]
+
     rows: List[Dict[str, Any]] = []
     def visit(obj: Any) -> None:
         if isinstance(obj, dict):
@@ -545,7 +553,10 @@ def get_case_insensitive(obj: Dict[str, Any], names: Sequence[str]) -> Any:
     return None
 
 
-def extract_bom_column_values(row: Dict[str, Any]) -> Dict[str, Any]:
+def extract_bom_column_values(
+    row: Dict[str, Any],
+    header_labels: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     values: Dict[str, Any] = {}
     def add_value(label: str, value: Any) -> None:
         label = str(label or "").strip().lower()
@@ -585,7 +596,8 @@ def extract_bom_column_values(row: Dict[str, Any]) -> Dict[str, Any]:
                     add_value(label, val)
         elif isinstance(container, dict):
             for key, val in container.items():
-                add_value(str(key), val)
+                label = (header_labels or {}).get(str(key), str(key))
+                add_value(label, val)
                 add_material_library_values(val)
     add_material_library_values(row)
     return values
@@ -594,9 +606,21 @@ def extract_bom_column_values(row: Dict[str, Any]) -> Dict[str, Any]:
 def bom_records_from_payload(payload: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not payload:
         return []
+    header_labels: Dict[str, str] = {}
+    headers = payload.get("headers") if isinstance(payload, dict) else None
+    if isinstance(headers, list):
+        for header in headers:
+            if not isinstance(header, dict):
+                continue
+            header_id = str(header.get("id", ""))
+            label = text_from_any(
+                get_first(header, ["name", "propertyName", "id"], "")
+            ).strip()
+            if header_id and label:
+                header_labels[header_id] = label
     records: List[Dict[str, Any]] = []
     for row in flatten_candidate_bom_rows(payload):
-        vals = extract_bom_column_values(row)
+        vals = extract_bom_column_values(row, header_labels)
         all_text = json.dumps(row, default=str).lower()
         material = ""
         mass = None
@@ -664,6 +688,14 @@ def bom_records_from_payload(payload: Optional[Dict[str, Any]]) -> List[Dict[str
             text_from_any(get_case_insensitive(row, ["id", "item", "itemNumber", "item number"])),
             all_text[:1500],
         ]
+        item_source = get_case_insensitive(row, ["itemSource", "item source"])
+        if not isinstance(item_source, dict):
+            item_source = {}
+        related_occurrences = get_case_insensitive(
+            row, ["relatedOccurrences", "related occurrences"]
+        )
+        if not isinstance(related_occurrences, list):
+            related_occurrences = []
         records.append({
             "material": material,
             "mass_kg": mass,
@@ -673,6 +705,19 @@ def bom_records_from_payload(payload: Optional[Dict[str, Any]]) -> List[Dict[str
             "thickness_m": thickness,
             "yield_strength_pa": yield_strength,
             "failure_strain": failure_strain,
+            "related_occurrences": [str(value) for value in related_occurrences],
+            "part_identity": text_from_any(
+                get_case_insensitive(item_source, ["partIdentity", "part identity"])
+            ).strip(),
+            "part_id": text_from_any(
+                get_case_insensitive(item_source, ["partId", "pid"])
+            ).strip(),
+            "element_id": text_from_any(
+                get_case_insensitive(item_source, ["elementId", "eid"])
+            ).strip(),
+            "document_id": text_from_any(
+                get_case_insensitive(item_source, ["documentId", "did"])
+            ).strip(),
             "names": [n for n in names if n],
             "raw": row,
         })
@@ -680,11 +725,66 @@ def bom_records_from_payload(payload: Optional[Dict[str, Any]]) -> List[Dict[str
 
 
 def score_bom_record_for_occurrence(record: Dict[str, Any], occ: Dict[str, Any], raw_name: str, part_id: Optional[str]) -> int:
+    def normalized(value: Any) -> str:
+        return normalize_material_text(text_from_any(value))
+
+    occurrence_ids = {
+        normalized(value)
+        for value in (
+            get_first(occ, ["_sourceInstanceId", "instanceId", "id", "nodeId"], ""),
+            get_first(occ, ["tailInstanceId", "headInstanceId"], ""),
+        )
+        if normalized(value)
+    }
+    path = occ.get("path")
+    if isinstance(path, list):
+        occurrence_ids.update(
+            normalized(value) for value in path if normalized(value)
+        )
+    related_ids = {
+        normalized(value)
+        for value in record.get("related_occurrences", [])
+        if normalized(value)
+    }
+    if occurrence_ids & related_ids:
+        return 10_000
+
+    occurrence_part_identity = normalized(
+        get_first(occ, ["partIdentity", "part identity"], "")
+    )
+    record_part_identity = normalized(record.get("part_identity", ""))
+    if (
+        occurrence_part_identity
+        and occurrence_part_identity == record_part_identity
+    ):
+        return 8_000
+
+    occurrence_part_id = normalized(
+        part_id or get_first(occ, ["partId", "pid"], "")
+    )
+    occurrence_element_id = normalized(
+        get_first(occ, ["elementId", "sourceElementId", "eid"], "")
+    )
+    if (
+        occurrence_part_id
+        and occurrence_part_id == normalized(record.get("part_id", ""))
+        and occurrence_element_id
+        and occurrence_element_id == normalized(record.get("element_id", ""))
+    ):
+        return 5_000
+
     hay = normalize_material_text(" ".join(record.get("names", [])))
     if not hay:
         return 0
     score = 0
-    candidates = [raw_name, part_id, get_first(occ, ["partId", "pid"], ""), get_first(occ, ["name", "occurrenceName", "partName", "instanceId", "fullPathAsString"], "")]
+    candidates = [
+        raw_name,
+        get_first(
+            occ,
+            ["name", "occurrenceName", "partName", "fullPathAsString"],
+            "",
+        ),
+    ]
     for cand in candidates:
         c = normalize_material_text(cand)
         if not c:

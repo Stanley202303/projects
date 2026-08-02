@@ -924,6 +924,22 @@ def run_sources(sources: Sequence[str]) -> int:
                     f"target gap {COLLISION_INITIAL_GAP_M:g} m."
                 )
             run_assembly_motion_simulation(components, case)
+            for source_index in range(1, len(sources) + 1):
+                source_dir = tmp / f"source_{source_index:02d}"
+                for report_name in (
+                    MATERIAL_REPORT_NAME,
+                    ASSEMBLY_BOM_NAME,
+                    OCCURRENCE_EXPORT_REPORT_NAME,
+                    MATE_REPORT_NAME,
+                ):
+                    copy_if_exists(
+                        source_dir / report_name,
+                        case / f"source_{source_index:02d}_{report_name}",
+                    )
+                copy_if_exists(
+                    tmp / f"source_{source_index:02d}_assembly_definition.json",
+                    case / f"source_{source_index:02d}_assembly_definition.json",
+                )
 
         print("\nDone.")
         print(f"OpenFOAM output root: {case}")

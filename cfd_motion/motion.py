@@ -607,7 +607,11 @@ def update_component_motion(
     if externally_applied_velocity is not None:
         integration_velocity = v_sub(new_lv, externally_applied_velocity)
     unconstrained_translation = v_mul(integration_velocity, dt)
-    if component.freedom.source == "post-perforation-ballistic":
+    fully_free_translation = len(free.translate_axes) >= 3
+    if (
+        component.freedom.source == "post-perforation-ballistic"
+        or fully_free_translation
+    ):
         translation_step = unconstrained_translation
     else:
         translation_step = clamp_vector_magnitude(unconstrained_translation, MAX_TRANSLATION_PER_STEP)
@@ -631,7 +635,14 @@ def update_component_motion(
     new_av = v_add(component.angular_velocity, v_mul(angular_accel, dt))
     angular_decay = math.exp(-max(component.material.angular_damping_per_kg, 0.0) * dt / max(component.mass, 1e-9))
     new_av = v_mul(new_av, angular_decay)
-    rotation_vector_step = clamp_vector_magnitude(v_mul(new_av, dt), MAX_ROTATION_PER_STEP_RAD)
+    unconstrained_rotation = v_mul(new_av, dt)
+    if len(free.rotate_axes) >= 3:
+        rotation_vector_step = unconstrained_rotation
+    else:
+        rotation_vector_step = clamp_vector_magnitude(
+            unconstrained_rotation,
+            MAX_ROTATION_PER_STEP_RAD,
+        )
 
     rotation_angle = v_norm(rotation_vector_step)
     rotation_axis = v_unit(rotation_vector_step) if rotation_angle > 1e-12 else None
