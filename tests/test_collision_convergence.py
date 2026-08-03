@@ -342,6 +342,123 @@ class CollisionConvergenceTest(TestCase):
             0.0,
         )
 
+    def test_fast_unmated_source_bodies_cannot_tunnel_through_each_other(self) -> None:
+        moving = box_component("part1_rear", 2.0, 3.0)
+        struck = box_component("part1_front", 0.0, 1.0)
+        moving.collision_source_index = 1
+        struck.collision_source_index = 1
+        moving.collision_family = "part1_rear"
+        struck.collision_family = "part1_front"
+        moving.linear_velocity = (300.0, 0.0, 0.0)
+        initial_momentum = moving.mass * moving.linear_velocity[0]
+
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.01),
+            TemporaryDirectory() as tmpdir,
+        ):
+            lines = resolve_part_collisions(
+                [moving, struck],
+                1,
+                Path(tmpdir) / "collisions.txt",
+            )
+
+        moving_bounds = component_bounds(moving.triangles)
+        struck_bounds = component_bounds(struck.triangles)
+        self.assertTrue(lines)
+        self.assertTrue(
+            any("continuous_internal_contact" in line for line in lines)
+        )
+        self.assertLessEqual(moving_bounds[1], struck_bounds[0] + 1e-9)
+        self.assertGreater(moving.deformation_max_m, 0.0)
+        self.assertGreater(struck.deformation_max_m, 0.0)
+        self.assertNotEqual(moving.linear_velocity, (300.0, 0.0, 0.0))
+        self.assertAlmostEqual(
+            moving.mass * moving.linear_velocity[0]
+            + struck.mass * struck.linear_velocity[0],
+            initial_momentum,
+        )
+
+    def test_unmated_source_bodies_can_separate_after_touching(self) -> None:
+        separating = box_component("part1_separating", -2.0, -1.0)
+        neighbour = box_component("part1_neighbour", 0.0, 1.0)
+        separating.collision_source_index = 1
+        neighbour.collision_source_index = 1
+        separating.linear_velocity = (-100.0, 0.0, 0.0)
+        original_bounds = component_bounds(separating.triangles)
+
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.01),
+            TemporaryDirectory() as tmpdir,
+        ):
+            lines = resolve_part_collisions(
+                [separating, neighbour],
+                1,
+                Path(tmpdir) / "collisions.txt",
+            )
+
+        self.assertEqual(lines, [])
+        self.assertEqual(component_bounds(separating.triangles), original_bounds)
+        self.assertEqual(separating.linear_velocity, (-100.0, 0.0, 0.0))
+        self.assertEqual(separating.deformation_max_m, 0.0)
+        self.assertEqual(neighbour.deformation_max_m, 0.0)
+
+    def test_initial_fit_expires_when_internal_body_reaches_real_surface(self) -> None:
+        outer = rectangular_component(
+            "part1_outer",
+            0.0,
+            2.0,
+            -0.5,
+            0.5,
+            -0.5,
+            0.5,
+        )
+        inner = rectangular_component(
+            "part1_inner",
+            0.5,
+            1.0,
+            -0.1,
+            0.1,
+            -0.1,
+            0.1,
+        )
+        outer.collision_source_index = 1
+        inner.collision_source_index = 1
+        outer.collision_family = "part1_outer"
+        inner.collision_family = "part1_inner"
+        outer.is_assembly_anchor = True
+        initial_pairs = initial_same_source_overlap_pairs([outer, inner])
+        self.assertEqual(len(initial_pairs), 1)
+
+        move_component_rigidly(
+            inner,
+            (1.2, 0.0, 0.0),
+            None,
+            0.0,
+            inner.cofr,
+        )
+        inner.linear_velocity = (120.0, 0.0, 0.0)
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.01),
+            TemporaryDirectory() as tmpdir,
+        ):
+            lines = resolve_part_collisions(
+                [outer, inner],
+                1,
+                Path(tmpdir) / "collisions.txt",
+                initial_overlap_pairs=initial_pairs,
+            )
+
+        self.assertTrue(lines)
+        self.assertEqual(initial_pairs, {})
+        self.assertLessEqual(
+            component_bounds(inner.triangles)[1],
+            component_bounds(outer.triangles)[1] + 1e-9,
+        )
+        self.assertGreater(
+            max(outer.deformation_max_m, inner.deformation_max_m),
+            0.0,
+        )
+
     def test_bom_material_pair_sets_default_restitution(self) -> None:
         steel = box_component("steel", 0.0, 0.1)
         steel.material.material_name = "stainless steel"

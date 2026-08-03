@@ -853,13 +853,16 @@ def apply_collision_impulse(component: AeroComponent, impulse: Vec3, contact_poi
         return
     if component_has_translation_freedom(component):
         dv = v_mul(project_vector_on_axes(impulse, component.freedom.translate_axes), 1.0 / max(component.mass, 1e-9))
-        component.linear_velocity = clamp_vector_magnitude(v_add(component.linear_velocity, dv), COLLISION_MAX_LINEAR_SPEED_MPS)
+        # The pair solver applies equal-and-opposite impulses. Clipping either
+        # body's result here destroys momentum and can make a fast following
+        # body appear to merge with or pass through the body it struck.
+        component.linear_velocity = v_add(component.linear_velocity, dv)
     if component_has_rotation_freedom(component):
         origin = infer_motion_origin(component)
         angular_impulse = v_cross(v_sub(contact_point, origin), impulse)
         angular_impulse = project_vector_on_axes(angular_impulse, component.freedom.rotate_axes)
         delta_av = angular_acceleration_from_moment(component, angular_impulse, component.freedom.rotate_axes)
-        component.angular_velocity = clamp_vector_magnitude(v_add(component.angular_velocity, delta_av), COLLISION_MAX_ANGULAR_SPEED_RAD_S)
+        component.angular_velocity = v_add(component.angular_velocity, delta_av)
 
 
 def contact_point_velocity(component: AeroComponent, contact_point: Vec3) -> Vec3:
@@ -1586,6 +1589,21 @@ def swept_mesh_contact(
     Testing vertices in both relative directions handles the common face/vertex
     and vertex/face cases without time stepping or changing pre-impact speed.
     """
+    return swept_triangle_mesh_contact(
+        moving.triangles,
+        stationary.triangles,
+        axis,
+        max_distance,
+    )
+
+
+def swept_triangle_mesh_contact(
+    moving_triangles: Sequence[Triangle],
+    stationary_triangles: Sequence[Triangle],
+    axis: Vec3,
+    max_distance: float,
+) -> Optional[Tuple[float, Vec3, Vec3, int]]:
+    """Find first contact while translating one triangle mesh along an axis."""
     direction = v_unit(axis)
     best_distance = max_distance + 1.0
     candidates: List[Tuple[Vec3, Vec3]] = []
@@ -1602,15 +1620,15 @@ def swept_mesh_contact(
         elif abs(distance - best_distance) <= tolerance:
             candidates.append((point, normal))
 
-    for vertex in _unique_mesh_vertices(moving.triangles):
-        for triangle in stationary.triangles:
+    for vertex in _unique_mesh_vertices(moving_triangles):
+        for triangle in stationary_triangles:
             distance = ray_triangle_distance(vertex, direction, triangle, max_distance)
             if distance is not None:
                 record(distance, v_add(vertex, v_mul(direction, distance)), triangle)
 
     reverse = v_mul(direction, -1.0)
-    for vertex in _unique_mesh_vertices(stationary.triangles):
-        for triangle in moving.triangles:
+    for vertex in _unique_mesh_vertices(stationary_triangles):
+        for triangle in moving_triangles:
             distance = ray_triangle_distance(vertex, reverse, triangle, max_distance)
             if distance is not None:
                 record(distance, vertex, triangle)
@@ -1630,6 +1648,100 @@ def swept_mesh_contact(
     if v_dot(normal, direction) > 0.0:
         normal = v_mul(normal, -1.0)
     return best_distance, point, normal, count
+
+
+@dataclass(frozen=True)
+class RelativeSweptContact:
+    travel_to_contact_m: float
+    sweep_distance_m: float
+    direction: Vec3
+    point: Vec3
+    normal: Vec3
+    manifold_points: int
+
+
+def swept_relative_component_contact(
+    a: AeroComponent,
+    b: AeroComponent,
+    dt_s: float,
+) -> Optional[RelativeSweptContact]:
+    """Detect triangle contact crossed by two translating bodies in one step.
+
+    The calculation is performed in ``b``'s translating reference frame. It is
+    the classic linear continuous-collision test: move ``a`` back by the last
+    relative displacement, then ray-sweep its surface to the current position.
+    Rotational sweep is intentionally left to the normal discrete contact pass.
+    """
+    relative_velocity = v_sub(a.linear_velocity, b.linear_velocity)
+    sweep_distance = v_norm(relative_velocity) * max(dt_s, 0.0)
+    if sweep_distance <= COLLISION_MIN_OVERLAP_M:
+        return None
+    direction = v_unit(relative_velocity)
+    relative_displacement = v_mul(direction, sweep_distance)
+    start_triangles = [
+        (
+            normal,
+            v_sub(point_a, relative_displacement),
+            v_sub(point_b, relative_displacement),
+            v_sub(point_c, relative_displacement),
+        )
+        for normal, point_a, point_b, point_c in a.triangles
+    ]
+
+    start_bounds = component_bounds(start_triangles)
+    end_bounds = component_bounds(a.triangles)
+    b_bounds = component_bounds(b.triangles)
+    swept_bounds = (
+        min(start_bounds[0], end_bounds[0]),
+        max(start_bounds[1], end_bounds[1]),
+        min(start_bounds[2], end_bounds[2]),
+        max(start_bounds[3], end_bounds[3]),
+        min(start_bounds[4], end_bounds[4]),
+        max(start_bounds[5], end_bounds[5]),
+    )
+    margin = max(COLLISION_MARGIN_M, COLLISION_MANIFOLD_TOLERANCE_M)
+    if (
+        swept_bounds[1] + margin < b_bounds[0]
+        or b_bounds[1] + margin < swept_bounds[0]
+        or swept_bounds[3] + margin < b_bounds[2]
+        or b_bounds[3] + margin < swept_bounds[2]
+        or swept_bounds[5] + margin < b_bounds[4]
+        or b_bounds[5] + margin < swept_bounds[4]
+    ):
+        return None
+
+    hit = swept_triangle_mesh_contact(
+        start_triangles,
+        b.triangles,
+        direction,
+        sweep_distance,
+    )
+    if hit is None:
+        return None
+    travel, point, normal, manifold_points = hit
+    if travel <= COLLISION_MANIFOLD_TOLERANCE_M:
+        start_center = (
+            0.5 * (start_bounds[0] + start_bounds[1]),
+            0.5 * (start_bounds[2] + start_bounds[3]),
+            0.5 * (start_bounds[4] + start_bounds[5]),
+        )
+        b_center = (
+            0.5 * (b_bounds[0] + b_bounds[1]),
+            0.5 * (b_bounds[2] + b_bounds[3]),
+            0.5 * (b_bounds[4] + b_bounds[5]),
+        )
+        if v_dot(normal, v_sub(start_center, b_center)) <= 0.0:
+            # A zero-time ray hit while the bodies move apart is their previous
+            # touching state, not a new impact. Let independent bodies separate.
+            return None
+    return RelativeSweptContact(
+        travel_to_contact_m=travel,
+        sweep_distance_m=sweep_distance,
+        direction=direction,
+        point=point,
+        normal=normal,
+        manifold_points=manifold_points,
+    )
 
 
 def impact_contact_indentation(
@@ -2909,6 +3021,7 @@ def resolve_part_collisions(
         if isinstance(state, HybridShellCollisionState):
             active_components.extend(hybrid_fragment_components(state))
     lines: List[str] = []
+    handled_relative_sweeps: Set[Tuple[int, int]] = set()
     for collision_pass in range(COLLISION_MAX_PASSES):
         any_collision = False
         for i in range(len(active_components)):
@@ -2917,6 +3030,21 @@ def resolve_part_collisions(
                 b = active_components[j]
                 pair_key = collision_pair_key(a, b)
                 initial_overlap_depth = 0.0
+                relative_swept_contact: Optional[RelativeSweptContact] = None
+                same_rigid_group = (
+                    a.rigid_body_group is not None
+                    and a.rigid_body_group == b.rigid_body_group
+                )
+                if (
+                    pair_key not in handled_relative_sweeps
+                    and components_share_collision_source(a, b)
+                    and not same_rigid_group
+                ):
+                    relative_swept_contact = swept_relative_component_contact(
+                        a,
+                        b,
+                        MOTION_DT,
+                    )
                 if initial_overlap_pairs is not None and pair_key in initial_overlap_pairs:
                     # This pair started in an intentional CAD fit.  Do not turn
                     # broad-phase overlap into strain energy.  Re-enable normal
@@ -2924,10 +3052,21 @@ def resolve_part_collisions(
                     current_overlap = aabb_overlap_with_normal(a, b)
                     if current_overlap is None:
                         initial_overlap_pairs.pop(pair_key, None)
+                    else:
+                        initial_overlap_depth = initial_overlap_pairs[pair_key]
+                    if (
+                        current_overlap is not None
+                        and current_overlap[0]
+                        <= initial_overlap_depth + COLLISION_MIN_OVERLAP_M
+                        and relative_swept_contact is None
+                    ):
                         continue
-                    initial_overlap_depth = initial_overlap_pairs[pair_key]
-                    if current_overlap[0] <= initial_overlap_depth + COLLISION_MIN_OVERLAP_M:
-                        continue
+                    if relative_swept_contact is not None:
+                        # Relative motion has reached a real triangle surface,
+                        # so the stress-free CAD-fit exemption has ended even
+                        # if the broad AABBs never became disjoint.
+                        initial_overlap_pairs.pop(pair_key, None)
+                        initial_overlap_depth = 0.0
                 fragment_family_overlap = (
                     a.collision_family is not None
                     and a.collision_family == b.collision_family
@@ -2956,6 +3095,30 @@ def resolve_part_collisions(
                         hit = swept_contact.depth, swept_contact.normal, swept_contact.point
                     else:
                         hit = swept_contact.depth, v_mul(swept_contact.normal, -1.0), swept_contact.point
+                elif relative_swept_contact is not None:
+                    normal_speed = max(
+                        0.0,
+                        -v_dot(
+                            v_sub(a.linear_velocity, b.linear_velocity),
+                            relative_swept_contact.normal,
+                        ),
+                    )
+                    impact_depth = max(
+                        impact_contact_indentation(
+                            a,
+                            b,
+                            normal_speed,
+                            relative_swept_contact.point,
+                            relative_swept_contact.point,
+                            relative_swept_contact.normal,
+                        ),
+                        2.0 * COLLISION_MIN_OVERLAP_M,
+                    )
+                    hit = (
+                        impact_depth,
+                        relative_swept_contact.normal,
+                        relative_swept_contact.point,
+                    )
                 else:
                     hit = aabb_overlap_with_normal(a, b)
                 if hit is None:
@@ -2981,6 +3144,29 @@ def resolve_part_collisions(
                 inv_a = 0.0 if (a.is_assembly_anchor or not a_can_translate) else 1.0 / max(a.mass, 1e-9)
                 inv_b = 0.0 if (b.is_assembly_anchor or not b_can_translate) else 1.0 / max(b.mass, 1e-9)
                 inv_sum = inv_a + inv_b
+                time_of_impact_move_a = (0.0, 0.0, 0.0)
+                time_of_impact_move_b = (0.0, 0.0, 0.0)
+                if relative_swept_contact is not None and inv_sum > 0.0:
+                    overshoot = max(
+                        0.0,
+                        relative_swept_contact.sweep_distance_m
+                        - relative_swept_contact.travel_to_contact_m,
+                    )
+                    if overshoot > 0.0:
+                        correction = v_mul(
+                            relative_swept_contact.direction,
+                            overshoot / inv_sum,
+                        )
+                        time_of_impact_move_a = translate_component_for_collision(
+                            a,
+                            v_mul(correction, -inv_a),
+                        )
+                        time_of_impact_move_b = translate_component_for_collision(
+                            b,
+                            v_mul(correction, inv_b),
+                        )
+                        contact = v_add(contact, time_of_impact_move_b)
+                    handled_relative_sweeps.add(pair_key)
                 if is_swept_pair and swept_contact is not None and swept_contact.perforated:
                     impact_axis = swept_contact.approach_axis
                     moving_surface_point = v_add(
@@ -3118,8 +3304,8 @@ def resolve_part_collisions(
                 elastic_indentation = min(depth, indent_a + indent_b)
                 rigid_overlap = max(0.0, depth - elastic_indentation)
                 correction_mag = rigid_overlap * max(0.0, min(COLLISION_POSITION_CORRECTION, 1.0))
-                applied_a = (0.0, 0.0, 0.0)
-                applied_b = (0.0, 0.0, 0.0)
+                applied_a = time_of_impact_move_a
+                applied_b = time_of_impact_move_b
                 if inv_sum > 0.0 and correction_mag > 0.0:
                     # normal points from b to a. Move a along +normal and b along -normal.
                     corr = v_mul(normal, correction_mag / inv_sum)
@@ -3197,11 +3383,15 @@ def resolve_part_collisions(
 
                 deform_a = deform_component_at_contact(a, contact_a, normal, indent_a, contact_radius)
                 deform_b = deform_component_at_contact(b, contact_b, v_mul(normal, -1.0), indent_b, contact_radius)
-                failure_mode = (
-                    swept_contact.failure_mode
-                    if is_swept_pair and swept_contact is not None
-                    else "elastic_contact"
-                )
+                if is_swept_pair and swept_contact is not None:
+                    failure_mode = swept_contact.failure_mode
+                    logged_manifold_points = swept_contact.manifold_points
+                elif relative_swept_contact is not None:
+                    failure_mode = "continuous_internal_contact"
+                    logged_manifold_points = relative_swept_contact.manifold_points
+                else:
+                    failure_mode = "elastic_contact"
+                    logged_manifold_points = 1
                 absorbed_energy = (
                     swept_contact.absorbed_energy_j
                     if is_swept_pair and swept_contact is not None
@@ -3271,10 +3461,10 @@ def resolve_part_collisions(
                     f"{contact[0]:.8g}\t{contact[1]:.8g}\t{contact[2]:.8g}\t"
                     f"{impulse_mag:.8g}\t{v_norm(applied_a):.8g}\t{v_norm(applied_b):.8g}\t"
                     f"{deform_a:.8g}\t{deform_b:.8g}\t{contact_radius:.8g}\t{indent_a:.8g}\t{indent_b:.8g}\t"
-                    f"{swept_contact.failure_mode if is_swept_pair and swept_contact else 'contact'}\t"
+                    f"{failure_mode}\t"
                     f"0\t{swept_contact.absorbed_energy_j if is_swept_pair and swept_contact else 0.0:.8g}\t"
                     f"{swept_contact.residual_speed if is_swept_pair and swept_contact else 0.0:.8g}\t0\t"
-                    f"{swept_contact.manifold_points if is_swept_pair and swept_contact else 1}\t{friction:.8g}"
+                    f"{logged_manifold_points}\t{friction:.8g}"
                 )
                 lines.append(line)
         if not any_collision:
