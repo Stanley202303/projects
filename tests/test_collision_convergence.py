@@ -379,6 +379,34 @@ class CollisionConvergenceTest(TestCase):
         self.assertEqual(free_body.collision_damage, [])
         self.assertEqual(wall.collision_damage, [])
 
+    def test_overlapping_sphere_aabbs_do_not_create_phantom_damage(self) -> None:
+        first = sphere_component("first_sphere", 0.0, 1.0)
+        second = sphere_component("second_sphere", 1.5, 1.0)
+        move_component_rigidly(
+            second,
+            (0.0, 1.5, 0.0),
+            None,
+            0.0,
+            second.cofr,
+        )
+        first.linear_velocity = (1.0, 0.0, 0.0)
+
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.01),
+            TemporaryDirectory() as tmpdir,
+        ):
+            lines = resolve_part_collisions(
+                [first, second],
+                0,
+                Path(tmpdir) / "collisions.txt",
+            )
+
+        self.assertEqual(lines, [])
+        self.assertEqual(first.deformation_max_m, 0.0)
+        self.assertEqual(second.deformation_max_m, 0.0)
+        self.assertEqual(first.collision_damage, [])
+        self.assertEqual(second.collision_damage, [])
+
     def test_surrounding_wall_removes_inward_speed_and_preserves_sliding(self) -> None:
         free_body = box_component("sliding_body", 0.8, 1.8)
         wall = box_component("sliding_wall", 0.0, 1.0)
@@ -741,6 +769,33 @@ class CollisionConvergenceTest(TestCase):
         body_ids = connected_surface_body_ids(component)
 
         self.assertEqual(max(body_ids, default=-1) + 1, 1)
+
+    def test_thin_plate_contact_preserves_local_thickness(self) -> None:
+        plate = rectangular_component(
+            "coherent_thickness_plate",
+            0.0,
+            0.005,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        initial_bounds = component_bounds(plate.triangles)
+        initial_thickness = initial_bounds[1] - initial_bounds[0]
+
+        deform_component_at_contact(
+            plate,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.003,
+            0.1,
+        )
+
+        deformed_bounds = component_bounds(plate.triangles)
+        self.assertAlmostEqual(
+            deformed_bounds[1] - deformed_bounds[0],
+            initial_thickness,
+        )
 
     def test_inferred_thickness_is_reference_geometry_property(self) -> None:
         component = rectangular_component(
@@ -1517,6 +1572,58 @@ class CollisionConvergenceTest(TestCase):
                 projectile_radius,
             )
 
+    def test_submillimetre_perforation_remains_visible_and_mass_conserving(self) -> None:
+        target = rectangular_component(
+            "submillimetre_hole_target",
+            0.0,
+            0.0001,
+            -0.002,
+            0.002,
+            -0.002,
+            0.002,
+        )
+        target.material = MaterialProperties(
+            material_name="steel",
+            density_kg_m3=7850.0,
+            young_modulus_pa=2.0e11,
+            poisson_ratio=0.30,
+            thickness_m=0.0001,
+            yield_strength_pa=2.5e8,
+            failure_strain=0.20,
+        )
+        initial_mass = target.mass
+        hole_radius = 0.0001
+
+        damage = register_collision_hole(
+            target,
+            (0.00005, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            hole_radius,
+            hole_radius,
+            0,
+            "plastic_membrane_perforation",
+            0.01,
+        )
+        shell_state = shell_core_state(target)
+        visual_components = visualization_components_with_fragments([target])
+
+        self.assertGreater(damage.current_hole_radius_m, 0.0)
+        self.assertTrue(shell_state.emitted_triangles)
+        for triangle in target.triangles:
+            closest = closest_point_on_triangle(damage.contact_point, triangle)
+            self.assertGreater(
+                radial_distance_from_axis(
+                    closest,
+                    damage.contact_point,
+                    damage.inward_direction,
+                ),
+                damage.current_hole_radius_m,
+            )
+        self.assertAlmostEqual(
+            sum(component.mass for component in visual_components),
+            initial_mass,
+        )
+
     def test_shell_plug_separation_uses_damage_response_interval(self) -> None:
         target = rectangular_component(
             "thin_target",
@@ -2127,6 +2234,104 @@ class CollisionConvergenceTest(TestCase):
                 self.assertAlmostEqual(moving.cofr[0], previous_x)
                 self.assertAlmostEqual(moving.linear_velocity[0], 0.0)
                 previous_x = moving.cofr[0]
+
+    def test_nonperforating_thin_plate_impact_remains_on_entrance_surface(self) -> None:
+        moving = rectangular_component(
+            "small_steel_impactor",
+            -0.005,
+            0.0,
+            -0.0025,
+            0.0025,
+            -0.0025,
+            0.0025,
+        )
+        stationary = rectangular_component(
+            "five_mm_abs_target",
+            0.1,
+            0.105,
+            -0.1,
+            0.1,
+            -0.1,
+            0.1,
+        )
+        moving.mass = 0.0045359237
+        moving.material = MaterialProperties(
+            material_name="Hardened Carbon Steel",
+            density_kg_m3=7850.0,
+            young_modulus_pa=2.0e11,
+            poisson_ratio=0.292,
+            yield_strength_pa=2.16e9,
+            failure_strain=0.20,
+        )
+        stationary.material = MaterialProperties(
+            material_name="ABS",
+            density_kg_m3=1052.0,
+            young_modulus_pa=2.31e9,
+            poisson_ratio=0.364,
+            thickness_m=0.005,
+            yield_strength_pa=4.48e7,
+            failure_strain=0.20,
+        )
+
+        with (
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_SPEED_MPS", 30.0),
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_AXIS", "x"),
+            TemporaryDirectory() as tmpdir,
+        ):
+            pair = configure_collision_convergence_components(
+                [moving, stationary]
+            )
+            self.assertIsNotNone(pair)
+            assert pair is not None
+            convergence_log = Path(tmpdir) / "convergence.txt"
+            collision_log = Path(tmpdir) / "collisions.txt"
+            write_collision_convergence_log_header(convergence_log, pair)
+            displacement, _target_displacement, contact = (
+                apply_collision_convergence_step(
+                    pair,
+                    0,
+                    0.01,
+                    convergence_log,
+                    (1.0, 0.0, 0.0),
+                )
+            )
+
+            self.assertIsNotNone(contact)
+            assert contact is not None
+            self.assertFalse(contact.perforated)
+            self.assertAlmostEqual(displacement[0], 0.105)
+
+            lines = resolve_part_collisions(
+                [moving, stationary],
+                0,
+                collision_log,
+                contact,
+                pair,
+            )
+
+        self.assertTrue(lines)
+        self.assertTrue(any("plastic_membrane_dent" in line for line in lines))
+        post_contact = swept_mesh_contact(
+            moving,
+            stationary,
+            (1.0, 0.0, 0.0),
+            0.01,
+        )
+        self.assertIsNotNone(post_contact)
+        assert post_contact is not None
+        self.assertLessEqual(post_contact[0], 1e-4)
+        moving_bounds = component_bounds(moving.triangles)
+        stationary_bounds = component_bounds(stationary.triangles)
+        self.assertGreaterEqual(
+            stationary_bounds[1] - moving_bounds[1],
+            0.9 * stationary.material.thickness_m,
+        )
+        self.assertFalse(
+            any(
+                damage.target_hole_radius_m > 0.0
+                for damage in stationary.collision_damage
+            )
+        )
 
     def test_post_perforation_impactor_can_leave_the_approach_axis(self) -> None:
         moving = box_component("moving", 0.0, 1.0)

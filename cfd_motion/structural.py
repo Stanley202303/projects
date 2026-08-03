@@ -420,7 +420,10 @@ def _resolve_small_perforation_mesh(
     # Keep every element edge no larger than the nominal hole diameter. The
     # failed-face intersection test then exposes the opening without an
     # expensive global remesh merely to draw a slightly rounder rim.
-    target_edge_m = max(2.0 * perforation_radius_m, 4.0 * thickness_m)
+    target_edge_m = max(
+        2.0 * perforation_radius_m,
+        8.0e-7,
+    )
     maximum_triangles = 16384
     refined = list(triangles)
     while (

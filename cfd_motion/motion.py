@@ -1269,6 +1269,7 @@ def deform_triangle_mesh_at_contact(
     eulerian_grid: Optional[EulerianContactGrid] = None,
     perforation_radius: float = 0.0,
     perforation_displacement: float = 0.0,
+    preserve_thickness: bool = False,
 ) -> Tuple[List[Triangle], float]:
     direction = v_unit(inward_direction)
     max_applied = 0.0
@@ -1277,7 +1278,16 @@ def deform_triangle_mesh_at_contact(
         key = deformation_vertex_key(point)
         if key in displaced_vertices:
             continue
-        distance = v_norm(v_sub(point, contact_point))
+        point_delta = v_sub(point, contact_point)
+        if preserve_thickness:
+            axial_distance = v_dot(point_delta, direction)
+            tangent_delta = v_sub(
+                point_delta,
+                v_mul(direction, axial_distance),
+            )
+            distance = v_norm(tangent_delta)
+        else:
+            distance = v_norm(point_delta)
         if distance >= contact_radius:
             weight = 0.0
         else:
@@ -1299,7 +1309,6 @@ def deform_triangle_mesh_at_contact(
                 )
         displacement_magnitude = indentation * weight
         if perforation_radius > 0.0 and perforation_displacement > 0.0:
-            point_delta = v_sub(point, contact_point)
             axial_distance = v_dot(point_delta, direction)
             tangent_delta = v_sub(point_delta, v_mul(direction, axial_distance))
             if v_norm(tangent_delta) < perforation_radius:
@@ -1323,6 +1332,32 @@ def deform_triangle_mesh_at_contact(
         )
         deformed.append((new_normal, points[0], points[1], points[2]))
     return deformed, max_applied
+
+
+def deformation_should_preserve_thickness(
+    component: AeroComponent,
+    direction: Vec3,
+    contact_radius: float,
+) -> bool:
+    """Return whether a local contact should bend all plate skins coherently."""
+    points = stl_points(component.triangles)
+    if not points:
+        return False
+    normal = v_unit(direction)
+    tangent_x, tangent_y = contact_tangent_basis(normal)
+    axial_values = [v_dot(point, normal) for point in points]
+    tangent_x_values = [v_dot(point, tangent_x) for point in points]
+    tangent_y_values = [v_dot(point, tangent_y) for point in points]
+    thickness = max(axial_values) - min(axial_values)
+    in_plane_span = max(
+        max(tangent_x_values) - min(tangent_x_values),
+        max(tangent_y_values) - min(tangent_y_values),
+    )
+    return (
+        thickness > 0.0
+        and thickness <= 0.1 * max(in_plane_span, 1e-9)
+        and thickness <= max(contact_radius, COLLISION_DEFORMATION_MIN_RADIUS_M)
+    )
 
 
 def normalized_contact_deformation_parameters(
@@ -1398,6 +1433,11 @@ def deform_component_at_contact(
         eulerian_grid,
         perforation_radius,
         perforation_displacement,
+        deformation_should_preserve_thickness(
+            component,
+            direction,
+            radius,
+        ),
     )
 
     if max_applied <= 1e-12:
@@ -2585,6 +2625,11 @@ def deform_collision_reference(
             None,
             perforation_radius,
             perforation_displacement,
+            deformation_should_preserve_thickness(
+                component,
+                inward_direction,
+                radius,
+            ),
         )
     )
 
@@ -3585,6 +3630,34 @@ def resolve_part_collisions(
                     )
                 else:
                     hit = aabb_overlap_with_normal(a, b)
+                    if hit is not None:
+                        surface_hit = triangle_mesh_intersection_contact(
+                            a.triangles,
+                            b.triangles,
+                        )
+                        if surface_hit is None:
+                            # AABBs are only the broad phase. Concave, round,
+                            # and rotated bodies can have overlapping boxes
+                            # while their material surfaces remain separate.
+                            continue
+                        surface_contact, surface_normal = surface_hit
+                        center_offset = v_sub(
+                            component_center_from_bounds(a),
+                            component_center_from_bounds(b),
+                        )
+                        if (
+                            v_norm(center_offset) > 1e-12
+                            and v_dot(
+                                surface_normal,
+                                v_unit(center_offset),
+                            ) < 0.2
+                        ):
+                            # Coplanar perimeter triangles can be the first
+                            # narrow-phase edge hit even though they are not the
+                            # separating face. Keep the minimum-overlap axis in
+                            # that degenerate case.
+                            surface_normal = hit[1]
+                        hit = hit[0], surface_normal, surface_contact
                 if hit is None:
                     continue
                 depth, normal, contact = hit
@@ -3597,10 +3670,33 @@ def resolve_part_collisions(
                         contact_point_velocity(a, contact),
                         contact_point_velocity(b, contact),
                     )
-                    if v_dot(relative_velocity, normal) >= -1e-9:
+                    normal_speed = max(
+                        0.0,
+                        -v_dot(relative_velocity, normal),
+                    )
+                    if normal_speed <= 1e-9:
                         # Geometric broad-phase overlap alone contains no impact
                         # energy.  Static or separating bodies must not dent.
                         continue
+                    if relative_swept_contact is None:
+                        # A missed/discrete overlap is a numerical penetration,
+                        # not stored physical strain energy. Bound its damage by
+                        # the classical energy-derived indentation; the later
+                        # non-penetration projection removes any remainder.
+                        depth = min(
+                            depth,
+                            max(
+                                impact_contact_indentation(
+                                    a,
+                                    b,
+                                    normal_speed,
+                                    contact,
+                                    contact,
+                                    normal,
+                                ),
+                                2.0 * COLLISION_MIN_OVERLAP_M,
+                            ),
+                        )
                 any_collision = True
 
                 a_can_translate = component_has_translation_freedom(a)
@@ -4457,6 +4553,10 @@ def apply_collision_convergence_step(
                     + shell_response.residual_speed * post_contact_time
                 )
             else:
+                # Close the contact by exactly the deformation depth. The
+                # target's thin-plate deformation moves both skins together,
+                # so this remains an entrance-side dent rather than allowing
+                # a non-perforating body to cross an undeformed rear skin.
                 applied_distance = travel_to_contact + controlled_penetration
             normal_penetration = controlled_penetration * max(
                 0.0,
