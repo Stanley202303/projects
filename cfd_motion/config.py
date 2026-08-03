@@ -437,6 +437,17 @@ COLLISION_MAX_PASSES = max(1, int(os.environ.get("COLLISION_MAX_PASSES", "6")))
 COLLISION_MIN_OVERLAP_M = float(os.environ.get("COLLISION_MIN_OVERLAP_M", "1e-7"))
 COLLISION_MAX_LINEAR_SPEED_MPS = float(os.environ.get("COLLISION_MAX_LINEAR_SPEED_MPS", "20"))
 COLLISION_MAX_ANGULAR_SPEED_RAD_S = float(os.environ.get("COLLISION_MAX_ANGULAR_SPEED_RAD_S", "20"))
+COLLISION_ROTATION_SWEEP_MAX_ANGLE_RAD = math.radians(
+    max(0.1, float(os.environ.get("COLLISION_ROTATION_SWEEP_MAX_ANGLE_DEG", "2")))
+)
+COLLISION_ROTATION_SWEEP_MAX_SUBSTEPS = max(
+    1,
+    int(os.environ.get("COLLISION_ROTATION_SWEEP_MAX_SUBSTEPS", "1024")),
+)
+COLLISION_NEARBY_ENERGY_FRACTION = max(
+    0.0,
+    min(1.0, float(os.environ.get("COLLISION_NEARBY_ENERGY_FRACTION", "0.15"))),
+)
 COLLISION_LOG_NAME = "assembly_collision_log.txt"
 ENABLE_COLLISION_DEFORMATION = env_bool("ENABLE_COLLISION_DEFORMATION", True)
 # Permit bounded, local contact deformation of a prescribed impactor. Its

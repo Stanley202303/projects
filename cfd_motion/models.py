@@ -125,6 +125,7 @@ class AeroComponent:
     rigid_body_group: Optional[str] = None
     is_assembly_anchor: bool = False
     deformation_reference_triangles: Optional[List[Triangle]] = None
+    reference_thickness_m: Optional[float] = None
     deformation_max_m: float = 0.0
     deformation_mean_m: float = 0.0
     collision_family: Optional[str] = None

@@ -10,6 +10,7 @@ from cfd_motion.motion import (
     advance_collision_damage_state,
     aabb_gap_along_axis,
     apply_collision_convergence_step,
+    apply_nearby_collision_effects,
     arrange_collision_convergence_initial_gap,
     closest_point_on_triangle,
     collision_convergence_approach_axis,
@@ -24,6 +25,7 @@ from cfd_motion.motion import (
     build_eulerian_contact_grid,
     fracture_thin_shell,
     initial_same_source_overlap_pairs,
+    inferred_deformation_thickness,
     local_contact_geometry,
     move_component_rigidly,
     register_collision_dent,
@@ -44,7 +46,10 @@ from cfd_motion.runner import (
     refine_collision_mesh_for_deformation,
     refine_thin_impact_target,
 )
-from cfd_motion.visualization import visualization_components_with_fragments
+from cfd_motion.visualization import (
+    connected_surface_body_ids,
+    visualization_components_with_fragments,
+)
 from cfd_motion.structural import (
     ExplicitShellState,
     HybridShellCollisionState,
@@ -615,6 +620,224 @@ class CollisionConvergenceTest(TestCase):
             component_bounds(moving.triangles)[1],
             component_bounds(target.triangles)[0] + 1e-9,
         )
+
+    def test_rotating_body_cannot_sweep_through_stationary_body(self) -> None:
+        rotor = rectangular_component(
+            "rotor",
+            -1.0,
+            1.0,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        barrier = rectangular_component(
+            "rotation_barrier",
+            -0.2,
+            0.2,
+            0.6,
+            1.0,
+            -0.2,
+            0.2,
+        )
+        barrier.is_assembly_anchor = True
+        dt = 0.01
+        rotation = 2.0 * math.pi
+        move_component_rigidly(
+            rotor,
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
+            rotation,
+            (0.0, 0.0, 0.0),
+        )
+        rotor.angular_velocity = (0.0, 0.0, rotation / dt)
+
+        with (
+            patch("cfd_motion.motion.MOTION_DT", dt),
+            TemporaryDirectory() as tmpdir,
+        ):
+            lines = resolve_part_collisions(
+                [rotor, barrier],
+                6,
+                Path(tmpdir) / "collisions.txt",
+            )
+
+        self.assertTrue(lines)
+        self.assertTrue(any("continuous_internal_contact" in line for line in lines))
+        self.assertLess(
+            component_bounds(rotor.triangles)[3],
+            component_bounds(barrier.triangles)[3],
+        )
+
+    def test_collision_deformation_keeps_shared_vertices_connected(self) -> None:
+        component = rectangular_component(
+            "coherent_mesh",
+            0.0,
+            0.005,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        deform_component_at_contact(
+            component,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.003,
+            0.1,
+        )
+
+        body_ids = connected_surface_body_ids(component)
+
+        self.assertEqual(max(body_ids, default=-1) + 1, 1)
+
+    def test_inferred_thickness_is_reference_geometry_property(self) -> None:
+        component = rectangular_component(
+            "constant_thickness",
+            0.0,
+            0.005,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        initial_thickness = inferred_deformation_thickness(component)
+        deform_component_at_contact(
+            component,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.008,
+            0.1,
+        )
+
+        self.assertAlmostEqual(
+            inferred_deformation_thickness(component),
+            initial_thickness,
+        )
+
+    def test_nearby_shock_deformation_respects_material_stiffness(self) -> None:
+        tungsten = rectangular_component(
+            "nearby_tungsten",
+            0.0,
+            0.01,
+            -0.01,
+            0.01,
+            -0.01,
+            0.01,
+        )
+        polymer = rectangular_component(
+            "nearby_polymer",
+            0.0,
+            0.01,
+            -0.01,
+            0.01,
+            -0.01,
+            0.01,
+        )
+        tungsten.material = MaterialProperties(
+            material_name="Tungsten",
+            density_kg_m3=19600.0,
+            young_modulus_pa=4.0e11,
+            poisson_ratio=0.28,
+            yield_strength_pa=7.5e8,
+        )
+        polymer.material = MaterialProperties(
+            material_name="ABS",
+            density_kg_m3=1052.0,
+            young_modulus_pa=2.31e9,
+            poisson_ratio=0.364,
+            yield_strength_pa=4.48e7,
+        )
+
+        apply_nearby_collision_effects(
+            [tungsten, polymer],
+            (),
+            (-0.001, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.005,
+            10.0,
+            0,
+            "test_impact",
+        )
+
+        self.assertGreater(polymer.deformation_max_m, 0.0)
+        self.assertLess(
+            tungsten.deformation_max_m,
+            0.2 * polymer.deformation_max_m,
+        )
+
+    def test_later_unprescribed_impact_can_perforate_thin_target(self) -> None:
+        projectile = sphere_component("trailing_tungsten", 0.05, 0.005)
+        projectile.mass = 0.33
+        projectile.material = MaterialProperties(
+            material_name="Tungsten",
+            density_kg_m3=19600.0,
+            young_modulus_pa=4.0e11,
+            poisson_ratio=0.28,
+            yield_strength_pa=7.5e8,
+        )
+        projectile.linear_velocity = (100.0, 0.0, 0.0)
+        target = rectangular_component(
+            "thin_abs_target",
+            0.0,
+            0.005,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        target.material = MaterialProperties(
+            material_name="ABS",
+            density_kg_m3=1052.0,
+            young_modulus_pa=2.31e9,
+            poisson_ratio=0.364,
+            thickness_m=0.005,
+            yield_strength_pa=4.48e7,
+            failure_strain=0.20,
+        )
+        target.is_assembly_anchor = True
+
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.001),
+            TemporaryDirectory() as tmpdir,
+        ):
+            lines = resolve_part_collisions(
+                [projectile, target],
+                7,
+                Path(tmpdir) / "collisions.txt",
+            )
+
+        self.assertTrue(any(line.split("\t")[20] == "1" for line in lines))
+        self.assertTrue(target.collision_damage)
+        self.assertGreater(target.collision_damage[0].current_hole_radius_m, 0.0)
+
+    def test_nearby_shock_impulse_has_equal_opposite_reaction(self) -> None:
+        donor = box_component("shock_donor", -0.02, -0.01)
+        neighbour = box_component("shock_neighbour", 0.0, 0.01)
+        initial_momentum = tuple(
+            donor.mass * donor.linear_velocity[axis]
+            + neighbour.mass * neighbour.linear_velocity[axis]
+            for axis in range(3)
+        )
+
+        apply_nearby_collision_effects(
+            [donor, neighbour],
+            (donor,),
+            (-0.005, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.005,
+            5.0,
+            0,
+            "momentum_test",
+        )
+
+        final_momentum = tuple(
+            donor.mass * donor.linear_velocity[axis]
+            + neighbour.mass * neighbour.linear_velocity[axis]
+            for axis in range(3)
+        )
+        for initial, final in zip(initial_momentum, final_momentum):
+            self.assertAlmostEqual(final, initial, places=12)
 
     def test_post_perforation_path_does_not_get_a_false_surface_contact(self) -> None:
         target = rectangular_component(

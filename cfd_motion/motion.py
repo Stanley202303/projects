@@ -1271,88 +1271,52 @@ def deform_triangle_mesh_at_contact(
     perforation_displacement: float = 0.0,
 ) -> Tuple[List[Triangle], float]:
     direction = v_unit(inward_direction)
-    deformed: List[Triangle] = []
     max_applied = 0.0
-    for normal, v1, v2, v3 in triangles:
-        normal_unit = v_unit(normal, (0.0, 0.0, 1.0))
-        normal_alignment = v_dot(normal_unit, direction)
-        perforation_direction = (
-            normal_unit
-            if normal_alignment >= 0.0
-            else v_mul(normal_unit, -1.0)
-        )
-        triangle_centroid = v_mul(v_add(v_add(v1, v2), v3), 1.0 / 3.0)
-        centroid_distance = v_norm(v_sub(triangle_centroid, contact_point))
-        if centroid_distance < contact_radius:
-            centroid_fraction = centroid_distance / max(contact_radius, 1e-12)
-            if COLLISION_DEFORMATION_MODEL in {"hertz", "hertzian"}:
-                centroid_weight = math.sqrt(max(0.0, 1.0 - centroid_fraction * centroid_fraction))
-            else:
-                smooth_fraction = 1.0 - centroid_fraction
-                centroid_weight = smooth_fraction * smooth_fraction * (3.0 - 2.0 * smooth_fraction)
+    displaced_vertices: Dict[Tuple[int, int, int], Vec3] = {}
+    for point in stl_points(triangles):
+        key = deformation_vertex_key(point)
+        if key in displaced_vertices:
+            continue
+        distance = v_norm(v_sub(point, contact_point))
+        if distance >= contact_radius:
+            weight = 0.0
         else:
-            centroid_weight = 0.0
-        if eulerian_grid is not None:
-            grid_pressure = eulerian_grid.pressure_at(triangle_centroid)
-            grid_weight = min(
-                1.0,
-                grid_pressure / max(
-                    COLLISION_EULERIAN_PENALTY_GAIN * indentation,
-                    1e-12,
-                ),
-            )
-            centroid_weight = max(centroid_weight, grid_weight)
-        points: List[Vec3] = []
-        for point in (v1, v2, v3):
-            distance = v_norm(v_sub(point, contact_point))
-            if distance >= contact_radius:
-                # A refined fixed-topology mesh supplies nearby vertices.  Do
-                # not move distant vertices just because their parent triangle
-                # overlaps the contact footprint; doing so translates coarse
-                # targets instead of creating a local dent.
-                weight = 0.0
+            radial_fraction = distance / max(contact_radius, 1e-12)
+            if COLLISION_DEFORMATION_MODEL in {"hertz", "hertzian"}:
+                weight = math.sqrt(max(0.0, 1.0 - radial_fraction * radial_fraction))
             else:
-                radial_fraction = distance / contact_radius
-                if COLLISION_DEFORMATION_MODEL in {"hertz", "hertzian"}:
-                    weight = math.sqrt(
-                        max(0.0, 1.0 - radial_fraction * radial_fraction)
-                    )
-                else:
-                    smooth_fraction = 1.0 - radial_fraction
-                    weight = (
-                        smooth_fraction
-                        * smooth_fraction
-                        * (3.0 - 2.0 * smooth_fraction)
-                    )
-                weight = max(weight, 0.65 * centroid_weight)
-            displacement_magnitude = indentation * weight
-            if perforation_radius > 0.0 and perforation_displacement > 0.0:
-                point_delta = v_sub(point, contact_point)
-                axial_distance = v_dot(point_delta, direction)
-                tangent_delta = v_sub(
-                    point_delta,
-                    v_mul(direction, axial_distance),
+                smooth_fraction = 1.0 - radial_fraction
+                weight = smooth_fraction * smooth_fraction * (3.0 - 2.0 * smooth_fraction)
+            if eulerian_grid is not None:
+                grid_pressure = eulerian_grid.pressure_at(point)
+                weight = max(
+                    weight,
+                    min(
+                        1.0,
+                        grid_pressure
+                        / max(COLLISION_EULERIAN_PENALTY_GAIN * indentation, 1e-12),
+                    ),
                 )
-                if v_norm(tangent_delta) < perforation_radius:
-                    # Retain the plug material, but move it through the sheet
-                    # along the inward side of the local face normal so the
-                    # fixed-topology surface exposes an opening even when the
-                    # target is rotated relative to the impact axis.
-                    displacement_magnitude = max(
-                        displacement_magnitude,
-                        perforation_displacement,
-                    )
-                    displacement_vector = v_mul(
-                        perforation_direction,
-                        displacement_magnitude,
-                    )
-                else:
-                    displacement_vector = v_mul(direction, displacement_magnitude)
-            else:
-                displacement_vector = v_mul(direction, displacement_magnitude)
-            displacement = displacement_vector
-            max_applied = max(max_applied, v_norm(displacement))
-            points.append(v_add(point, displacement))
+        displacement_magnitude = indentation * weight
+        if perforation_radius > 0.0 and perforation_displacement > 0.0:
+            point_delta = v_sub(point, contact_point)
+            axial_distance = v_dot(point_delta, direction)
+            tangent_delta = v_sub(point_delta, v_mul(direction, axial_distance))
+            if v_norm(tangent_delta) < perforation_radius:
+                displacement_magnitude = max(
+                    displacement_magnitude,
+                    perforation_displacement,
+                )
+        displacement = v_mul(direction, displacement_magnitude)
+        max_applied = max(max_applied, v_norm(displacement))
+        displaced_vertices[key] = v_add(point, displacement)
+
+    deformed: List[Triangle] = []
+    for normal, v1, v2, v3 in triangles:
+        points = [
+            displaced_vertices[deformation_vertex_key(point)]
+            for point in (v1, v2, v3)
+        ]
         new_normal = v_unit(
             v_cross(v_sub(points[1], points[0]), v_sub(points[2], points[0])),
             normal,
@@ -1658,9 +1622,15 @@ class RelativeSweptContact:
     point: Vec3
     normal: Vec3
     manifold_points: int
+    time_fraction: float = 1.0
+    rotational: bool = False
+    translation_a: Vec3 = (0.0, 0.0, 0.0)
+    translation_b: Vec3 = (0.0, 0.0, 0.0)
+    rotation_a: Vec3 = (0.0, 0.0, 0.0)
+    rotation_b: Vec3 = (0.0, 0.0, 0.0)
 
 
-def swept_relative_component_contact(
+def _swept_linear_component_contact(
     a: AeroComponent,
     b: AeroComponent,
     dt_s: float,
@@ -1741,6 +1711,230 @@ def swept_relative_component_contact(
         point=point,
         normal=normal,
         manifold_points=manifold_points,
+        time_fraction=min(1.0, travel / max(sweep_distance, 1e-12)),
+    )
+
+
+def _triangle_bounds_overlap(
+    a: Triangle,
+    b: Triangle,
+    tolerance: float,
+) -> bool:
+    a_points = a[1:]
+    b_points = b[1:]
+    return all(
+        max(point[axis] for point in a_points) + tolerance
+        >= min(point[axis] for point in b_points)
+        and max(point[axis] for point in b_points) + tolerance
+        >= min(point[axis] for point in a_points)
+        for axis in range(3)
+    )
+
+
+def triangle_mesh_intersection_contact(
+    a_triangles: Sequence[Triangle],
+    b_triangles: Sequence[Triangle],
+) -> Optional[Tuple[Vec3, Vec3]]:
+    """Return a surface intersection using classic edge/triangle tests."""
+    if not a_triangles or not b_triangles:
+        return None
+    tolerance = max(COLLISION_MANIFOLD_TOLERANCE_M, 1e-9)
+    a_bounds = component_bounds(a_triangles)
+    b_bounds = component_bounds(b_triangles)
+    if any(
+        a_bounds[2 * axis + 1] + tolerance < b_bounds[2 * axis]
+        or b_bounds[2 * axis + 1] + tolerance < a_bounds[2 * axis]
+        for axis in range(3)
+    ):
+        return None
+    a_center = (
+        0.5 * (a_bounds[0] + a_bounds[1]),
+        0.5 * (a_bounds[2] + a_bounds[3]),
+        0.5 * (a_bounds[4] + a_bounds[5]),
+    )
+    b_center = (
+        0.5 * (b_bounds[0] + b_bounds[1]),
+        0.5 * (b_bounds[2] + b_bounds[3]),
+        0.5 * (b_bounds[4] + b_bounds[5]),
+    )
+
+    def edge_hit(
+        edge_start: Vec3,
+        edge_end: Vec3,
+        triangle: Triangle,
+    ) -> Optional[Vec3]:
+        edge = v_sub(edge_end, edge_start)
+        length = v_norm(edge)
+        if length <= 1e-12:
+            return None
+        distance = ray_triangle_distance(
+            edge_start,
+            v_mul(edge, 1.0 / length),
+            triangle,
+            length,
+        )
+        if distance is None:
+            return None
+        return v_add(edge_start, v_mul(edge, distance / length))
+
+    for triangle_a in a_triangles:
+        a_vertices = triangle_a[1:]
+        for triangle_b in b_triangles:
+            if not _triangle_bounds_overlap(triangle_a, triangle_b, tolerance):
+                continue
+            for start, end in (
+                (a_vertices[0], a_vertices[1]),
+                (a_vertices[1], a_vertices[2]),
+                (a_vertices[2], a_vertices[0]),
+            ):
+                point = edge_hit(start, end, triangle_b)
+                if point is not None:
+                    _area, _centroid, normal = triangle_area_centroid_normal(triangle_b)
+                    if v_dot(normal, v_sub(a_center, b_center)) < 0.0:
+                        normal = v_mul(normal, -1.0)
+                    return point, normal
+            b_vertices = triangle_b[1:]
+            for start, end in (
+                (b_vertices[0], b_vertices[1]),
+                (b_vertices[1], b_vertices[2]),
+                (b_vertices[2], b_vertices[0]),
+            ):
+                point = edge_hit(start, end, triangle_a)
+                if point is not None:
+                    _area, _centroid, normal = triangle_area_centroid_normal(triangle_a)
+                    if v_dot(normal, v_sub(a_center, b_center)) < 0.0:
+                        normal = v_mul(normal, -1.0)
+                    return point, normal
+    return None
+
+
+def _component_motion_over_step(
+    component: AeroComponent,
+    dt_s: float,
+) -> Tuple[Vec3, Vec3]:
+    return (
+        v_mul(component.linear_velocity, max(dt_s, 0.0)),
+        v_mul(component.angular_velocity, max(dt_s, 0.0)),
+    )
+
+
+def _component_start_pose(
+    component: AeroComponent,
+    translation: Vec3,
+    rotation: Vec3,
+) -> Tuple[List[Triangle], Vec3]:
+    end_origin = infer_motion_origin(component)
+    angle = v_norm(rotation)
+    start_triangles = move_triangles(
+        component.triangles,
+        v_mul(translation, -1.0),
+        v_unit(rotation) if angle > 1e-12 else None,
+        -angle,
+        end_origin,
+    )
+    return start_triangles, v_sub(end_origin, translation)
+
+
+def _component_pose_at_fraction(
+    start_triangles: Sequence[Triangle],
+    start_origin: Vec3,
+    translation: Vec3,
+    rotation: Vec3,
+    fraction: float,
+) -> List[Triangle]:
+    angle = v_norm(rotation)
+    return move_triangles(
+        start_triangles,
+        v_mul(translation, fraction),
+        v_unit(rotation) if angle > 1e-12 else None,
+        angle * fraction,
+        start_origin,
+    )
+
+
+def swept_rotational_component_contact(
+    a: AeroComponent,
+    b: AeroComponent,
+    dt_s: float,
+) -> Optional[RelativeSweptContact]:
+    """Conservative angular CCD using fixed-angle pose substeps.
+
+    Linear vertex/face CCD remains exact for translation. This supplementary
+    classic substep sweep handles the curved paths created by rigid rotation,
+    including rotations greater than one revolution in a dynamic step.
+    """
+    translation_a, rotation_a = _component_motion_over_step(a, dt_s)
+    translation_b, rotation_b = _component_motion_over_step(b, dt_s)
+    max_angle = max(v_norm(rotation_a), v_norm(rotation_b))
+    if max_angle <= 1e-10:
+        return None
+    substeps = min(
+        COLLISION_ROTATION_SWEEP_MAX_SUBSTEPS,
+        max(1, int(math.ceil(max_angle / COLLISION_ROTATION_SWEEP_MAX_ANGLE_RAD))),
+    )
+    start_a, origin_a = _component_start_pose(a, translation_a, rotation_a)
+    start_b, origin_b = _component_start_pose(b, translation_b, rotation_b)
+    for substep in range(1, substeps + 1):
+        fraction = substep / substeps
+        current_a = _component_pose_at_fraction(
+            start_a,
+            origin_a,
+            translation_a,
+            rotation_a,
+            fraction,
+        )
+        current_b = _component_pose_at_fraction(
+            start_b,
+            origin_b,
+            translation_b,
+            rotation_b,
+            fraction,
+        )
+        hit = triangle_mesh_intersection_contact(current_a, current_b)
+        if hit is not None:
+            point, normal = hit
+            relative_point_velocity = v_sub(
+                contact_point_velocity(a, point),
+                contact_point_velocity(b, point),
+            )
+            if v_dot(relative_point_velocity, normal) >= -1e-9:
+                continue
+            motion_bound = (
+                v_norm(v_sub(translation_a, translation_b))
+                + v_norm(rotation_a) * max(a.lref, 1e-9)
+                + v_norm(rotation_b) * max(b.lref, 1e-9)
+            )
+            return RelativeSweptContact(
+                travel_to_contact_m=motion_bound * fraction,
+                sweep_distance_m=motion_bound,
+                direction=v_unit(relative_point_velocity, v_mul(normal, -1.0)),
+                point=point,
+                normal=normal,
+                manifold_points=1,
+                time_fraction=fraction,
+                rotational=True,
+                translation_a=translation_a,
+                translation_b=translation_b,
+                rotation_a=rotation_a,
+                rotation_b=rotation_b,
+            )
+    return None
+
+
+def swept_relative_component_contact(
+    a: AeroComponent,
+    b: AeroComponent,
+    dt_s: float,
+) -> Optional[RelativeSweptContact]:
+    linear_contact = _swept_linear_component_contact(a, b, dt_s)
+    rotational_contact = swept_rotational_component_contact(a, b, dt_s)
+    if linear_contact is None:
+        return rotational_contact
+    if rotational_contact is None:
+        return linear_contact
+    return min(
+        (linear_contact, rotational_contact),
+        key=lambda contact: contact.time_fraction,
     )
 
 
@@ -2955,7 +3149,7 @@ def apply_nearby_collision_effects(
         return 0
     direct_ids = {id(component) for component in directly_involved}
     influence_radius = max(6.0 * contact_radius, 0.02)
-    affected = 0
+    candidates: List[Tuple[AeroComponent, Vec3, float]] = []
     for component in components:
         if id(component) in direct_ids or not component.triangles:
             continue
@@ -2966,22 +3160,39 @@ def apply_nearby_collision_effects(
         if distance > influence_radius:
             continue
         attenuation = max(0.0, 1.0 - distance / influence_radius)
-        if attenuation <= 1e-12:
-            continue
+        if attenuation > 1e-12:
+            candidates.append((component, surface_point, attenuation))
+    weight_sum = sum(attenuation * attenuation for _, _, attenuation in candidates)
+    if weight_sum <= 1e-12:
+        return 0
+
+    transferable_energy = energy_j * COLLISION_NEARBY_ENERGY_FRACTION
+    affected = 0
+    transferred_impulse = (0.0, 0.0, 0.0)
+    for component, surface_point, attenuation in candidates:
         direction = v_sub(surface_point, contact_point)
         if v_norm(direction) <= 1e-12:
             direction = normal
         direction = v_unit(direction)
-        local_energy = energy_j * attenuation * attenuation
+        local_energy = (
+            transferable_energy
+            * attenuation
+            * attenuation
+            / weight_sum
+        )
         local_radius = max(contact_radius * (0.5 + attenuation), COLLISION_DEFORMATION_MIN_RADIUS_M)
         effective_mass = max(component.mass, 1e-9)
         local_speed = math.sqrt(2.0 * local_energy / effective_mass)
         if component_has_translation_freedom(component):
             impulse = v_mul(direction, effective_mass * local_speed)
             apply_collision_impulse(component, impulse, surface_point)
+            transferred_impulse = v_add(transferred_impulse, impulse)
+        effective_modulus = 1.0 / max(component_contact_compliance(component), 1e-30)
+        contact_stiffness = 2.0 * effective_modulus * local_radius
         indentation = min(
-            local_radius,
+            math.sqrt(2.0 * local_energy / max(contact_stiffness, 1e-30)),
             COLLISION_MAX_CONTACT_DEFORMATION * attenuation,
+            0.1 * max(component.lref, 1e-6),
         )
         deformation = deform_component_at_contact(
             component,
@@ -3002,7 +3213,133 @@ def apply_nearby_collision_effects(
                 local_energy,
             )
             affected += 1
+    reaction_components = [
+        component
+        for component in directly_involved
+        if component_has_translation_freedom(component)
+    ]
+    reaction_mass = sum(component.mass for component in reaction_components)
+    if reaction_mass > 1e-12 and v_norm(transferred_impulse) > 1e-12:
+        for component in reaction_components:
+            share = component.mass / reaction_mass
+            apply_collision_impulse(
+                component,
+                v_mul(transferred_impulse, -share),
+                contact_point,
+            )
     return affected
+
+
+def rewind_component_rotational_sweep(
+    component: AeroComponent,
+    translation: Vec3,
+    rotation: Vec3,
+    time_fraction: float,
+) -> Vec3:
+    """Return a body from its end pose to an angular CCD time of impact."""
+    if component.is_assembly_anchor:
+        return (0.0, 0.0, 0.0)
+    remaining = max(0.0, min(1.0, 1.0 - time_fraction))
+    reverse_translation = v_mul(translation, -remaining)
+    reverse_rotation = v_mul(rotation, -remaining)
+    reverse_angle = v_norm(reverse_rotation)
+    move_component_rigidly(
+        component,
+        reverse_translation,
+        v_unit(reverse_rotation) if reverse_angle > 1e-12 else None,
+        reverse_angle,
+        infer_motion_origin(component),
+    )
+    component.total_translation = v_add(
+        component.total_translation,
+        reverse_translation,
+    )
+    component.total_rotation = v_add(
+        component.total_rotation,
+        reverse_rotation,
+    )
+    return reverse_translation
+
+
+def relative_swept_perforation_contact(
+    a: AeroComponent,
+    b: AeroComponent,
+    contact: RelativeSweptContact,
+    dt_s: float,
+) -> Optional[SweptCollisionContact]:
+    """Promote any later high-energy swept impact to thin-shell failure.
+
+    Perforation is a material/energy outcome, not a privilege of the initially
+    prescribed pair. This is especially important for a multi-body projectile:
+    a leading lightweight piece can make first contact before a heavier trailing
+    body reaches the target.
+    """
+    candidates = [
+        (a, b, contact.normal),
+        (b, a, v_mul(contact.normal, -1.0)),
+    ]
+    candidates.sort(key=lambda candidate: candidate[1].is_assembly_anchor, reverse=True)
+    for impactor, target, target_to_impactor_normal in candidates:
+        relative_velocity = v_sub(
+            contact_point_velocity(impactor, contact.point),
+            contact_point_velocity(target, contact.point),
+        )
+        normal_speed = max(
+            0.0,
+            -v_dot(relative_velocity, target_to_impactor_normal),
+        )
+        if normal_speed <= 1e-9:
+            continue
+        response = thin_shell_impact_response(
+            impactor,
+            target,
+            normal_speed,
+            contact.point,
+            target_to_impactor_normal,
+        )
+        if response is None or not response.perforated:
+            continue
+        approach_axis = v_unit(
+            relative_velocity,
+            v_mul(target_to_impactor_normal, -1.0),
+        )
+        penetration = max(
+            response.indentation,
+            inferred_deformation_thickness(target),
+            2.0 * COLLISION_MIN_OVERLAP_M,
+        )
+        contact_geometry = local_contact_geometry(
+            impactor,
+            target,
+            contact.point,
+            contact.point,
+            target_to_impactor_normal,
+        )
+        return SweptCollisionContact(
+            moving=impactor,
+            stationary=target,
+            depth=max(
+                penetration
+                * max(0.0, -v_dot(approach_axis, target_to_impactor_normal)),
+                2.0 * COLLISION_MIN_OVERLAP_M,
+            ),
+            normal=target_to_impactor_normal,
+            point=contact.point,
+            travel_to_contact=contact.travel_to_contact_m,
+            approach_axis=approach_axis,
+            approach_penetration=penetration,
+            manifold_points=contact.manifold_points,
+            perforated=True,
+            residual_speed=response.residual_speed,
+            absorbed_energy_j=response.absorbed_energy_j,
+            failure_mode=response.failure_mode,
+            hole_radius=response.hole_radius,
+            contact_geometry=contact_geometry,
+            post_contact_time_s=max(
+                0.0,
+                dt_s * (1.0 - contact.time_fraction),
+            ),
+        )
 
 
 def resolve_part_collisions(
@@ -3131,7 +3468,24 @@ def resolve_part_collisions(
                 inv_sum = inv_a + inv_b
                 time_of_impact_move_a = (0.0, 0.0, 0.0)
                 time_of_impact_move_b = (0.0, 0.0, 0.0)
-                if relative_swept_contact is not None and inv_sum > 0.0:
+                if (
+                    relative_swept_contact is not None
+                    and relative_swept_contact.rotational
+                ):
+                    time_of_impact_move_a = rewind_component_rotational_sweep(
+                        a,
+                        relative_swept_contact.translation_a,
+                        relative_swept_contact.rotation_a,
+                        relative_swept_contact.time_fraction,
+                    )
+                    time_of_impact_move_b = rewind_component_rotational_sweep(
+                        b,
+                        relative_swept_contact.translation_b,
+                        relative_swept_contact.rotation_b,
+                        relative_swept_contact.time_fraction,
+                    )
+                    handled_relative_sweeps.add(pair_key)
+                elif relative_swept_contact is not None and inv_sum > 0.0:
                     overshoot = max(
                         0.0,
                         relative_swept_contact.sweep_distance_m
@@ -3152,6 +3506,16 @@ def resolve_part_collisions(
                         )
                         contact = v_add(contact, time_of_impact_move_b)
                     handled_relative_sweeps.add(pair_key)
+                if not is_swept_pair and relative_swept_contact is not None:
+                    later_perforation = relative_swept_perforation_contact(
+                        a,
+                        b,
+                        relative_swept_contact,
+                        MOTION_DT,
+                    )
+                    if later_perforation is not None:
+                        swept_contact = later_perforation
+                        is_swept_pair = True
                 if is_swept_pair and swept_contact is not None and swept_contact.perforated:
                     impact_axis = swept_contact.approach_axis
                     moving_surface_point = v_add(
@@ -4327,11 +4691,16 @@ def inferred_deformation_thickness(component: AeroComponent) -> float:
         return DEFORMATION_THICKNESS_M
     if component.material.thickness_m is not None and component.material.thickness_m > 0.0:
         return component.material.thickness_m
+    if component.reference_thickness_m is not None and component.reference_thickness_m > 0.0:
+        return component.reference_thickness_m
     xmin, xmax, ymin, ymax, zmin, zmax = component_bounds(component.triangles)
     extents = sorted(value for value in (xmax - xmin, ymax - ymin, zmax - zmin) if value > 1e-9)
     if len(extents) == 3 and extents[0] < 0.1 * extents[2]:
-        return extents[0]
-    return max(0.001, min(0.05, 0.04 * max(component.lref, 1e-6)))
+        thickness = extents[0]
+    else:
+        thickness = max(0.001, min(0.05, 0.04 * max(component.lref, 1e-6)))
+    component.reference_thickness_m = thickness
+    return thickness
 
 
 def deformation_vertex_key(point: Vec3) -> Tuple[int, int, int]:
