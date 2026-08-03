@@ -29,6 +29,7 @@ from cfd_motion.motion import (
     register_collision_dent,
     register_collision_hole,
     resolve_part_collisions,
+    swept_relative_component_contact,
     swept_mesh_contact,
     thin_shell_impact_response,
     triangle_area_centroid_normal,
@@ -39,6 +40,7 @@ from cfd_motion.motion import (
 )
 from cfd_motion.runner import (
     _split_unmated_component_bodies,
+    collision_convergence_should_stop,
     refine_collision_mesh_for_deformation,
     refine_thin_impact_target,
 )
@@ -262,6 +264,70 @@ def sphere_component(
 
 
 class CollisionConvergenceTest(TestCase):
+    def test_internal_collision_does_not_stop_prescribed_target_approach(self) -> None:
+        moving = rectangular_component(
+            "part1_main", -0.2, -0.1, -0.2, -0.05, -0.05, 0.05
+        )
+        sibling = rectangular_component(
+            "part1_sibling", -0.195, -0.095, 0.05, 0.2, -0.05, 0.05
+        )
+        target = rectangular_component(
+            "part2", 0.5, 0.6, -0.5, 0.5, -0.5, 0.5
+        )
+        moving.collision_source_index = 1
+        sibling.collision_source_index = 1
+        target.collision_source_index = 2
+        components = [moving, sibling, target]
+
+        with (
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_SPEED_MPS", 30.0),
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_AXIS", "x"),
+            patch("cfd_motion.motion.COLLISION_SWEEP_CLAMPING", True),
+            TemporaryDirectory() as tmpdir,
+        ):
+            pair = configure_collision_convergence_components(components)
+            self.assertIsNotNone(pair)
+            assert pair is not None
+            self.assertIs(pair[0], moving)
+            arrange_collision_convergence_initial_gap(pair, components)
+            log_path = Path(tmpdir) / "convergence.txt"
+            write_collision_convergence_log_header(log_path, pair)
+
+            _move, _target_move, first_contact = apply_collision_convergence_step(
+                pair,
+                0,
+                0.0012,
+                log_path,
+                (1.0, 0.0, 0.0),
+                components,
+            )
+            self.assertIsNone(first_contact)
+            self.assertFalse(
+                collision_convergence_should_stop(
+                    first_contact,
+                    ["continuous_internal_contact"],
+                )
+            )
+
+            _move, _target_move, target_contact = apply_collision_convergence_step(
+                pair,
+                1,
+                0.0012,
+                log_path,
+                (1.0, 0.0, 0.0),
+                components,
+            )
+            self.assertIsNotNone(target_contact)
+            assert target_contact is not None
+            self.assertIs(target_contact.moving, sibling)
+            self.assertIs(target_contact.stationary, target)
+            self.assertTrue(
+                collision_convergence_should_stop(
+                    target_contact,
+                    ["prescribed_target_contact"],
+                )
+            )
+
     def test_static_aabb_overlap_has_no_collision_energy_or_deformation(self) -> None:
         outer = box_component("outer", 0.0, 1.0)
         nested = box_component("nested", 0.25, 0.75)
@@ -401,6 +467,68 @@ class CollisionConvergenceTest(TestCase):
         self.assertEqual(separating.linear_velocity, (-100.0, 0.0, 0.0))
         self.assertEqual(separating.deformation_max_m, 0.0)
         self.assertEqual(neighbour.deformation_max_m, 0.0)
+
+    def test_trailing_impactor_body_cannot_tunnel_through_target(self) -> None:
+        moving = box_component("trailing_part1_body", 2.0, 3.0)
+        target = box_component("part2_target", 0.0, 1.0)
+        moving.collision_source_index = 1
+        target.collision_source_index = 2
+        moving.linear_velocity = (300.0, 0.0, 0.0)
+        target.is_assembly_anchor = True
+
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.01),
+            TemporaryDirectory() as tmpdir,
+        ):
+            lines = resolve_part_collisions(
+                [moving, target],
+                2,
+                Path(tmpdir) / "collisions.txt",
+            )
+
+        self.assertTrue(lines)
+        self.assertLessEqual(
+            component_bounds(moving.triangles)[1],
+            component_bounds(target.triangles)[0] + 1e-9,
+        )
+        self.assertGreater(moving.deformation_max_m, 0.0)
+        self.assertGreater(target.deformation_max_m, 0.0)
+
+    def test_post_perforation_path_does_not_get_a_false_surface_contact(self) -> None:
+        target = rectangular_component(
+            "perforated_target",
+            0.0,
+            0.0001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        target.material = MaterialProperties(
+            material_name="ABS",
+            density_kg_m3=1052.0,
+            young_modulus_pa=2.31e9,
+            poisson_ratio=0.364,
+            thickness_m=0.0001,
+            yield_strength_pa=4.48e7,
+            failure_strain=0.20,
+        )
+        register_collision_hole(
+            target,
+            (0.00005, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.003,
+            0.0025,
+            0,
+            "plastic_membrane_perforation",
+            2.0,
+        )
+        projectile = sphere_component("passed_projectile", 0.05, 0.0025)
+        projectile.linear_velocity = (100.0, 0.0, 0.0)
+
+        contact = swept_relative_component_contact(projectile, target, 0.001)
+
+        self.assertIsNone(contact)
 
     def test_initial_fit_expires_when_internal_body_reaches_real_surface(self) -> None:
         outer = rectangular_component(

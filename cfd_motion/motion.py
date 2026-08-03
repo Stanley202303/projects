@@ -3031,14 +3031,25 @@ def resolve_part_collisions(
                 pair_key = collision_pair_key(a, b)
                 initial_overlap_depth = 0.0
                 relative_swept_contact: Optional[RelativeSweptContact] = None
+                is_prescribed_pair = (
+                    prescribed_pair is not None
+                    and {id(a), id(b)}
+                    == {id(prescribed_pair[0]), id(prescribed_pair[1])}
+                )
+                is_swept_pair = (
+                    swept_contact is not None
+                    and {id(a), id(b)}
+                    == {id(swept_contact.moving), id(swept_contact.stationary)}
+                )
                 same_rigid_group = (
                     a.rigid_body_group is not None
                     and a.rigid_body_group == b.rigid_body_group
                 )
                 if (
                     pair_key not in handled_relative_sweeps
-                    and components_share_collision_source(a, b)
                     and not same_rigid_group
+                    and not is_prescribed_pair
+                    and not is_swept_pair
                 ):
                     relative_swept_contact = swept_relative_component_contact(
                         a,
@@ -3077,15 +3088,7 @@ def resolve_part_collisions(
                 )
                 if fragment_family_overlap:
                     continue
-                is_prescribed_pair = (
-                    prescribed_pair is not None
-                    and {id(a), id(b)} == {id(prescribed_pair[0]), id(prescribed_pair[1])}
-                )
-                is_swept_pair = (
-                    swept_contact is not None
-                    and {id(a), id(b)} == {id(swept_contact.moving), id(swept_contact.stationary)}
-                )
-                if is_prescribed_pair and swept_contact is None:
+                if is_prescribed_pair and not is_swept_pair:
                     continue
                 if is_swept_pair and collision_pass > 0:
                     continue
@@ -3756,6 +3759,31 @@ def aabb_gap_along_axis(a: AeroComponent, b: AeroComponent, axis: Vec3) -> float
     return max(min(b_vals) - max(a_vals), min(a_vals) - max(b_vals), 0.0)
 
 
+def component_group_gap_along_axis(
+    group_a: Sequence[AeroComponent],
+    group_b: Sequence[AeroComponent],
+    axis: Vec3,
+) -> float:
+    u = v_unit(axis)
+    a_values = [
+        v_dot(point, u)
+        for component in group_a
+        for point in stl_points(component.triangles)
+    ]
+    b_values = [
+        v_dot(point, u)
+        for component in group_b
+        for point in stl_points(component.triangles)
+    ]
+    if not a_values or not b_values:
+        return 0.0
+    return max(
+        min(b_values) - max(a_values),
+        min(a_values) - max(b_values),
+        0.0,
+    )
+
+
 def arrange_collision_convergence_initial_gap(
     pair: Tuple[AeroComponent, AeroComponent],
     components: Optional[Sequence[AeroComponent]] = None,
@@ -3833,15 +3861,47 @@ def apply_collision_convergence_step(
 ) -> Tuple[Vec3, Vec3, Optional[SweptCollisionContact]]:
     moving, stationary = collision_convergence_moving_and_stationary(pair)
     axis = v_unit(approach_axis) if approach_axis is not None else collision_convergence_approach_axis(pair)
+    moving_group = collision_source_group(moving, components)
+    stationary_group = collision_source_group(stationary, components)
 
-    gap_before = aabb_gap_along_axis(moving, stationary, axis)
+    gap_before = component_group_gap_along_axis(
+        moving_group,
+        stationary_group,
+        axis,
+    )
     requested_distance = COLLISION_CONVERGENCE_SPEED_MPS * max(dt, 0.0)
     applied_distance = requested_distance
     sweep_clamped = False
     swept_contact: Optional[SweptCollisionContact] = None
     if COLLISION_SWEEP_CLAMPING:
-        mesh_hit = swept_mesh_contact(moving, stationary, axis, requested_distance)
-        if mesh_hit is not None:
+        earliest_hit: Optional[
+            Tuple[
+                float,
+                AeroComponent,
+                AeroComponent,
+                Tuple[float, Vec3, Vec3, int],
+            ]
+        ] = None
+        for moving_member in moving_group:
+            for stationary_member in stationary_group:
+                candidate_hit = swept_mesh_contact(
+                    moving_member,
+                    stationary_member,
+                    axis,
+                    requested_distance,
+                )
+                if candidate_hit is None:
+                    continue
+                candidate = (
+                    candidate_hit[0],
+                    moving_member,
+                    stationary_member,
+                    candidate_hit,
+                )
+                if earliest_hit is None or candidate[0] < earliest_hit[0]:
+                    earliest_hit = candidate
+        if earliest_hit is not None:
+            _distance, contact_moving, contact_stationary, mesh_hit = earliest_hit
             travel_to_contact, contact_point, contact_normal, manifold_points = mesh_hit
             contact_time = travel_to_contact / max(
                 COLLISION_CONVERGENCE_SPEED_MPS,
@@ -3853,23 +3913,23 @@ def apply_collision_convergence_step(
                 v_mul(axis, travel_to_contact),
             )
             contact_geometry = local_contact_geometry(
-                moving,
-                stationary,
+                contact_moving,
+                contact_stationary,
                 moving_contact_point,
                 contact_point,
                 contact_normal,
             )
             shell_response = thin_shell_impact_response(
-                moving,
-                stationary,
+                contact_moving,
+                contact_stationary,
                 COLLISION_CONVERGENCE_SPEED_MPS,
                 moving_contact_point,
                 contact_normal,
             )
             if shell_response is None:
                 impact_indentation = impact_contact_indentation(
-                    moving,
-                    stationary,
+                    contact_moving,
+                    contact_stationary,
                     COLLISION_CONVERGENCE_SPEED_MPS,
                     geometry=contact_geometry,
                 )
@@ -3883,11 +3943,11 @@ def apply_collision_convergence_step(
                 )
             else:
                 controlled_penetration = max(
-                    inferred_deformation_thickness(stationary),
+                    inferred_deformation_thickness(contact_stationary),
                     min(
                         shell_response.indentation,
                         impactor_contact_radius(
-                            moving,
+                            contact_moving,
                             moving_contact_point,
                             v_mul(contact_normal, -1.0),
                         ),
@@ -3907,8 +3967,8 @@ def apply_collision_convergence_step(
             )
             sweep_clamped = True
             swept_contact = SweptCollisionContact(
-                moving=moving,
-                stationary=stationary,
+                moving=contact_moving,
+                stationary=contact_stationary,
                 depth=max(normal_penetration, 2.0 * COLLISION_MIN_OVERLAP_M),
                 normal=contact_normal,
                 point=contact_point,
@@ -3926,20 +3986,28 @@ def apply_collision_convergence_step(
             )
     move_moving = v_mul(axis, applied_distance)
     move_stationary = (0.0, 0.0, 0.0)
-    for member in collision_source_group(moving, components):
+    for member in moving_group:
         move_component_rigidly(member, move_moving, None, 0.0, member.cofr)
         if components is None:
             # Compatibility path for callers using a single prescribed body.
             member.linear_velocity = v_mul(axis, COLLISION_CONVERGENCE_SPEED_MPS)
         member.total_translation = v_add(member.total_translation, move_moving)
-    for member in collision_source_group(stationary, components):
+    for member in stationary_group:
         member.linear_velocity = (0.0, 0.0, 0.0)
         member.angular_velocity = (0.0, 0.0, 0.0)
-    gap_after = aabb_gap_along_axis(moving, stationary, axis)
+    gap_after = component_group_gap_along_axis(
+        moving_group,
+        stationary_group,
+        axis,
+    )
+    logged_moving = swept_contact.moving if swept_contact is not None else moving
+    logged_stationary = (
+        swept_contact.stationary if swept_contact is not None else stationary
+    )
 
     with log_path.open("a") as f:
         f.write(
-            f"{step}\t1\t{moving.patch}\t{stationary.patch}\t{COLLISION_CONVERGENCE_SPEED_MPS:.8g}\t"
+            f"{step}\t1\t{logged_moving.patch}\t{logged_stationary.patch}\t{COLLISION_CONVERGENCE_SPEED_MPS:.8g}\t"
             f"{axis[0]:.8g}\t{axis[1]:.8g}\t{axis[2]:.8g}\t"
             f"{gap_before:.8g}\t{gap_after:.8g}\t{requested_distance:.8g}\t"
             f"{v_norm(move_moving):.8g}\t{v_norm(move_stationary):.8g}\t{int(sweep_clamped)}\n"

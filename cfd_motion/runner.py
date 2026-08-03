@@ -38,6 +38,24 @@ from .visualization import (
     _read_scalar_internal_values,
 )
 
+
+def collision_convergence_should_stop(
+    swept_contact: Optional[SweptCollisionContact],
+    collision_lines: Sequence[str],
+) -> bool:
+    """Stop the launch driver only after its selected target was contacted.
+
+    Independent bodies within the moving source can collide before reaching the
+    target. Those internal contacts must be resolved, but they are not the event
+    that completes the prescribed approach.
+    """
+    return bool(
+        COLLISION_CONVERGENCE_STOP_AFTER_CONTACT
+        and swept_contact is not None
+        and collision_lines
+    )
+
+
 def run_assembly_motion_simulation(components: List[AeroComponent], root_case: Path) -> Path:
     """Run assembly quasi-dynamic CFD without keeping motion_steps by default.
 
@@ -475,7 +493,11 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     step,
                     collision_log,
                     swept_contact if collision_convergence_active else None,
-                    collision_convergence_pair,
+                    (
+                        collision_convergence_pair
+                        if collision_convergence_active
+                        else None
+                    ),
                     initial_overlap_pairs,
                 )
                 if collision_lines:
@@ -486,9 +508,19 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                         0.0,
                         collision_damage_log,
                     )
-                    if collision_convergence_active and COLLISION_CONVERGENCE_STOP_AFTER_CONTACT:
+                    if (
+                        collision_convergence_active
+                        and collision_convergence_should_stop(
+                            swept_contact,
+                            collision_lines,
+                        )
+                    ):
                         collision_convergence_active = False
-                        append_collision_convergence_stop(collision_convergence_log, step, "first_contact")
+                        append_collision_convergence_stop(
+                            collision_convergence_log,
+                            step,
+                            "prescribed_target_contact",
+                        )
 
             fragment_aero_count = advance_detached_fragment_aerodynamics(
                 components,
