@@ -3340,6 +3340,148 @@ def relative_swept_perforation_contact(
                 dt_s * (1.0 - contact.time_fraction),
             ),
         )
+    return None
+
+
+def enforce_environment_contact_constraints(
+    active_components: Sequence[AeroComponent],
+    step: int,
+    initial_overlap_pairs: Optional[Dict[Tuple[int, int], float]] = None,
+) -> List[str]:
+    """Project independent bodies out of surrounding solid geometry.
+
+    Impact CCD resolves momentum and deformation. This position-level,
+    frictionless Signorini constraint handles the complementary case: resting
+    contact or penetration left by another pair's correction. It uses a classic
+    sequential projection/impulse iteration and never creates collision damage.
+    """
+    lines: List[str] = []
+    margin_depth = 2.0 * max(COLLISION_MARGIN_M, 0.0)
+    for constraint_pass in range(COLLISION_MAX_PASSES):
+        corrected = False
+        for index, a in enumerate(active_components):
+            for b in active_components[index + 1:]:
+                if (
+                    a.rigid_body_group is not None
+                    and a.rigid_body_group == b.rigid_body_group
+                ):
+                    continue
+                pair_key = collision_pair_key(a, b)
+                overlap = aabb_overlap_with_normal(a, b)
+                if overlap is None:
+                    if initial_overlap_pairs is not None:
+                        initial_overlap_pairs.pop(pair_key, None)
+                    continue
+                depth, normal, _broad_contact = overlap
+                if initial_overlap_pairs is not None and pair_key in initial_overlap_pairs:
+                    initial_depth = initial_overlap_pairs[pair_key]
+                    if depth <= initial_depth + COLLISION_MIN_OVERLAP_M:
+                        continue
+                    depth = max(0.0, depth - initial_depth)
+                physical_depth = max(0.0, depth - margin_depth)
+                if physical_depth <= COLLISION_MIN_OVERLAP_M:
+                    continue
+                bounds_a = component_bounds(a.triangles)
+                bounds_b = component_bounds(b.triangles)
+                a_contains_b = all(
+                    bounds_a[2 * axis] <= bounds_b[2 * axis]
+                    and bounds_a[2 * axis + 1] >= bounds_b[2 * axis + 1]
+                    for axis in range(3)
+                )
+                b_contains_a = all(
+                    bounds_b[2 * axis] <= bounds_a[2 * axis]
+                    and bounds_b[2 * axis + 1] >= bounds_a[2 * axis + 1]
+                    for axis in range(3)
+                )
+                if a_contains_b or b_contains_a:
+                    # Containment is ambiguous for surface CAD: the outer mesh
+                    # may be a housing or cavity. Only a crossing boundary is a
+                    # reliable solid-contact constraint without volume topology.
+                    continue
+                surface_hit = triangle_mesh_intersection_contact(
+                    a.triangles,
+                    b.triangles,
+                )
+                if surface_hit is None:
+                    # AABB overlap alone is not penetration for concave or
+                    # hollow surface meshes.
+                    continue
+                surface_contact, _surface_normal = surface_hit
+                a_can_translate = component_has_translation_freedom(a)
+                b_can_translate = component_has_translation_freedom(b)
+                inv_a = 1.0 / max(a.mass, 1e-9) if a_can_translate else 0.0
+                inv_b = 1.0 / max(b.mass, 1e-9) if b_can_translate else 0.0
+                inv_sum = inv_a + inv_b
+                applied_a = (0.0, 0.0, 0.0)
+                applied_b = (0.0, 0.0, 0.0)
+                applied_rotation_a = (0.0, 0.0, 0.0)
+                applied_rotation_b = (0.0, 0.0, 0.0)
+                if inv_sum > 0.0:
+                    correction = v_mul(normal, physical_depth / inv_sum)
+                    applied_a = translate_component_for_collision(
+                        a,
+                        v_mul(correction, inv_a),
+                    )
+                    applied_b = translate_component_for_collision(
+                        b,
+                        v_mul(correction, -inv_b),
+                    )
+                if (
+                    v_norm(applied_a) <= 1e-14
+                    and component_has_rotation_freedom(a)
+                ):
+                    applied_rotation_a = rotate_component_for_collision(
+                        a,
+                        normal,
+                        surface_contact,
+                        physical_depth,
+                    )
+                if (
+                    v_norm(applied_b) <= 1e-14
+                    and component_has_rotation_freedom(b)
+                ):
+                    applied_rotation_b = rotate_component_for_collision(
+                        b,
+                        v_mul(normal, -1.0),
+                        surface_contact,
+                        physical_depth,
+                    )
+                if (
+                    v_norm(applied_a) <= 1e-14
+                    and v_norm(applied_b) <= 1e-14
+                    and v_norm(applied_rotation_a) <= 1e-14
+                    and v_norm(applied_rotation_b) <= 1e-14
+                ):
+                    continue
+
+                relative_velocity = v_sub(
+                    contact_point_velocity(a, surface_contact),
+                    contact_point_velocity(b, surface_contact),
+                )
+                closing_speed = v_dot(relative_velocity, normal)
+                impulse_mag = 0.0
+                inverse_contact_mass = (
+                    contact_inverse_mass(a, surface_contact, normal)
+                    + contact_inverse_mass(b, surface_contact, normal)
+                )
+                if closing_speed < 0.0 and inverse_contact_mass > 1e-12:
+                    impulse_mag = -closing_speed / inverse_contact_mass
+                    impulse = v_mul(normal, impulse_mag)
+                    apply_collision_impulse(a, impulse, surface_contact)
+                    apply_collision_impulse(b, v_mul(impulse, -1.0), surface_contact)
+                corrected = True
+                lines.append(
+                    f"{step}\t{COLLISION_MAX_PASSES + constraint_pass}\t"
+                    f"{a.patch}\t{b.patch}\t{physical_depth:.8g}\t"
+                    f"{normal[0]:.8g}\t{normal[1]:.8g}\t{normal[2]:.8g}\t"
+                    f"{surface_contact[0]:.8g}\t{surface_contact[1]:.8g}\t"
+                    f"{surface_contact[2]:.8g}\t{impulse_mag:.8g}\t"
+                    f"{v_norm(applied_a):.8g}\t{v_norm(applied_b):.8g}\t"
+                    "0\t0\t0\t0\t0\tnonpenetration_constraint\t0\t0\t0\t0\t1\t0"
+                )
+        if not corrected:
+            break
+    return lines
 
 
 def resolve_part_collisions(
@@ -3818,7 +3960,16 @@ def resolve_part_collisions(
                 lines.append(line)
         if not any_collision:
             break
+    # Mate kinematics are applied first. Surrounding solids then restrict the
+    # final admissible pose, so a mate correction cannot leave a body embedded.
     enforce_attachment_constraints(components)
+    lines.extend(
+        enforce_environment_contact_constraints(
+            active_components,
+            step,
+            initial_overlap_pairs,
+        )
+    )
     if lines:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a") as f:

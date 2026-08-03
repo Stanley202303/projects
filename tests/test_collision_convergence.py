@@ -22,6 +22,7 @@ from cfd_motion.motion import (
     contact_restitution_coefficient,
     contact_inverse_mass,
     deform_component_at_contact,
+    enforce_environment_contact_constraints,
     build_eulerian_contact_grid,
     fracture_thin_shell,
     initial_same_source_overlap_pairs,
@@ -353,6 +354,56 @@ class CollisionConvergenceTest(TestCase):
         self.assertEqual(nested.deformation_max_m, 0.0)
         self.assertEqual(outer.collision_damage, [])
         self.assertEqual(nested.collision_damage, [])
+
+    def test_static_surface_penetration_is_projected_without_damage(self) -> None:
+        free_body = box_component("free_body", 0.8, 1.8)
+        wall = box_component("wall", 0.0, 1.0)
+        wall.is_assembly_anchor = True
+
+        with TemporaryDirectory() as tmpdir:
+            lines = resolve_part_collisions(
+                [free_body, wall],
+                0,
+                Path(tmpdir) / "collisions.txt",
+            )
+
+        self.assertTrue(
+            any("nonpenetration_constraint" in line for line in lines)
+        )
+        self.assertGreaterEqual(
+            component_bounds(free_body.triangles)[0],
+            component_bounds(wall.triangles)[1] - 1e-9,
+        )
+        self.assertEqual(free_body.deformation_max_m, 0.0)
+        self.assertEqual(wall.deformation_max_m, 0.0)
+        self.assertEqual(free_body.collision_damage, [])
+        self.assertEqual(wall.collision_damage, [])
+
+    def test_surrounding_wall_removes_inward_speed_and_preserves_sliding(self) -> None:
+        free_body = box_component("sliding_body", 0.8, 1.8)
+        wall = box_component("sliding_wall", 0.0, 1.0)
+        free_body.freedom.translate_axes = [
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        ]
+        free_body.linear_velocity = (-2.0, 3.0, 0.0)
+        wall.is_assembly_anchor = True
+
+        lines = enforce_environment_contact_constraints(
+            [free_body, wall],
+            0,
+        )
+
+        self.assertTrue(lines)
+        self.assertGreaterEqual(
+            component_bounds(free_body.triangles)[0],
+            component_bounds(wall.triangles)[1] - 1e-9,
+        )
+        self.assertAlmostEqual(free_body.linear_velocity[0], 0.0)
+        self.assertAlmostEqual(free_body.linear_velocity[1], 3.0)
+        self.assertEqual(free_body.deformation_max_m, 0.0)
+        self.assertEqual(wall.deformation_max_m, 0.0)
 
     def test_initial_same_source_fit_is_stress_free_until_separation(self) -> None:
         first = box_component("part1_a", 0.0, 1.0)
