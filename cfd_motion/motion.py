@@ -3031,11 +3031,6 @@ def resolve_part_collisions(
                 pair_key = collision_pair_key(a, b)
                 initial_overlap_depth = 0.0
                 relative_swept_contact: Optional[RelativeSweptContact] = None
-                is_prescribed_pair = (
-                    prescribed_pair is not None
-                    and {id(a), id(b)}
-                    == {id(prescribed_pair[0]), id(prescribed_pair[1])}
-                )
                 is_swept_pair = (
                     swept_contact is not None
                     and {id(a), id(b)}
@@ -3048,7 +3043,6 @@ def resolve_part_collisions(
                 if (
                     pair_key not in handled_relative_sweeps
                     and not same_rigid_group
-                    and not is_prescribed_pair
                     and not is_swept_pair
                 ):
                     relative_swept_contact = swept_relative_component_contact(
@@ -3078,18 +3072,6 @@ def resolve_part_collisions(
                         # if the broad AABBs never became disjoint.
                         initial_overlap_pairs.pop(pair_key, None)
                         initial_overlap_depth = 0.0
-                fragment_family_overlap = (
-                    a.collision_family is not None
-                    and a.collision_family == b.collision_family
-                    and (
-                        a.freedom.mate_type == "COLLISION_FRAGMENT"
-                        or b.freedom.mate_type == "COLLISION_FRAGMENT"
-                    )
-                )
-                if fragment_family_overlap:
-                    continue
-                if is_prescribed_pair and not is_swept_pair:
-                    continue
                 if is_swept_pair and collision_pass > 0:
                     continue
                 if is_swept_pair:

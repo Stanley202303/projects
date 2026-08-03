@@ -494,6 +494,128 @@ class CollisionConvergenceTest(TestCase):
         self.assertGreater(moving.deformation_max_m, 0.0)
         self.assertGreater(target.deformation_max_m, 0.0)
 
+    def test_prescribed_pair_still_has_continuous_collision_fallback(self) -> None:
+        moving = box_component("prescribed_moving", 2.0, 3.0)
+        target = box_component("prescribed_target", 0.0, 1.0)
+        moving.collision_source_index = 1
+        target.collision_source_index = 2
+        moving.linear_velocity = (300.0, 0.0, 0.0)
+        target.is_assembly_anchor = True
+
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.01),
+            TemporaryDirectory() as tmpdir,
+        ):
+            lines = resolve_part_collisions(
+                [moving, target],
+                2,
+                Path(tmpdir) / "collisions.txt",
+                prescribed_pair=(moving, target),
+            )
+
+        self.assertTrue(lines)
+        self.assertLessEqual(
+            component_bounds(moving.triangles)[1],
+            component_bounds(target.triangles)[0] + 1e-9,
+        )
+
+    def test_detached_fragment_cannot_tunnel_through_its_parent_family(self) -> None:
+        fragment = box_component("target_fragment", 2.0, 3.0)
+        parent = box_component("target_parent", 0.0, 1.0)
+        fragment.collision_family = "target"
+        parent.collision_family = "target"
+        fragment.freedom.mate_type = "COLLISION_FRAGMENT"
+        fragment.linear_velocity = (300.0, 0.0, 0.0)
+        parent.is_assembly_anchor = True
+
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.01),
+            TemporaryDirectory() as tmpdir,
+        ):
+            lines = resolve_part_collisions(
+                [fragment, parent],
+                3,
+                Path(tmpdir) / "collisions.txt",
+            )
+
+        self.assertTrue(lines)
+        self.assertLessEqual(
+            component_bounds(fragment.triangles)[1],
+            component_bounds(parent.triangles)[0] + 1e-9,
+        )
+
+    def test_uninvolved_third_body_cannot_tunnel_through_neighbour(self) -> None:
+        first = box_component("primary_impactor", 5.0, 6.0)
+        second = box_component("primary_target", 3.0, 4.0)
+        third = box_component("independent_body", 2.0, 3.0)
+        barrier = box_component("independent_barrier", 0.0, 1.0)
+        move_component_rigidly(third, (0.0, 3.0, 0.0), None, 0.0, third.cofr)
+        move_component_rigidly(barrier, (0.0, 3.0, 0.0), None, 0.0, barrier.cofr)
+        first.linear_velocity = (300.0, 0.0, 0.0)
+        third.linear_velocity = (300.0, 0.0, 0.0)
+        second.is_assembly_anchor = True
+        barrier.is_assembly_anchor = True
+
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.01),
+            TemporaryDirectory() as tmpdir,
+        ):
+            lines = resolve_part_collisions(
+                [first, second, third, barrier],
+                4,
+                Path(tmpdir) / "collisions.txt",
+            )
+
+        contacted_pairs = {
+            frozenset((columns[2], columns[3]))
+            for line in lines
+            if len(columns := line.split("\t")) >= 4
+        }
+        self.assertIn(
+            frozenset(("primary_impactor", "primary_target")),
+            contacted_pairs,
+        )
+        self.assertIn(
+            frozenset(("independent_body", "independent_barrier")),
+            contacted_pairs,
+        )
+        self.assertLessEqual(
+            component_bounds(third.triangles)[1],
+            component_bounds(barrier.triangles)[0] + 1e-9,
+        )
+
+    def test_rigid_group_does_not_disable_other_pair_collisions(self) -> None:
+        rigid_a = box_component("mated_a", 8.0, 9.0)
+        rigid_b = box_component("mated_b", 9.0, 10.0)
+        rigid_a.rigid_body_group = "fastened_group"
+        rigid_b.rigid_body_group = "fastened_group"
+        moving = box_component("unmated_moving", 2.0, 3.0)
+        target = box_component("unmated_target", 0.0, 1.0)
+        moving.linear_velocity = (300.0, 0.0, 0.0)
+        target.is_assembly_anchor = True
+
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.01),
+            TemporaryDirectory() as tmpdir,
+        ):
+            lines = resolve_part_collisions(
+                [rigid_a, rigid_b, moving, target],
+                5,
+                Path(tmpdir) / "collisions.txt",
+            )
+
+        contacted_pairs = {
+            frozenset((columns[2], columns[3]))
+            for line in lines
+            if len(columns := line.split("\t")) >= 4
+        }
+        self.assertNotIn(frozenset(("mated_a", "mated_b")), contacted_pairs)
+        self.assertIn(frozenset(("unmated_moving", "unmated_target")), contacted_pairs)
+        self.assertLessEqual(
+            component_bounds(moving.triangles)[1],
+            component_bounds(target.triangles)[0] + 1e-9,
+        )
+
     def test_post_perforation_path_does_not_get_a_false_surface_contact(self) -> None:
         target = rectangular_component(
             "perforated_target",

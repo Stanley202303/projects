@@ -137,8 +137,9 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         write_deformation_log_header(deformation_log)
     write_collision_damage_log_header(collision_damage_log)
     collision_log.write_text(
-        "# Part collision log. Prescribed two-object impacts use swept mesh-surface contact; other assembly pairs use conservative AABB contact.\n"
-        "# Swept impacts preserve prescribed speed until real triangle surfaces meet.\n"
+        "# Part collision log. Every independent body pair uses continuous swept mesh-surface contact; current overlap is a fallback.\n"
+        "# Only members of the same explicit mate-created rigid body are excluded from self-collision.\n"
+        "# Swept prescribed impacts preserve launch speed until real triangle surfaces meet.\n"
         "# Curved contact uses Hertz elasticity; flat contact uses the classical elastic flat-punch relation. Thin targets use membrane energy, yielding, and perforation with residual impactor velocity.\n"
         "step\tpass\tpatch_a\tpatch_b\tdepth_m\tnx\tny\tnz\tcx\tcy\tcz\timpulse_Ns\tmove_a_m\tmove_b_m\tdeform_a_m\tdeform_b_m\tcontact_radius_m\tindent_a_m\tindent_b_m\tfailure_mode\tperforated\tabsorbed_energy_J\tresidual_speed_mps\tdisplaced_fragments\tmanifold_points\tfriction_coefficient\n"
     )
@@ -462,65 +463,66 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                 if deformed_components:
                     max_def = max(c.deformation_max_m for c in deformed_components)
                     print(f"Non-rigid deformation: {len(deformed_components)} component(s), max {max_def:.6g} m.")
-                swept_contact = None
-                if collision_convergence_active and collision_convergence_pair is not None:
-                    move_a, move_b, swept_contact = apply_collision_convergence_step(
-                        collision_convergence_pair,
-                        step,
-                        MOTION_DT,
-                        collision_convergence_log,
-                        collision_convergence_axis,
-                        components,
-                    )
-                    if (
-                        ENABLE_COLLISION_TOPOLOGY_CHANGES
-                        and swept_contact is not None
-                        and swept_contact.perforated
-                    ):
-                        added_triangles = refine_thin_impact_target(swept_contact.stationary)
-                        if added_triangles:
-                            print(
-                                f"Thin impact target refinement: added {added_triangles} triangles "
-                                "for local bending/fracture."
-                            )
-                    print(
-                        "Collision convergence step: "
-                        f"impactor moved {v_norm(move_a):.6g} m, "
-                        f"target moved {v_norm(move_b):.6g} m."
-                    )
-                collision_lines = resolve_part_collisions(
+
+            swept_contact = None
+            if collision_convergence_active and collision_convergence_pair is not None:
+                move_a, move_b, swept_contact = apply_collision_convergence_step(
+                    collision_convergence_pair,
+                    step,
+                    MOTION_DT,
+                    collision_convergence_log,
+                    collision_convergence_axis,
+                    components,
+                )
+                if (
+                    ENABLE_COLLISION_TOPOLOGY_CHANGES
+                    and swept_contact is not None
+                    and swept_contact.perforated
+                ):
+                    added_triangles = refine_thin_impact_target(swept_contact.stationary)
+                    if added_triangles:
+                        print(
+                            f"Thin impact target refinement: added {added_triangles} triangles "
+                            "for local bending/fracture."
+                        )
+                print(
+                    "Collision convergence step: "
+                    f"impactor moved {v_norm(move_a):.6g} m, "
+                    f"target moved {v_norm(move_b):.6g} m."
+                )
+            collision_lines = resolve_part_collisions(
+                components,
+                step,
+                collision_log,
+                swept_contact if collision_convergence_active else None,
+                (
+                    collision_convergence_pair
+                    if collision_convergence_active
+                    else None
+                ),
+                initial_overlap_pairs,
+            )
+            if collision_lines:
+                print(f"Collision resolution: {len(collision_lines)} contact event(s) handled at step {step}.")
+                evolve_collision_damage(
                     components,
                     step,
-                    collision_log,
-                    swept_contact if collision_convergence_active else None,
-                    (
-                        collision_convergence_pair
-                        if collision_convergence_active
-                        else None
-                    ),
-                    initial_overlap_pairs,
+                    0.0,
+                    collision_damage_log,
                 )
-                if collision_lines:
-                    print(f"Collision resolution: {len(collision_lines)} contact event(s) handled at step {step}.")
-                    evolve_collision_damage(
-                        components,
-                        step,
-                        0.0,
-                        collision_damage_log,
+                if (
+                    collision_convergence_active
+                    and collision_convergence_should_stop(
+                        swept_contact,
+                        collision_lines,
                     )
-                    if (
-                        collision_convergence_active
-                        and collision_convergence_should_stop(
-                            swept_contact,
-                            collision_lines,
-                        )
-                    ):
-                        collision_convergence_active = False
-                        append_collision_convergence_stop(
-                            collision_convergence_log,
-                            step,
-                            "prescribed_target_contact",
-                        )
+                ):
+                    collision_convergence_active = False
+                    append_collision_convergence_stop(
+                        collision_convergence_log,
+                        step,
+                        "prescribed_target_contact",
+                    )
 
             fragment_aero_count = advance_detached_fragment_aerodynamics(
                 components,
