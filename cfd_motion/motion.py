@@ -3139,9 +3139,17 @@ def collision_pair_key(a: AeroComponent, b: AeroComponent) -> Tuple[int, int]:
     return first, second
 
 
+@dataclass(frozen=True)
+class InitialCadOverlap:
+    """Stress-free overlap recorded from the imported assembly pose."""
+
+    depth_m: float
+    surfaces_intersect: bool
+
+
 def initial_same_source_overlap_pairs(
     components: Sequence[AeroComponent],
-) -> Dict[Tuple[int, int], float]:
+) -> Dict[Tuple[int, int], InitialCadOverlap]:
     """Record intentional CAD fits as a stress-free initial configuration.
 
     Separate occurrences in one imported source can have nested or overlapping
@@ -3151,14 +3159,23 @@ def initial_same_source_overlap_pairs(
     penetration.  Once a pair separates, its offset is removed and later
     re-contact is solved normally.
     """
-    pairs: Dict[Tuple[int, int], float] = {}
+    pairs: Dict[Tuple[int, int], InitialCadOverlap] = {}
     for index, a in enumerate(components):
         for b in components[index + 1:]:
             if not components_share_collision_source(a, b):
                 continue
             initial_overlap = aabb_overlap_with_normal(a, b)
             if initial_overlap is not None:
-                pairs[collision_pair_key(a, b)] = initial_overlap[0]
+                pairs[collision_pair_key(a, b)] = InitialCadOverlap(
+                    depth_m=initial_overlap[0],
+                    surfaces_intersect=(
+                        triangle_mesh_intersection_contact(
+                            a.triangles,
+                            b.triangles,
+                        )
+                        is not None
+                    ),
+                )
     return pairs
 
 
@@ -3391,7 +3408,9 @@ def relative_swept_perforation_contact(
 def enforce_environment_contact_constraints(
     active_components: Sequence[AeroComponent],
     step: int,
-    initial_overlap_pairs: Optional[Dict[Tuple[int, int], float]] = None,
+    initial_overlap_pairs: Optional[
+        Dict[Tuple[int, int], InitialCadOverlap]
+    ] = None,
 ) -> List[str]:
     """Project independent bodies out of surrounding solid geometry.
 
@@ -3419,7 +3438,7 @@ def enforce_environment_contact_constraints(
                     continue
                 depth, normal, _broad_contact = overlap
                 if initial_overlap_pairs is not None and pair_key in initial_overlap_pairs:
-                    initial_depth = initial_overlap_pairs[pair_key]
+                    initial_depth = initial_overlap_pairs[pair_key].depth_m
                     if depth <= initial_depth + COLLISION_MIN_OVERLAP_M:
                         continue
                     depth = max(0.0, depth - initial_depth)
@@ -3535,7 +3554,9 @@ def resolve_part_collisions(
     log_path: Path,
     swept_contact: Optional[SweptCollisionContact] = None,
     prescribed_pair: Optional[Tuple[AeroComponent, AeroComponent]] = None,
-    initial_overlap_pairs: Optional[Dict[Tuple[int, int], float]] = None,
+    initial_overlap_pairs: Optional[
+        Dict[Tuple[int, int], InitialCadOverlap]
+    ] = None,
 ) -> List[str]:
     if not ENABLE_PART_COLLISIONS or len(components) < 2:
         return []
@@ -3578,19 +3599,37 @@ def resolve_part_collisions(
                     # This pair started in an intentional CAD fit.  Do not turn
                     # broad-phase overlap into strain energy.  Re-enable normal
                     # collision handling after the bodies have truly separated.
+                    initial_overlap = initial_overlap_pairs[pair_key]
                     current_overlap = aabb_overlap_with_normal(a, b)
                     if current_overlap is None:
                         initial_overlap_pairs.pop(pair_key, None)
                     else:
-                        initial_overlap_depth = initial_overlap_pairs[pair_key]
+                        initial_overlap_depth = initial_overlap.depth_m
+                        if initial_overlap.surfaces_intersect:
+                            # Surface-intersecting bodies are already at their
+                            # assembled CAD interface. A tiny difference in
+                            # aerodynamic acceleration must not turn that
+                            # interface into a new impact and alter their
+                            # imported relative pose. Only overlap beyond the
+                            # recorded baseline is physical penetration.
+                            if (
+                                current_overlap[0]
+                                <= initial_overlap_depth
+                                + COLLISION_MIN_OVERLAP_M
+                            ):
+                                continue
+                            relative_swept_contact = None
+                        elif (
+                            current_overlap[0]
+                            <= initial_overlap_depth
+                            + COLLISION_MIN_OVERLAP_M
+                            and relative_swept_contact is None
+                        ):
+                            continue
                     if (
-                        current_overlap is not None
-                        and current_overlap[0]
-                        <= initial_overlap_depth + COLLISION_MIN_OVERLAP_M
-                        and relative_swept_contact is None
+                        relative_swept_contact is not None
+                        and not initial_overlap.surfaces_intersect
                     ):
-                        continue
-                    if relative_swept_contact is not None:
                         # Relative motion has reached a real triangle surface,
                         # so the stress-free CAD-fit exemption has ended even
                         # if the broad AABBs never became disjoint.

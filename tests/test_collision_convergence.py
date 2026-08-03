@@ -492,6 +492,42 @@ class CollisionConvergenceTest(TestCase):
             0.0,
         )
 
+    def test_initial_surface_fit_keeps_imported_relative_pose(self) -> None:
+        outer = box_component("part1_outer", 0.0, 1.0)
+        insert = box_component("part1_insert", 0.5, 1.5)
+        outer.collision_source_index = 1
+        insert.collision_source_index = 1
+        outer.linear_velocity = (0.0, 1.0, 0.0)
+        components = [outer, insert]
+        initial_pairs = initial_same_source_overlap_pairs(components)
+        initial_state = next(iter(initial_pairs.values()))
+        self.assertTrue(initial_state.surfaces_intersect)
+        original_outer_triangles = list(outer.triangles)
+        original_insert_triangles = list(insert.triangles)
+        original_relative_center = v_sub(insert.cofr, outer.cofr)
+
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.01),
+            TemporaryDirectory() as tmpdir,
+        ):
+            # Reproduces the false first-frame contact caused by a small
+            # difference in aerodynamic motion across one imported source.
+            self.assertIsNotNone(
+                swept_relative_component_contact(outer, insert, 0.01)
+            )
+            lines = resolve_part_collisions(
+                components,
+                0,
+                Path(tmpdir) / "collisions.txt",
+                initial_overlap_pairs=initial_pairs,
+            )
+
+        self.assertEqual(lines, [])
+        self.assertEqual(outer.triangles, original_outer_triangles)
+        self.assertEqual(insert.triangles, original_insert_triangles)
+        self.assertEqual(v_sub(insert.cofr, outer.cofr), original_relative_center)
+        self.assertEqual(len(initial_pairs), 1)
+
     def test_fast_unmated_source_bodies_cannot_tunnel_through_each_other(self) -> None:
         moving = box_component("part1_rear", 2.0, 3.0)
         struck = box_component("part1_front", 0.0, 1.0)
