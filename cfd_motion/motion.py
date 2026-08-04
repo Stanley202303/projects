@@ -1582,6 +1582,194 @@ def ray_triangle_distance(
     return max(0.0, distance)
 
 
+TriangleBounds = Tuple[float, float, float, float, float, float]
+
+
+@dataclass(frozen=True)
+class TriangleAabbNode:
+    """Node in a classic median-split triangle AABB tree."""
+
+    bounds: TriangleBounds
+    triangle_indices: Tuple[int, ...] = ()
+    left: Optional["TriangleAabbNode"] = None
+    right: Optional["TriangleAabbNode"] = None
+
+    @property
+    def is_leaf(self) -> bool:
+        return self.left is None and self.right is None
+
+
+def triangle_bounds(triangle: Triangle) -> TriangleBounds:
+    points = triangle[1:]
+    return (
+        min(point[0] for point in points),
+        max(point[0] for point in points),
+        min(point[1] for point in points),
+        max(point[1] for point in points),
+        min(point[2] for point in points),
+        max(point[2] for point in points),
+    )
+
+
+def combined_triangle_bounds(
+    triangle_bounds_by_index: Sequence[TriangleBounds],
+    indices: Sequence[int],
+) -> TriangleBounds:
+    return (
+        min(triangle_bounds_by_index[index][0] for index in indices),
+        max(triangle_bounds_by_index[index][1] for index in indices),
+        min(triangle_bounds_by_index[index][2] for index in indices),
+        max(triangle_bounds_by_index[index][3] for index in indices),
+        min(triangle_bounds_by_index[index][4] for index in indices),
+        max(triangle_bounds_by_index[index][5] for index in indices),
+    )
+
+
+def triangle_bounds_overlap(
+    first: TriangleBounds,
+    second: TriangleBounds,
+    tolerance: float = 0.0,
+) -> bool:
+    return all(
+        first[2 * axis + 1] + tolerance >= second[2 * axis]
+        and second[2 * axis + 1] + tolerance >= first[2 * axis]
+        for axis in range(3)
+    )
+
+
+def build_triangle_aabb_tree(
+    triangles: Sequence[Triangle],
+    leaf_size: int = 12,
+) -> Optional[TriangleAabbNode]:
+    """Build a deterministic median-split AABB tree for a triangle mesh."""
+    if not triangles:
+        return None
+    bounds_by_index = [triangle_bounds(triangle) for triangle in triangles]
+    centroids = [
+        (
+            0.5 * (bounds[0] + bounds[1]),
+            0.5 * (bounds[2] + bounds[3]),
+            0.5 * (bounds[4] + bounds[5]),
+        )
+        for bounds in bounds_by_index
+    ]
+
+    def build(indices: List[int]) -> TriangleAabbNode:
+        node_bounds = combined_triangle_bounds(bounds_by_index, indices)
+        if len(indices) <= max(1, leaf_size):
+            return TriangleAabbNode(
+                bounds=node_bounds,
+                triangle_indices=tuple(sorted(indices)),
+            )
+        extents = (
+            node_bounds[1] - node_bounds[0],
+            node_bounds[3] - node_bounds[2],
+            node_bounds[5] - node_bounds[4],
+        )
+        split_axis = max(range(3), key=lambda axis: extents[axis])
+        ordered = sorted(
+            indices,
+            key=lambda index: (centroids[index][split_axis], index),
+        )
+        middle = len(ordered) // 2
+        return TriangleAabbNode(
+            bounds=node_bounds,
+            left=build(ordered[:middle]),
+            right=build(ordered[middle:]),
+        )
+
+    return build(list(range(len(triangles))))
+
+
+def aabb_tree_candidates(
+    tree: Optional[TriangleAabbNode],
+    query_bounds: TriangleBounds,
+    tolerance: float = 0.0,
+) -> List[int]:
+    if tree is None:
+        return []
+    candidates: List[int] = []
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        if not triangle_bounds_overlap(node.bounds, query_bounds, tolerance):
+            continue
+        if node.is_leaf:
+            candidates.extend(node.triangle_indices)
+            continue
+        if node.right is not None:
+            stack.append(node.right)
+        if node.left is not None:
+            stack.append(node.left)
+    return sorted(candidates)
+
+
+def aabb_tree_pair_candidates(
+    first: Optional[TriangleAabbNode],
+    second: Optional[TriangleAabbNode],
+    tolerance: float = 0.0,
+) -> List[Tuple[int, int]]:
+    """Return only triangle pairs whose AABBs can overlap."""
+    if first is None or second is None:
+        return []
+    candidates: List[Tuple[int, int]] = []
+    stack = [(first, second)]
+    while stack:
+        first_node, second_node = stack.pop()
+        if not triangle_bounds_overlap(
+            first_node.bounds,
+            second_node.bounds,
+            tolerance,
+        ):
+            continue
+        if first_node.is_leaf and second_node.is_leaf:
+            candidates.extend(
+                (first_index, second_index)
+                for first_index in first_node.triangle_indices
+                for second_index in second_node.triangle_indices
+            )
+            continue
+        if second_node.is_leaf or (
+            not first_node.is_leaf
+            and max(
+                first_node.bounds[1] - first_node.bounds[0],
+                first_node.bounds[3] - first_node.bounds[2],
+                first_node.bounds[5] - first_node.bounds[4],
+            )
+            >= max(
+                second_node.bounds[1] - second_node.bounds[0],
+                second_node.bounds[3] - second_node.bounds[2],
+                second_node.bounds[5] - second_node.bounds[4],
+            )
+        ):
+            if first_node.right is not None:
+                stack.append((first_node.right, second_node))
+            if first_node.left is not None:
+                stack.append((first_node.left, second_node))
+        else:
+            if second_node.right is not None:
+                stack.append((first_node, second_node.right))
+            if second_node.left is not None:
+                stack.append((first_node, second_node.left))
+    return sorted(candidates)
+
+
+def segment_bounds(
+    origin: Vec3,
+    direction: Vec3,
+    distance: float,
+) -> TriangleBounds:
+    end = v_add(origin, v_mul(direction, distance))
+    return (
+        min(origin[0], end[0]),
+        max(origin[0], end[0]),
+        min(origin[1], end[1]),
+        max(origin[1], end[1]),
+        min(origin[2], end[2]),
+        max(origin[2], end[2]),
+    )
+
+
 def swept_mesh_contact(
     moving: AeroComponent,
     stationary: AeroComponent,
@@ -1612,6 +1800,8 @@ def swept_triangle_mesh_contact(
     best_distance = max_distance + 1.0
     candidates: List[Tuple[Vec3, Vec3]] = []
     tolerance = COLLISION_MANIFOLD_TOLERANCE_M
+    moving_tree = build_triangle_aabb_tree(moving_triangles)
+    stationary_tree = build_triangle_aabb_tree(stationary_triangles)
 
     def record(distance: float, point: Vec3, triangle: Triangle) -> None:
         nonlocal best_distance, candidates
@@ -1625,14 +1815,26 @@ def swept_triangle_mesh_contact(
             candidates.append((point, normal))
 
     for vertex in _unique_mesh_vertices(moving_triangles):
-        for triangle in stationary_triangles:
+        candidate_indices = aabb_tree_candidates(
+            stationary_tree,
+            segment_bounds(vertex, direction, max_distance),
+            tolerance,
+        )
+        for triangle_index in candidate_indices:
+            triangle = stationary_triangles[triangle_index]
             distance = ray_triangle_distance(vertex, direction, triangle, max_distance)
             if distance is not None:
                 record(distance, v_add(vertex, v_mul(direction, distance)), triangle)
 
     reverse = v_mul(direction, -1.0)
     for vertex in _unique_mesh_vertices(stationary_triangles):
-        for triangle in moving_triangles:
+        candidate_indices = aabb_tree_candidates(
+            moving_tree,
+            segment_bounds(vertex, reverse, max_distance),
+            tolerance,
+        )
+        for triangle_index in candidate_indices:
+            triangle = moving_triangles[triangle_index]
             distance = ray_triangle_distance(vertex, reverse, triangle, max_distance)
             if distance is not None:
                 record(distance, vertex, triangle)
@@ -1760,14 +1962,10 @@ def _triangle_bounds_overlap(
     b: Triangle,
     tolerance: float,
 ) -> bool:
-    a_points = a[1:]
-    b_points = b[1:]
-    return all(
-        max(point[axis] for point in a_points) + tolerance
-        >= min(point[axis] for point in b_points)
-        and max(point[axis] for point in b_points) + tolerance
-        >= min(point[axis] for point in a_points)
-        for axis in range(3)
+    return triangle_bounds_overlap(
+        triangle_bounds(a),
+        triangle_bounds(b),
+        tolerance,
     )
 
 
@@ -1817,34 +2015,38 @@ def triangle_mesh_intersection_contact(
             return None
         return v_add(edge_start, v_mul(edge, distance / length))
 
-    for triangle_a in a_triangles:
+    candidate_pairs = aabb_tree_pair_candidates(
+        build_triangle_aabb_tree(a_triangles),
+        build_triangle_aabb_tree(b_triangles),
+        tolerance,
+    )
+    for triangle_a_index, triangle_b_index in candidate_pairs:
+        triangle_a = a_triangles[triangle_a_index]
         a_vertices = triangle_a[1:]
-        for triangle_b in b_triangles:
-            if not _triangle_bounds_overlap(triangle_a, triangle_b, tolerance):
-                continue
-            for start, end in (
-                (a_vertices[0], a_vertices[1]),
-                (a_vertices[1], a_vertices[2]),
-                (a_vertices[2], a_vertices[0]),
-            ):
-                point = edge_hit(start, end, triangle_b)
-                if point is not None:
-                    _area, _centroid, normal = triangle_area_centroid_normal(triangle_b)
-                    if v_dot(normal, v_sub(a_center, b_center)) < 0.0:
-                        normal = v_mul(normal, -1.0)
-                    return point, normal
-            b_vertices = triangle_b[1:]
-            for start, end in (
-                (b_vertices[0], b_vertices[1]),
-                (b_vertices[1], b_vertices[2]),
-                (b_vertices[2], b_vertices[0]),
-            ):
-                point = edge_hit(start, end, triangle_a)
-                if point is not None:
-                    _area, _centroid, normal = triangle_area_centroid_normal(triangle_a)
-                    if v_dot(normal, v_sub(a_center, b_center)) < 0.0:
-                        normal = v_mul(normal, -1.0)
-                    return point, normal
+        triangle_b = b_triangles[triangle_b_index]
+        for start, end in (
+            (a_vertices[0], a_vertices[1]),
+            (a_vertices[1], a_vertices[2]),
+            (a_vertices[2], a_vertices[0]),
+        ):
+            point = edge_hit(start, end, triangle_b)
+            if point is not None:
+                _area, _centroid, normal = triangle_area_centroid_normal(triangle_b)
+                if v_dot(normal, v_sub(a_center, b_center)) < 0.0:
+                    normal = v_mul(normal, -1.0)
+                return point, normal
+        b_vertices = triangle_b[1:]
+        for start, end in (
+            (b_vertices[0], b_vertices[1]),
+            (b_vertices[1], b_vertices[2]),
+            (b_vertices[2], b_vertices[0]),
+        ):
+            point = edge_hit(start, end, triangle_a)
+            if point is not None:
+                _area, _centroid, normal = triangle_area_centroid_normal(triangle_a)
+                if v_dot(normal, v_sub(a_center, b_center)) < 0.0:
+                    normal = v_mul(normal, -1.0)
+                return point, normal
     return None
 
 

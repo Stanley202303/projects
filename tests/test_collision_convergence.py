@@ -29,11 +29,13 @@ from cfd_motion.motion import (
     inferred_deformation_thickness,
     local_contact_geometry,
     move_component_rigidly,
+    ray_triangle_distance,
     register_collision_dent,
     register_collision_hole,
     resolve_part_collisions,
     swept_relative_component_contact,
     swept_mesh_contact,
+    swept_triangle_mesh_contact,
     thin_shell_impact_response,
     triangle_area_centroid_normal,
     triangle_max_edge_length,
@@ -563,6 +565,52 @@ class CollisionConvergenceTest(TestCase):
             + struck.mass * struck.linear_velocity[0],
             initial_momentum,
         )
+
+    def test_swept_mesh_aabb_tree_prunes_triangle_queries(self) -> None:
+        def grid_plane(x: float, cells: int = 20):
+            triangles = []
+            for y_index in range(cells):
+                for z_index in range(cells):
+                    y0 = y_index / cells
+                    y1 = (y_index + 1) / cells
+                    z0 = z_index / cells
+                    z1 = (z_index + 1) / cells
+                    a = (x, y0, z0)
+                    b = (x, y1, z0)
+                    c = (x, y1, z1)
+                    d = (x, y0, z1)
+                    triangles.extend(
+                        (
+                            ((1.0, 0.0, 0.0), a, b, c),
+                            ((1.0, 0.0, 0.0), a, c, d),
+                        )
+                    )
+            return triangles
+
+        moving = grid_plane(0.0)
+        stationary = grid_plane(1.0)
+        naive_ray_tests = (
+            len({point for triangle in moving for point in triangle[1:]})
+            * len(stationary)
+            + len({point for triangle in stationary for point in triangle[1:]})
+            * len(moving)
+        )
+
+        with patch(
+            "cfd_motion.motion.ray_triangle_distance",
+            wraps=ray_triangle_distance,
+        ) as ray_test:
+            hit = swept_triangle_mesh_contact(
+                moving,
+                stationary,
+                (1.0, 0.0, 0.0),
+                1.0,
+            )
+
+        self.assertIsNotNone(hit)
+        assert hit is not None
+        self.assertAlmostEqual(hit[0], 1.0)
+        self.assertLess(ray_test.call_count, naive_ray_tests // 10)
 
     def test_unmated_source_bodies_can_separate_after_touching(self) -> None:
         separating = box_component("part1_separating", -2.0, -1.0)

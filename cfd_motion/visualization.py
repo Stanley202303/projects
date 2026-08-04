@@ -2117,9 +2117,16 @@ def load_eta_calibration() -> Dict[str, Any]:
     return {}
 
 
+ETA_TIMING_SCOPE = "complete_dynamic_step_v2"
+
+
 def save_eta_calibration(step_seconds: float) -> None:
     old = load_eta_calibration()
-    previous = old.get("seconds_per_assembly_step")
+    previous = (
+        old.get("seconds_per_assembly_step")
+        if old.get("timing_scope") == ETA_TIMING_SCOPE
+        else None
+    )
     if isinstance(previous, (int, float)) and previous > 0:
         blended = (1.0 - ETA_EMA_ALPHA) * float(previous) + ETA_EMA_ALPHA * step_seconds
         samples = int(old.get("samples", 1)) + 1
@@ -2129,6 +2136,7 @@ def save_eta_calibration(step_seconds: float) -> None:
     payload = {
         "seconds_per_assembly_step": blended,
         "last_step_seconds": step_seconds,
+        "timing_scope": ETA_TIMING_SCOPE,
         "samples": samples,
         "cfd_iterations": ITERATIONS,
         "surface_refinement": list(SURFACE_REFINEMENT),
@@ -2146,6 +2154,10 @@ def save_eta_calibration(step_seconds: float) -> None:
 def initial_eta_seconds(total_steps: int) -> Tuple[float, str]:
     cal = load_eta_calibration()
     calibrated = cal.get("seconds_per_assembly_step")
-    if isinstance(calibrated, (int, float)) and calibrated > 0:
+    if (
+        cal.get("timing_scope") == ETA_TIMING_SCOPE
+        and isinstance(calibrated, (int, float))
+        and calibrated > 0
+    ):
         return float(calibrated) * total_steps, f"calibrated from {int(cal.get('samples', 1))} previous step(s)"
     return ETA_DEFAULT_STEP_SECONDS * total_steps, "rough default; will recalibrate after step 1"

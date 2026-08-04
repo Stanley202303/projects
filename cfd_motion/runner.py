@@ -262,6 +262,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         )
         enforce_case_storage_budget(root_case, "after start geometry snapshot")
 
+    completed_step_elapsed_total = 0.0
     try:
         for step in range(ASSEMBLY_DYNAMIC_STEPS):
             step_started = time.monotonic()
@@ -294,17 +295,11 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
             # This makes frame N show the pressure field for the geometry actually
             # solved in CFD at step N.
             write_cfd_sampled_surface_preview_for_step(step_case, step)
-            step_elapsed_for_eta = time.monotonic() - step_started
-            save_eta_calibration(step_elapsed_for_eta)
-            steps_done_for_eta = step + 1
-            steps_left_for_eta = ASSEMBLY_DYNAMIC_STEPS - steps_done_for_eta
-            elapsed_total_for_eta = time.monotonic() - run_started
-            avg_step_for_eta = elapsed_total_for_eta / max(1, steps_done_for_eta)
-            remaining_for_eta = avg_step_for_eta * steps_left_for_eta
+            cfd_elapsed = time.monotonic() - step_started
+            motion_started = time.monotonic()
             print(
-                f"ETA update: step {steps_done_for_eta}/{ASSEMBLY_DYNAMIC_STEPS} took "
-                f"{format_eta(step_elapsed_for_eta)}; remaining about {format_eta(remaining_for_eta)}; "
-                f"total about {format_eta(elapsed_total_for_eta + remaining_for_eta)}."
+                f"CFD phase completed in {format_eta(cfd_elapsed)}; "
+                "processing motion and collisions."
             )
 
             export_force_coefficients(step_case)
@@ -464,6 +459,8 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     max_def = max(c.deformation_max_m for c in deformed_components)
                     print(f"Non-rigid deformation: {len(deformed_components)} component(s), max {max_def:.6g} m.")
 
+            motion_elapsed = time.monotonic() - motion_started
+            collision_started = time.monotonic()
             swept_contact = None
             if collision_convergence_active and collision_convergence_pair is not None:
                 move_a, move_b, swept_contact = apply_collision_convergence_step(
@@ -533,6 +530,8 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     "Fragment aerodynamics: "
                     f"updated {fragment_aero_count} detached body/bodies."
                 )
+            collision_elapsed = time.monotonic() - collision_started
+            output_started = time.monotonic()
 
             # Write compact visualisation AFTER the motion and collision update so the frame
             # shows moved, non-interpenetrating geometry.
@@ -555,6 +554,32 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
 
             if not SAVE_MOTION_STEPS and step_case.exists():
                 shutil.rmtree(step_case)
+
+            output_elapsed = time.monotonic() - output_started
+            complete_step_elapsed = time.monotonic() - step_started
+            completed_step_elapsed_total += complete_step_elapsed
+            save_eta_calibration(complete_step_elapsed)
+            steps_done_for_eta = step + 1
+            steps_left_for_eta = ASSEMBLY_DYNAMIC_STEPS - steps_done_for_eta
+            elapsed_total_for_eta = time.monotonic() - run_started
+            avg_step_for_eta = (
+                completed_step_elapsed_total / max(1, steps_done_for_eta)
+            )
+            remaining_for_eta = avg_step_for_eta * steps_left_for_eta
+            print(
+                "Step timing: "
+                f"CFD {format_eta(cfd_elapsed)}, "
+                f"motion {format_eta(motion_elapsed)}, "
+                f"collision {format_eta(collision_elapsed)}, "
+                f"output {format_eta(output_elapsed)}, "
+                f"complete {format_eta(complete_step_elapsed)}."
+            )
+            print(
+                f"ETA update: step {steps_done_for_eta}/{ASSEMBLY_DYNAMIC_STEPS} took "
+                f"{format_eta(complete_step_elapsed)}; "
+                f"remaining about {format_eta(remaining_for_eta)}; "
+                f"total about {format_eta(elapsed_total_for_eta + remaining_for_eta)}."
+            )
 
         if STORE_START_FINAL_GEOMETRY:
             write_components_geometry_snapshot(
