@@ -19,6 +19,7 @@ from cfd_motion.motion import (
     configure_collision_convergence_components,
     component_bounds,
     component_contact_compliance,
+    contact_point_velocity,
     contact_restitution_coefficient,
     contact_inverse_mass,
     deform_component_at_contact,
@@ -434,6 +435,69 @@ class CollisionConvergenceTest(TestCase):
         self.assertAlmostEqual(free_body.linear_velocity[1], 3.0)
         self.assertEqual(free_body.deformation_max_m, 0.0)
         self.assertEqual(wall.deformation_max_m, 0.0)
+
+    def test_rotated_slender_body_is_projected_back_through_plate_face(self) -> None:
+        plate = rectangular_component(
+            "thin_plate",
+            0.090,
+            0.102,
+            -0.4,
+            0.4,
+            -0.4,
+            0.4,
+        )
+        plate.is_assembly_anchor = True
+        body = rectangular_component(
+            "slender_body",
+            0.080,
+            0.101,
+            -0.004,
+            0.004,
+            -0.004,
+            0.004,
+        )
+        body.freedom = MotionFreedom(
+            translate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+            rotate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+        )
+        move_component_rigidly(
+            body,
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
+            0.2,
+            body.cofr,
+        )
+        body.linear_velocity = (10.0, 2.0, 0.0)
+        initial_center_y = component_center_from_bounds(body)[1]
+
+        lines = enforce_environment_contact_constraints([body, plate], 0)
+
+        self.assertTrue(lines)
+        self.assertLessEqual(
+            component_bounds(body.triangles)[1],
+            component_bounds(plate.triangles)[0] + 1e-9,
+        )
+        self.assertAlmostEqual(
+            component_center_from_bounds(body)[1],
+            initial_center_y,
+        )
+        constraint_columns = lines[0].split("\t")
+        self.assertAlmostEqual(float(constraint_columns[5]), -1.0)
+        self.assertAlmostEqual(float(constraint_columns[6]), 0.0)
+        self.assertAlmostEqual(float(constraint_columns[7]), 0.0)
+        contact_point = tuple(float(value) for value in constraint_columns[8:11])
+        contact_velocity = contact_point_velocity(body, contact_point)
+        self.assertLess(body.linear_velocity[0], 10.0)
+        self.assertGreaterEqual(-contact_velocity[0], -1e-9)
+        self.assertAlmostEqual(body.linear_velocity[1], 2.0)
 
     def test_initial_same_source_fit_is_stress_free_until_separation(self) -> None:
         first = box_component("part1_a", 0.0, 1.0)

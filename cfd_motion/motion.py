@@ -3336,6 +3336,63 @@ def aabb_overlap_with_normal(a: AeroComponent, b: AeroComponent) -> Optional[Tup
     return depth, normal, contact
 
 
+def component_separation_distance_along_normal(
+    a: AeroComponent,
+    b: AeroComponent,
+    normal: Vec3,
+) -> float:
+    """Return how far ``a`` must move along ``normal`` to separate from ``b``.
+
+    This is the one-axis part of the classic separating-axis test.  It is used
+    after a triangle/triangle surface hit has supplied the physical contact
+    normal.  This is deliberately the distance to separation, not merely the
+    width of the intersecting interval.  Those differ when one interval is
+    contained in the other, which is common for a small body inside a plate's
+    broad y/z extent.
+    """
+    axis = v_unit(normal)
+    if v_norm(axis) <= 1e-12:
+        return 0.0
+    a_projections = [
+        v_dot(point, axis)
+        for triangle in a.triangles
+        for point in triangle[1:]
+    ]
+    b_projections = [
+        v_dot(point, axis)
+        for triangle in b.triangles
+        for point in triangle[1:]
+    ]
+    if not a_projections or not b_projections:
+        return 0.0
+    return max(0.0, max(b_projections) - min(a_projections))
+
+
+def aabb_minimum_separation(
+    a: AeroComponent,
+    b: AeroComponent,
+) -> Tuple[float, Vec3]:
+    """Return the shortest axis-aligned translation that separates ``a``.
+
+    Unlike an overlap-width calculation, this remains correct when one body's
+    projection is contained inside the other's projection.
+    """
+    a_bounds = component_bounds(a.triangles)
+    b_bounds = component_bounds(b.triangles)
+    a_center = component_center_from_bounds(a)
+    b_center = component_center_from_bounds(b)
+    candidates: List[Tuple[float, Vec3]] = []
+    for axis in range(3):
+        if a_center[axis] >= b_center[axis]:
+            depth = b_bounds[2 * axis + 1] - a_bounds[2 * axis]
+            normal = tuple(1.0 if index == axis else 0.0 for index in range(3))
+        else:
+            depth = a_bounds[2 * axis + 1] - b_bounds[2 * axis]
+            normal = tuple(-1.0 if index == axis else 0.0 for index in range(3))
+        candidates.append((max(0.0, depth), normal))
+    return min(candidates, key=lambda item: item[0])
+
+
 def collision_pair_key(a: AeroComponent, b: AeroComponent) -> Tuple[int, int]:
     first, second = sorted((id(a), id(b)))
     return first, second
@@ -3672,7 +3729,29 @@ def enforce_environment_contact_constraints(
                     # AABB overlap alone is not penetration for concave or
                     # hollow surface meshes.
                     continue
-                surface_contact, _surface_normal = surface_hit
+                surface_contact, surface_normal = surface_hit
+                center_offset = v_sub(
+                    component_center_from_bounds(a),
+                    component_center_from_bounds(b),
+                )
+                surface_normal = v_unit(surface_normal, normal)
+                if v_dot(surface_normal, center_offset) < 0.0:
+                    surface_normal = v_mul(surface_normal, -1.0)
+                if initial_overlap_pairs is None or pair_key not in initial_overlap_pairs:
+                    surface_depth = component_separation_distance_along_normal(
+                        a,
+                        b,
+                        surface_normal,
+                    )
+                    aabb_depth, aabb_normal = aabb_minimum_separation(a, b)
+                    physical_depth, normal = min(
+                        (surface_depth, surface_normal),
+                        (aabb_depth, aabb_normal),
+                        key=lambda item: item[0],
+                    )
+                    physical_depth += max(COLLISION_MARGIN_M, 0.0)
+                if physical_depth <= COLLISION_MIN_OVERLAP_M:
+                    continue
                 a_can_translate = component_has_translation_freedom(a)
                 b_can_translate = component_has_translation_freedom(b)
                 inv_a = 1.0 / max(a.mass, 1e-9) if a_can_translate else 0.0
