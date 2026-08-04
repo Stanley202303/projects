@@ -101,14 +101,98 @@ mergePatchPairs
 """)
 
 
-def write_snappy(case: Path, location: Vec3, near_body_distance: float, patch_names: Sequence[str]) -> None:
-    lx, ly, lz = location
+def component_cross_section_extent(component: AeroComponent) -> float:
+    """Return the smaller meaningful cross-section dimension of a body.
+
+    The second-smallest bounding-box extent resolves rods and other small closed
+    bodies without interpreting a broad thin plate's thickness as a reason to
+    refine its entire face to an excessive level.
+    """
+    component_points = stl_points(component.triangles)
+    if not component_points:
+        return 0.0
+    xmin, xmax, ymin, ymax, zmin, zmax = bounds(component_points, SCALE)
+    extents = sorted((xmax - xmin, ymax - ymin, zmax - zmin))
+    return max(extents[1], 0.0)
+
+
+def adaptive_surface_refinement_levels(
+    components: Sequence[AeroComponent],
+    base_cell_width_m: float,
+) -> Dict[str, Tuple[int, int]]:
+    """Choose enough local surface refinement to retain every body patch."""
     surf_min, surf_max = SURFACE_REFINEMENT
+    levels: Dict[str, Tuple[int, int]] = {}
+    for component in components:
+        cross_section = component_cross_section_extent(component)
+        required_level = surf_min
+        if cross_section > 1e-12 and base_cell_width_m > 0.0:
+            required_level = max(
+                surf_min,
+                math.ceil(
+                    math.log2(
+                        base_cell_width_m
+                        * MIN_COMPONENT_CELLS_ACROSS
+                        / cross_section
+                    )
+                ),
+            )
+        required_level = min(
+            required_level,
+            MAX_ADAPTIVE_SURFACE_REFINEMENT,
+        )
+        levels[component.patch] = (
+            max(surf_min, required_level),
+            max(surf_max, required_level),
+        )
+    return levels
+
+
+def adaptive_region_refinement_settings(
+    components: Sequence[AeroComponent],
+    base_cell_width_m: float,
+    near_body_distance_m: float,
+    surface_levels: Dict[str, Tuple[int, int]],
+) -> Dict[str, Tuple[float, int]]:
+    """Return compact pre-refinement zones for bodies smaller than base cells."""
+    settings: Dict[str, Tuple[float, int]] = {}
+    for component in components:
+        cross_section = component_cross_section_extent(component)
+        surface_level = surface_levels[component.patch][1]
+        region_level = max(REGION_REFINEMENT, surface_level)
+        if region_level > REGION_REFINEMENT and cross_section > 1e-12:
+            finest_cell = base_cell_width_m / (2 ** region_level)
+            distance = max(2.0 * cross_section, 4.0 * finest_cell)
+        else:
+            distance = near_body_distance_m
+        settings[component.patch] = distance, region_level
+    return settings
+
+
+def write_snappy(
+    case: Path,
+    location: Vec3,
+    near_body_distance: float,
+    patch_names: Sequence[str],
+    surface_refinement_levels: Optional[
+        Dict[str, Tuple[int, int]]
+    ] = None,
+    region_refinement_settings: Optional[
+        Dict[str, Tuple[float, int]]
+    ] = None,
+) -> None:
+    lx, ly, lz = location
+    surface_refinement_levels = surface_refinement_levels or {}
+    region_refinement_settings = region_refinement_settings or {}
 
     geometry_entries = []
     refinement_surfaces = []
     refinement_regions = []
     for patch in patch_names:
+        surf_min, surf_max = surface_refinement_levels.get(
+            patch,
+            SURFACE_REFINEMENT,
+        )
         geometry_entries.append(f"""    {patch}
     {{
         type triSurfaceMesh;
@@ -122,10 +206,14 @@ def write_snappy(case: Path, location: Vec3, near_body_distance: float, patch_na
                 type wall;
             }}
         }}""")
+        region_distance, region_level = region_refinement_settings.get(
+            patch,
+            (near_body_distance, REGION_REFINEMENT),
+        )
         refinement_regions.append(f"""        {patch}
         {{
             mode distance;
-            levels (({near_body_distance:g} {REGION_REFINEMENT}));
+            levels (({region_distance:g} {region_level}));
         }}""")
 
     write(case / "system/snappyHexMeshDict", f"""{foam_header("dictionary", "snappyHexMeshDict")}
@@ -866,14 +954,30 @@ relaxationFactors
     postprocess_line = "postProcess -latestTime -dict system/controlDict | tee log.postProcess || true" if RUN_POSTPROCESS_FORCE_OBJECTS else "true"
     application = solver_application()
     solver_log = solver_log_name()
+    required_patch_names = " ".join(component.patch for component in components)
     write(case / "Allrun", f"""#!/bin/sh
 set -e
 
 SOLVER_TIMEOUT_SECONDS={SOLVER_TIMEOUT_SECONDS}
+REQUIRED_BODY_PATCHES="{required_patch_names}"
 
 blockMesh | tee log.blockMesh
 snappyHexMesh -overwrite | tee log.snappyHexMesh
 checkMesh -allGeometry -allTopology | tee log.checkMesh
+
+# A missing body patch makes its OpenFOAM force and pressure fields silently
+# become zero/NaN. Stop before the solver instead of accepting invalid physics.
+missing_body_patch=0
+for required_patch in $REQUIRED_BODY_PATCHES; do
+    if ! grep -Eq "^[[:space:]]*${{required_patch}}[[:space:]]*$" constant/polyMesh/boundary; then
+        echo "ERROR: snappyHexMesh did not retain required body patch $required_patch" | tee -a log.checkMesh
+        missing_body_patch=1
+    fi
+done
+if [ "$missing_body_patch" -ne 0 ]; then
+    echo "ERROR: CFD solve aborted because one or more body surfaces are absent from polyMesh/boundary." | tee -a log.checkMesh
+    exit 2
+fi
 
 # Run the solver with a hard wall-clock cap.  controlDict writes every
 # CFD_WRITE_INTERVAL steps and purgeWrite keeps only the latest written time, so
@@ -1044,6 +1148,8 @@ def _write_config_report(case: Path) -> None:
         f"BASE_CELLS_PER_LENGTH={BASE_CELLS_PER_LENGTH}",
         f"MIN_CELLS={MIN_CELLS}",
         f"SURFACE_REFINEMENT={SURFACE_REFINEMENT}",
+        f"MIN_COMPONENT_CELLS_ACROSS={MIN_COMPONENT_CELLS_ACROSS}",
+        f"MAX_ADAPTIVE_SURFACE_REFINEMENT={MAX_ADAPTIVE_SURFACE_REFINEMENT}",
         f"REGION_REFINEMENT={REGION_REFINEMENT}",
         f"MAX_LOCAL_CELLS={MAX_LOCAL_CELLS}",
         f"MAX_GLOBAL_CELLS={MAX_GLOBAL_CELLS}",
@@ -1175,23 +1281,71 @@ def make_case_from_components(components: Sequence[AeroComponent], case: Path, c
 
     near_body_distance = NEAR_BODY_REFINEMENT_LENGTHS * length
     patch_names = [c.patch for c in components]
+    base_cell_width = max(
+        dom_dx / cells[0],
+        dom_dy / cells[1],
+        dom_dz / cells[2],
+    )
+    surface_refinement_levels = adaptive_surface_refinement_levels(
+        components,
+        base_cell_width,
+    )
+    region_refinement_settings = adaptive_region_refinement_settings(
+        components,
+        base_cell_width,
+        near_body_distance,
+        surface_refinement_levels,
+    )
 
     for c in components:
         write_ascii_stl_triangles(case / "constant/triSurface" / f"{c.patch}.stl", c.patch, c.triangles, SCALE)
 
     overall_aref = max(dy * dz, 1e-12)
     write_block_mesh(case, domain, cells)
-    write_snappy(case, location_in_mesh, near_body_distance, patch_names)
+    write_snappy(
+        case,
+        location_in_mesh,
+        near_body_distance,
+        patch_names,
+        surface_refinement_levels,
+        region_refinement_settings,
+    )
     write_constant(case)
     write_fields(case, VELOCITY, patch_names)
     write_system(case, components, overall_aref, length, (cx, cy, cz))
     write_unsteady_fsi_gap_report(case, components)
+    mesh_resolution_lines = [
+        "# Per-component surface-mesh resolution",
+        f"base_cell_width_m={base_cell_width:.8g}",
+        f"minimum_component_cells_across={MIN_COMPONENT_CELLS_ACROSS:.8g}",
+        f"maximum_adaptive_surface_refinement={MAX_ADAPTIVE_SURFACE_REFINEMENT}",
+        "",
+        "patch\tcross_section_m\tsurface_level_min\tsurface_level_max\tregion_distance_m\tregion_level\testimated_finest_cell_m",
+    ]
+    for component in components:
+        level_min, level_max = surface_refinement_levels[component.patch]
+        region_distance, region_level = region_refinement_settings[component.patch]
+        mesh_resolution_lines.append(
+            f"{component.patch}\t{component_cross_section_extent(component):.8g}\t"
+            f"{level_min}\t{level_max}\t{region_distance:.8g}\t{region_level}\t"
+            f"{base_cell_width / (2 ** level_max):.8g}"
+        )
+    (case / "mesh_resolution_report.txt").write_text(
+        "\n".join(mesh_resolution_lines) + "\n"
+    )
     (case / "case.foam").write_text("")
 
     print("Created OpenFOAM case")
     print(f"Case:      {case}")
     print(f"Patches:   {', '.join(patch_names)}")
     print(f"Cells:     {cells}")
+    print(
+        "Surface refinement: "
+        + ", ".join(
+            f"{patch}={levels[0]}..{levels[1]}"
+            for patch, levels in surface_refinement_levels.items()
+        )
+    )
     print(f"Velocity:  {VELOCITY:g} m/s")
     print(f"Flow:      {'low-X -> high-X' if flow_is_positive_x() else 'high-X -> low-X'}")
     print(f"Domain X:  {domain[0]:g} to {domain[1]:g} m")

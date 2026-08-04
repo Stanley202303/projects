@@ -15,6 +15,8 @@ def _reload_openfoam_modules(monkeypatch, **env):
         "AERO_TRANSIENT_PRESSURE_CORRECTORS",
         "AERO_TRANSIENT_NON_ORTHOGONAL_CORRECTORS",
         "AERO_TRANSIENT_MOMENTUM_PREDICTOR",
+        "MIN_COMPONENT_CELLS_ACROSS",
+        "MAX_ADAPTIVE_SURFACE_REFINEMENT",
     }
     for key in keys:
         monkeypatch.delenv(key, raising=False)
@@ -50,6 +52,81 @@ def _reload_openfoam_modules(monkeypatch, **env):
         if hasattr(openfoam, key):
             setattr(openfoam, key, typed_value)
     return config, models, openfoam
+
+
+def _box_triangles(xmin, xmax, ymin, ymax, zmin, zmax):
+    vertices = (
+        (xmin, ymin, zmin),
+        (xmax, ymin, zmin),
+        (xmax, ymax, zmin),
+        (xmin, ymax, zmin),
+        (xmin, ymin, zmax),
+        (xmax, ymin, zmax),
+        (xmax, ymax, zmax),
+        (xmin, ymax, zmax),
+    )
+    faces = (
+        (0, 2, 1), (0, 3, 2),
+        (4, 5, 6), (4, 6, 7),
+        (0, 1, 5), (0, 5, 4),
+        (3, 7, 6), (3, 6, 2),
+        (0, 4, 7), (0, 7, 3),
+        (1, 2, 6), (1, 6, 5),
+    )
+    return [
+        ((0.0, 0.0, 0.0), vertices[a], vertices[b], vertices[c])
+        for a, b, c in faces
+    ]
+
+
+def test_small_body_gets_local_refinement_and_patch_validation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _config, models, openfoam = _reload_openfoam_modules(monkeypatch)
+    small = models.AeroComponent(
+        name="small insert",
+        patch="small_insert",
+        triangles=_box_triangles(0.0, 0.032, -0.0025, 0.0025, -0.0025, 0.0025),
+        cofr=(0.016, 0.0, 0.0),
+        lref=0.032,
+        aref=0.00016,
+    )
+    plate = models.AeroComponent(
+        name="broad plate",
+        patch="broad_plate",
+        triangles=_box_triangles(0.1, 0.105, -0.4, 0.4, -0.4, 0.4),
+        cofr=(0.1025, 0.0, 0.0),
+        lref=0.8,
+        aref=0.64,
+    )
+
+    levels = openfoam.adaptive_surface_refinement_levels(
+        [small, plate],
+        0.145,
+    )
+
+    assert levels["small_insert"] == (7, 7)
+    assert levels["broad_plate"] == openfoam.SURFACE_REFINEMENT
+    region_settings = openfoam.adaptive_region_refinement_settings(
+        [small, plate],
+        0.145,
+        0.4,
+        levels,
+    )
+    assert region_settings["small_insert"] == (0.01, 7)
+    assert region_settings["broad_plate"] == (0.4, openfoam.REGION_REFINEMENT)
+
+    case = tmp_path / "small_patch_case"
+    openfoam.make_case_from_components([small, plate], case)
+    snappy = (case / "system/snappyHexMeshDict").read_text()
+    allrun = (case / "Allrun").read_text()
+    report = (case / "mesh_resolution_report.txt").read_text()
+    assert "small_insert\n        {\n            level (7 7);" in snappy
+    assert "levels ((0.01 7));" in snappy
+    assert 'REQUIRED_BODY_PATCHES="small_insert broad_plate"' in allrun
+    assert "CFD solve aborted because one or more body surfaces are absent" in allrun
+    assert "small_insert\t0.005\t7\t7" in report
 
 
 def test_transient_mode_writes_pimplefoam_case(monkeypatch, tmp_path: Path) -> None:
