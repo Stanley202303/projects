@@ -39,6 +39,23 @@ from .visualization import (
 )
 
 
+def retained_cfd_patch_names(case: Path) -> Optional[set[str]]:
+    """Return body patches retained by the latest snappyHexMesh run.
+
+    ``None`` preserves compatibility with older/external cases that do not
+    contain the report.  An empty set is a valid parsed result and must not be
+    confused with a missing report.
+    """
+    report = case / "retained_body_patches.txt"
+    if not report.exists():
+        return None
+    for line in report.read_text(errors="replace").splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip() == "retained_body_patches":
+            return set(value.split())
+    return set()
+
+
 def collision_convergence_should_stop(
     swept_contact: Optional[SweptCollisionContact],
     collision_lines: Sequence[str],
@@ -289,7 +306,19 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     shutil.rmtree(step_case)
 
             make_case_from_components(components, step_case, clear_case=True)
-            run_docker(step_case)
+            try:
+                run_docker(step_case)
+            except subprocess.CalledProcessError:
+                # Temporary step cases are normally deleted on exit. Preserve
+                # the meshing evidence needed to diagnose a failed run before
+                # re-raising the original Docker error.
+                copy_step_debug_reports_to_root(
+                    root_case,
+                    step_case,
+                    step,
+                    force=True,
+                )
+                raise
             # High-definition visualisation: convert real OpenFOAM sampled-surface
             # VTKs to one XML .vtp frame before any rigid-body update is applied.
             # This makes frame N show the pressure field for the geometry actually
@@ -306,6 +335,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
             export_dimensional_forces(step_case)
             coeffs_by_patch = latest_coefficients_by_patch(step_case)
             loads_by_patch = latest_dimensional_loads_by_patch(step_case)
+            retained_cfd_patches = retained_cfd_patch_names(step_case)
             write_force_coeff_debug_report(step_case, coeffs_by_patch)
             write_force_load_debug_report(step_case, loads_by_patch)
 
@@ -317,9 +347,18 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
             rigid_origins = [entry[2].cofr for entry in rigid_body_entries]
 
             for component in components:
+                component_has_cfd_patch = (
+                    retained_cfd_patches is None
+                    or component.patch in retained_cfd_patches
+                )
                 coeffs = coeffs_by_patch.get(component.patch, {})
                 coeff_source = component.patch if coeffs else "none"
-                if not coeffs and USE_ALL_COEFFS_FALLBACK and "all" in coeffs_by_patch:
+                if (
+                    not coeffs
+                    and component_has_cfd_patch
+                    and USE_ALL_COEFFS_FALLBACK
+                    and "all" in coeffs_by_patch
+                ):
                     coeffs = coeffs_by_patch.get("all", {})
                     coeff_source = "all-fallback"
 
@@ -329,11 +368,16 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                 own_openfoam_load = loads_by_patch.get(component.patch)
                 all_openfoam_load = loads_by_patch.get("all")
 
-                if USE_OPENFOAM_FORCES_DAT and load_is_nonzero(own_openfoam_load):
+                if (
+                    USE_OPENFOAM_FORCES_DAT
+                    and component_has_cfd_patch
+                    and load_is_nonzero(own_openfoam_load)
+                ):
                     load_override = own_openfoam_load
                     load_source = "OpenFOAM-forces"
                 elif (
                     USE_OPENFOAM_FORCES_DAT
+                    and component_has_cfd_patch
                     and USE_ALL_COEFFS_FALLBACK
                     and not component.is_assembly_anchor
                     and load_is_nonzero(all_openfoam_load)
@@ -346,7 +390,12 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     or (own_openfoam_load is not None and not load_is_nonzero(own_openfoam_load))
                 ) and not component.is_assembly_anchor:
                     load_override = surface_pressure_load(component)
-                    load_source = "panel-aero-fallback-after-zero-openfoam" if own_openfoam_load is not None else "panel-aero-fallback"
+                    if not component_has_cfd_patch:
+                        load_source = "panel-aero-fallback-occluded"
+                    elif own_openfoam_load is not None:
+                        load_source = "panel-aero-fallback-after-zero-openfoam"
+                    else:
+                        load_source = "panel-aero-fallback"
 
                 rigid_group_index = rigid_membership.get(id(component))
                 if rigid_group_index is not None:

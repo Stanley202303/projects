@@ -79,6 +79,23 @@ def _box_triangles(xmin, xmax, ymin, ymax, zmin, zmax):
     ]
 
 
+def test_retained_cfd_patch_report_distinguishes_missing_report_and_occlusion(
+    tmp_path: Path,
+) -> None:
+    from cfd_motion.runner import retained_cfd_patch_names
+
+    assert retained_cfd_patch_names(tmp_path) is None
+    (tmp_path / "retained_body_patches.txt").write_text(
+        "retained_body_patches= Part_1_3 Part_1_1 Part_1_1_2\n"
+        "occluded_body_patches= Part_1_2\n"
+    )
+    assert retained_cfd_patch_names(tmp_path) == {
+        "Part_1_3",
+        "Part_1_1",
+        "Part_1_1_2",
+    }
+
+
 def test_small_body_gets_local_refinement_and_patch_validation(
     monkeypatch,
     tmp_path: Path,
@@ -125,7 +142,13 @@ def test_small_body_gets_local_refinement_and_patch_validation(
     assert "small_insert\n        {\n            level (7 7);" in snappy
     assert "levels ((0.01 7));" in snappy
     assert 'REQUIRED_BODY_PATCHES="small_insert broad_plate"' in allrun
-    assert "CFD solve aborted because one or more body surfaces are absent" in allrun
+    assert "has no fluid-facing faces" in allrun
+    assert 'functions/forces_$required_patch" -remove' in allrun
+    assert "functions/forces_all/patches -set" in allrun
+    assert "retained_body_patches.txt" in allrun
+    assert "retained no fluid-facing body patches; CFD solve aborted" in allrun
+    assert "checkMesh | tee log.checkMesh" in allrun
+    assert 'grep -q "Mesh OK" log.checkMesh' in allrun
     assert "small_insert\t0.005\t7\t7" in report
 
 

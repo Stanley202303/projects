@@ -963,21 +963,51 @@ REQUIRED_BODY_PATCHES="{required_patch_names}"
 
 blockMesh | tee log.blockMesh
 snappyHexMesh -overwrite | tee log.snappyHexMesh
-checkMesh -allGeometry -allTopology | tee log.checkMesh
-
-# A missing body patch makes its OpenFOAM force and pressure fields silently
-# become zero/NaN. Stop before the solver instead of accepting invalid physics.
-missing_body_patch=0
-for required_patch in $REQUIRED_BODY_PATCHES; do
-    if ! grep -Eq "^[[:space:]]*${{required_patch}}[[:space:]]*$" constant/polyMesh/boundary; then
-        echo "ERROR: snappyHexMesh did not retain required body patch $required_patch" | tee -a log.checkMesh
-        missing_body_patch=1
-    fi
-done
-if [ "$missing_body_patch" -ne 0 ]; then
-    echo "ERROR: CFD solve aborted because one or more body surfaces are absent from polyMesh/boundary." | tee -a log.checkMesh
+checkMesh | tee log.checkMesh
+if ! grep -q "Mesh OK" log.checkMesh; then
+    echo "ERROR: standard OpenFOAM mesh validation did not report Mesh OK; CFD solve aborted." | tee -a log.checkMesh
     exit 2
 fi
+
+# A fully occluded body has no fluid-facing boundary, so snappyHexMesh correctly
+# removes its zero-sized patch.  Keep that independent body in the Python
+# motion/collision solve, but do not ask OpenFOAM to integrate or sample a wall
+# that is absent.  If it becomes exposed after motion, the next remesh restores
+# its normal OpenFOAM force objects automatically.
+retained_body_patches=""
+missing_body_patches=""
+sample_surface_entries=""
+for required_patch in $REQUIRED_BODY_PATCHES; do
+    if grep -Eq "^[[:space:]]*${{required_patch}}[[:space:]]*$" constant/polyMesh/boundary; then
+        retained_body_patches="$retained_body_patches $required_patch"
+        sample_surface_entries="$sample_surface_entries ${{required_patch}}_sampled {{ type patch; patches ($required_patch); interpolate true; }}"
+    else
+        echo "WARNING: body patch $required_patch has no fluid-facing faces; using per-body aerodynamic fallback until it is exposed." | tee -a log.checkMesh
+        missing_body_patches="$missing_body_patches $required_patch"
+        foamDictionary system/controlDict -entry "functions/forces_$required_patch" -remove >/dev/null 2>&1 || true
+        foamDictionary system/controlDict -entry "functions/forceCoeffs_$required_patch" -remove >/dev/null 2>&1 || true
+    fi
+done
+if [ -z "$retained_body_patches" ]; then
+    echo "ERROR: snappyHexMesh retained no fluid-facing body patches; CFD solve aborted." | tee -a log.checkMesh
+    exit 2
+fi
+
+# Group force objects and sampled surfaces must reference only patches that are
+# actually present, otherwise OpenFOAM emits a warning for every solver step.
+foamDictionary system/controlDict -entry functions/forces_all/patches -set "($retained_body_patches)" >/dev/null 2>&1 || true
+foamDictionary system/controlDict -entry functions/forceCoeffs_all/patches -set "($retained_body_patches)" >/dev/null 2>&1 || true
+foamDictionary system/controlDict -entry functions/wallShearStress/patches -set "($retained_body_patches)" >/dev/null 2>&1 || true
+if [ -f system/sampledWallSurfacesDict ]; then
+    foamDictionary system/sampledWallSurfacesDict -entry functions/{SAMPLED_SURFACE_FUNCTION_NAME}/surfaces -set "($sample_surface_entries)" >/dev/null 2>&1 || true
+fi
+if [ -f system/sampleDict ]; then
+    foamDictionary system/sampleDict -entry surfaces -set "($sample_surface_entries)" >/dev/null 2>&1 || true
+fi
+{{
+    echo "retained_body_patches=$retained_body_patches"
+    echo "occluded_body_patches=$missing_body_patches"
+}} > retained_body_patches.txt
 
 # Run the solver with a hard wall-clock cap.  controlDict writes every
 # CFD_WRITE_INTERVAL steps and purgeWrite keeps only the latest written time, so

@@ -1991,14 +1991,24 @@ def copy_step_cfd_sampled_preview_to_root(root_case: Path, step_case: Path, step
     return dst
 
 
-def copy_step_debug_reports_to_root(root_case: Path, step_case: Path, step: int) -> None:
-    if not KEEP_STEP_DEBUG_REPORTS:
+def copy_step_debug_reports_to_root(
+    root_case: Path,
+    step_case: Path,
+    step: int,
+    force: bool = False,
+) -> None:
+    if not KEEP_STEP_DEBUG_REPORTS and not force:
         return
     report_names = [
         "force_coeff_debug_report.txt",
         "force_load_debug_report.txt",
         PRESSURE_RANGE_REPORT_NAME,
         VISUALIZATION_VALIDATION_REPORT_NAME,
+        "mesh_resolution_report.txt",
+        "retained_body_patches.txt",
+        "log.blockMesh",
+        "log.snappyHexMesh",
+        "log.checkMesh",
     ]
     out_dir = root_case / STEP_DEBUG_REPORT_DIR_NAME / f"step_{step:03d}"
     copied = False
