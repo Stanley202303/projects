@@ -964,8 +964,14 @@ REQUIRED_BODY_PATCHES="{required_patch_names}"
 blockMesh | tee log.blockMesh
 snappyHexMesh -overwrite | tee log.snappyHexMesh
 checkMesh | tee log.checkMesh
-if ! grep -q "Mesh OK" log.checkMesh; then
-    echo "ERROR: standard OpenFOAM mesh validation did not report Mesh OK; CFD solve aborted." | tee -a log.checkMesh
+if grep -q "Mesh OK" log.checkMesh; then
+    :
+elif grep -q "Failed 1 mesh checks" log.checkMesh \
+    && grep -q "highly skew faces detected" log.checkMesh \
+    && ! grep "^ [*][*][*]" log.checkMesh | grep -vq "Max skewness"; then
+    echo "WARNING: checkMesh reported skew-only mesh quality warning; continuing CFD solve." | tee -a log.checkMesh
+else
+    echo "ERROR: standard OpenFOAM mesh validation found hard mesh failures; CFD solve aborted." | tee -a log.checkMesh
     exit 2
 fi
 

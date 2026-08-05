@@ -148,7 +148,8 @@ def test_small_body_gets_local_refinement_and_patch_validation(
     assert "retained_body_patches.txt" in allrun
     assert "retained no fluid-facing body patches; CFD solve aborted" in allrun
     assert "checkMesh | tee log.checkMesh" in allrun
-    assert 'grep -q "Mesh OK" log.checkMesh' in allrun
+    assert "skew-only mesh quality warning" in allrun
+    assert "found hard mesh failures; CFD solve aborted" in allrun
     assert "small_insert\t0.005\t7\t7" in report
 
 
