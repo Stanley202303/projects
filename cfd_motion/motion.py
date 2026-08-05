@@ -3336,6 +3336,31 @@ def aabb_overlap_with_normal(a: AeroComponent, b: AeroComponent) -> Optional[Tup
     return depth, normal, contact
 
 
+def thin_component_axis_normal(component: AeroComponent, direction: Vec3) -> Vec3:
+    """Return the axis-aligned sheet normal closest to ``direction``."""
+    bounds = component_bounds(component.triangles)
+    extents = (
+        bounds[1] - bounds[0],
+        bounds[3] - bounds[2],
+        bounds[5] - bounds[4],
+    )
+    axis = min(range(3), key=lambda index: extents[index])
+    sign = 1.0 if direction[axis] >= 0.0 else -1.0
+    return tuple(sign if index == axis else 0.0 for index in range(3))
+
+
+def component_has_thin_axis(component: AeroComponent) -> bool:
+    bounds = component_bounds(component.triangles)
+    extents = sorted(
+        (
+            bounds[1] - bounds[0],
+            bounds[3] - bounds[2],
+            bounds[5] - bounds[4],
+        )
+    )
+    return extents[0] < 0.1 * max(extents[2], 1e-9)
+
+
 def component_separation_distance_along_normal(
     a: AeroComponent,
     b: AeroComponent,
@@ -3752,6 +3777,170 @@ def enforce_environment_contact_constraints(
                     physical_depth += max(COLLISION_MARGIN_M, 0.0)
                 if physical_depth <= COLLISION_MIN_OVERLAP_M:
                     continue
+                environment_failure_mode = "nonpenetration_constraint"
+                environment_perforated = False
+                environment_absorbed_energy = 0.0
+                environment_residual_speed = 0.0
+                environment_contact_radius = 0.0
+                environment_deform_a = 0.0
+                environment_deform_b = 0.0
+                environment_indent_a = 0.0
+                environment_indent_b = 0.0
+                environment_logged_manifold_points = 1
+                environment_friction = 0.0
+                for impactor, target, target_to_impactor_normal in (
+                    (a, b, normal),
+                    (b, a, v_mul(normal, -1.0)),
+                ):
+                    if not target.is_assembly_anchor:
+                        continue
+                    relative_velocity = v_sub(
+                        contact_point_velocity(impactor, surface_contact),
+                        contact_point_velocity(target, surface_contact),
+                    )
+                    impact_axis = v_unit(
+                        relative_velocity,
+                        v_mul(target_to_impactor_normal, -1.0),
+                    )
+                    contact_damage_axis = (
+                        thin_component_axis_normal(target, impact_axis)
+                        if component_has_thin_axis(target)
+                        else impact_axis
+                    )
+                    normal_speed = max(
+                        abs(v_dot(relative_velocity, target_to_impactor_normal)),
+                        physical_depth / max(MOTION_DT, 1e-9),
+                    )
+                    response = thin_shell_impact_response(
+                        impactor,
+                        target,
+                        normal_speed,
+                        surface_contact,
+                        target_to_impactor_normal,
+                    )
+                    if response is None:
+                        continue
+                    environment_failure_mode = response.failure_mode
+                    environment_absorbed_energy = response.absorbed_energy_j
+                    environment_residual_speed = response.residual_speed
+                    environment_contact_radius = max(
+                        response.hole_radius,
+                        response.indentation,
+                        COLLISION_DEFORMATION_MIN_RADIUS_M,
+                    )
+                    indent_impactor, indent_target = split_contact_indentation(
+                        impactor,
+                        target,
+                        response.indentation,
+                    )
+                    deform_impactor = deform_component_at_contact(
+                        impactor,
+                        surface_contact,
+                        v_mul(contact_damage_axis, -1.0),
+                        indent_impactor,
+                        environment_contact_radius,
+                    )
+                    deform_target = deform_component_at_contact(
+                        target,
+                        surface_contact,
+                        contact_damage_axis,
+                        indent_target,
+                        environment_contact_radius,
+                    )
+                    register_collision_dent(
+                        impactor,
+                        surface_contact,
+                        v_mul(contact_damage_axis, -1.0),
+                        deform_impactor,
+                        environment_contact_radius,
+                        step,
+                        response.failure_mode,
+                        0.5 * response.absorbed_energy_j,
+                    )
+                    if response.perforated:
+                        hole_damage = register_collision_hole(
+                            target,
+                            surface_contact,
+                            contact_damage_axis,
+                            response.hole_radius,
+                            environment_contact_radius,
+                            step,
+                            response.failure_mode,
+                            response.absorbed_energy_j,
+                        )
+                        environment_contact_radius = hole_damage.current_hole_radius_m
+                        tangent_velocity = v_sub(
+                            impactor.linear_velocity,
+                            v_mul(
+                                impact_axis,
+                                v_dot(impactor.linear_velocity, impact_axis),
+                            ),
+                        )
+                        impactor.linear_velocity = v_add(
+                            tangent_velocity,
+                            v_mul(impact_axis, response.residual_speed),
+                        )
+                        impactor.freedom.source = "post-perforation-ballistic"
+                        impactor.filtered_force = (0.0, 0.0, 0.0)
+                        impactor.filtered_moment = (0.0, 0.0, 0.0)
+                        impactor.aerodynamic_load_initialized = False
+                        environment_perforated = True
+                    else:
+                        register_collision_dent(
+                            target,
+                            surface_contact,
+                            contact_damage_axis,
+                            deform_target,
+                            environment_contact_radius,
+                            step,
+                            response.failure_mode,
+                            0.5 * response.absorbed_energy_j,
+                        )
+                        # A non-perforating missed impact must be returned to the
+                        # entrance side along the contact normal, not along the
+                        # full velocity vector, otherwise the projection invents
+                        # sideways drift on oblique impacts.
+                        normal = (
+                            v_mul(contact_damage_axis, -1.0)
+                            if impactor is a
+                            else contact_damage_axis
+                        )
+                    if impactor is a:
+                        environment_deform_a = deform_impactor
+                        environment_deform_b = deform_target
+                        environment_indent_a = indent_impactor
+                        environment_indent_b = indent_target
+                    else:
+                        environment_deform_a = deform_target
+                        environment_deform_b = deform_impactor
+                        environment_indent_a = indent_target
+                        environment_indent_b = indent_impactor
+                    break
+                if environment_perforated:
+                    corrected = True
+                    lines.append(
+                        f"{step}\t{COLLISION_MAX_PASSES + constraint_pass}\t"
+                        f"{a.patch}\t{b.patch}\t{physical_depth:.8g}\t"
+                        f"{normal[0]:.8g}\t{normal[1]:.8g}\t{normal[2]:.8g}\t"
+                        f"{surface_contact[0]:.8g}\t{surface_contact[1]:.8g}\t"
+                        f"{surface_contact[2]:.8g}\t0\t0\t0\t"
+                        f"{environment_deform_a:.8g}\t{environment_deform_b:.8g}\t"
+                        f"{environment_contact_radius:.8g}\t"
+                        f"{environment_indent_a:.8g}\t{environment_indent_b:.8g}\t"
+                        f"{environment_failure_mode}\t1\t"
+                        f"{environment_absorbed_energy:.8g}\t"
+                        f"{environment_residual_speed:.8g}\t0\t"
+                        f"{environment_logged_manifold_points}\t"
+                        f"{environment_friction:.8g}"
+                    )
+                    continue
+                if b.is_assembly_anchor and component_has_thin_axis(b):
+                    normal = thin_component_axis_normal(b, normal)
+                elif a.is_assembly_anchor and component_has_thin_axis(a):
+                    normal = v_mul(
+                        thin_component_axis_normal(a, v_mul(normal, -1.0)),
+                        -1.0,
+                    )
                 a_can_translate = component_has_translation_freedom(a)
                 b_can_translate = component_has_translation_freedom(b)
                 inv_a = 1.0 / max(a.mass, 1e-9) if a_can_translate else 0.0
@@ -3822,7 +4011,14 @@ def enforce_environment_contact_constraints(
                     f"{surface_contact[0]:.8g}\t{surface_contact[1]:.8g}\t"
                     f"{surface_contact[2]:.8g}\t{impulse_mag:.8g}\t"
                     f"{v_norm(applied_a):.8g}\t{v_norm(applied_b):.8g}\t"
-                    "0\t0\t0\t0\t0\tnonpenetration_constraint\t0\t0\t0\t0\t1\t0"
+                    f"{environment_deform_a:.8g}\t{environment_deform_b:.8g}\t"
+                    f"{environment_contact_radius:.8g}\t"
+                    f"{environment_indent_a:.8g}\t{environment_indent_b:.8g}\t"
+                    f"{environment_failure_mode}\t0\t"
+                    f"{environment_absorbed_energy:.8g}\t"
+                    f"{environment_residual_speed:.8g}\t0\t"
+                    f"{environment_logged_manifold_points}\t"
+                    f"{environment_friction:.8g}"
                 )
         if not corrected:
             break

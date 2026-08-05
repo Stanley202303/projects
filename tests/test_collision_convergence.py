@@ -1065,6 +1065,61 @@ class CollisionConvergenceTest(TestCase):
         self.assertTrue(target.collision_damage)
         self.assertGreater(target.collision_damage[0].current_hole_radius_m, 0.0)
 
+    def test_environment_projection_creates_material_damage_for_missed_thin_plate_impact(self) -> None:
+        projectile = rectangular_component(
+            "late_projectile",
+            0.092,
+            0.097,
+            -0.0025,
+            0.0025,
+            -0.0025,
+            0.0025,
+        )
+        projectile.mass = 0.028
+        projectile.linear_velocity = (30.0, 0.0, 0.0)
+        projectile.material = MaterialProperties(
+            material_name="Iridium",
+            density_kg_m3=22650.0,
+            young_modulus_pa=5.0e7,
+            yield_strength_pa=1.0e8,
+            failure_strain=0.20,
+        )
+        target = rectangular_component(
+            "anchored_abs_plate",
+            0.09,
+            0.095,
+            -0.1,
+            0.1,
+            -0.1,
+            0.1,
+        )
+        target.is_assembly_anchor = True
+        target.freedom = MotionFreedom([], [], "COLLISION_TARGET")
+        target.material = MaterialProperties(
+            material_name="ABS",
+            density_kg_m3=1052.0,
+            young_modulus_pa=2.31e9,
+            poisson_ratio=0.364,
+            thickness_m=0.005,
+            yield_strength_pa=4.48e7,
+            failure_strain=0.20,
+        )
+
+        with patch("cfd_motion.motion.MOTION_DT", 0.0012):
+            lines = enforce_environment_contact_constraints(
+                [projectile, target],
+                4,
+            )
+
+        self.assertTrue(lines)
+        self.assertTrue(any("plastic_membrane_dent" in line for line in lines))
+        self.assertFalse(any("nonpenetration_constraint" in line for line in lines))
+        self.assertTrue(target.collision_damage)
+        self.assertGreater(target.collision_damage[0].current_depth_m, 0.0)
+        projectile_bounds = component_bounds(projectile.triangles)
+        target_bounds = component_bounds(target.triangles)
+        self.assertLessEqual(projectile_bounds[1], target_bounds[0])
+
     def test_nearby_shock_impulse_has_equal_opposite_reaction(self) -> None:
         donor = box_component("shock_donor", -0.02, -0.01)
         neighbour = box_component("shock_neighbour", 0.0, 0.01)
