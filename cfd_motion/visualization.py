@@ -349,18 +349,44 @@ def validate_preview_polydata(path: Path) -> None:
     if point_count < 0 or polygon_count < 0:
         raise ValueError(f"Preview VTP has invalid geometry counts: {path}")
 
+    def validate_numeric_array(array: ElementTree.Element, expected_values: int) -> None:
+        tokens = (array.text or "").split()
+        name = array.attrib.get("Name", "unnamed")
+        if len(tokens) != expected_values:
+            raise ValueError(
+                f"Preview VTP array {name!r} has the wrong length: {path}"
+            )
+        for token in tokens:
+            try:
+                value = float(token)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Preview VTP array {name!r} contains a non-numeric value: {path}"
+                ) from exc
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"Preview VTP array {name!r} contains a non-finite value: {path}"
+                )
+            # ParaView/VTK 6.1 rejects ASCII subnormal doubles as an incomplete
+            # array even though Python can parse them. Values this small are
+            # numerical round-off, so writers must publish them as exact zero.
+            if 0.0 < abs(value) < sys.float_info.min:
+                raise ValueError(
+                    f"Preview VTP array {name!r} contains a VTK-incompatible "
+                    f"subnormal value: {path}"
+                )
+
     point_data = piece.find("PointData")
     if point_data is None:
         raise ValueError(f"Preview VTP has no PointData: {path}")
     for array in point_data.findall("DataArray"):
         components = int(array.attrib.get("NumberOfComponents", "1"))
-        if len((array.text or "").split()) != point_count * components:
-            name = array.attrib.get("Name", "unnamed")
-            raise ValueError(f"Preview VTP PointData array {name!r} has the wrong length: {path}")
+        validate_numeric_array(array, point_count * components)
 
     points_array = piece.find("Points/DataArray")
-    if points_array is None or len((points_array.text or "").split()) != 3 * point_count:
+    if points_array is None:
         raise ValueError(f"Preview VTP has an incomplete point coordinate array: {path}")
+    validate_numeric_array(points_array, 3 * point_count)
 
     connectivity = piece.find("Polys/DataArray[@Name='connectivity']")
     offsets = piece.find("Polys/DataArray[@Name='offsets']")
@@ -376,11 +402,7 @@ def validate_preview_polydata(path: Path) -> None:
         raise ValueError(f"Preview VTP has no CellData: {path}")
     for array in cell_data.findall("DataArray"):
         components = int(array.attrib.get("NumberOfComponents", "1"))
-        if len((array.text or "").split()) != polygon_count * components:
-            name = array.attrib.get("Name", "unnamed")
-            raise ValueError(
-                f"Preview VTP CellData array {name!r} has the wrong length: {path}"
-            )
+        validate_numeric_array(array, polygon_count * components)
 
 
 def _write_ascii_polydata_vtk(
@@ -490,6 +512,11 @@ def _write_ascii_polydata_vtk(
             except Exception:
                 fv = 0.0
             if not math.isfinite(fv):
+                fv = 0.0
+            elif 0.0 < abs(fv) < sys.float_info.min:
+                # VTK's ASCII double parser reports subnormal values as an
+                # incomplete DataArray. They are below the normal IEEE-754
+                # range and physically indistinguishable from zero here.
                 fv = 0.0
             row.append(f"{fv:.9g}")
             if len(row) >= per_line:

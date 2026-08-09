@@ -1,5 +1,8 @@
 from pathlib import Path
+import sys
 import xml.etree.ElementTree as ElementTree
+
+import pytest
 
 from cfd_motion.models import AeroComponent, MotionFreedom
 from cfd_motion.visualization import (
@@ -111,6 +114,49 @@ def test_float64_preview_preserves_values_below_float32_range(tmp_path: Path) ->
     assert array.attrib["type"] == "Float64"
     assert [float(value) for value in (array.text or "").split()] == [1.0e-55] * 3
     validate_preview_polydata(output)
+
+
+def test_preview_clamps_subnormal_values_rejected_by_vtk(tmp_path: Path) -> None:
+    output = tmp_path / "subnormal_values.vtp"
+    subnormal = 0.5 * sys.float_info.min
+    _write_ascii_polydata_vtk(
+        output,
+        [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)],
+        [(0, 1, 2)],
+        {"velocityX": [-subnormal]},
+        {"velocity": [(-subnormal, subnormal, 0.0)]},
+    )
+
+    root = ElementTree.parse(output).getroot()
+    velocity_x = root.find(".//PointData/DataArray[@Name='velocityX']")
+    velocity = root.find(".//PointData/DataArray[@Name='velocity']")
+    assert velocity_x is not None
+    assert velocity is not None
+    assert [float(value) for value in (velocity_x.text or "").split()] == [0.0] * 3
+    assert [float(value) for value in (velocity.text or "").split()] == [0.0] * 9
+    validate_preview_polydata(output)
+
+
+def test_preview_validation_rejects_vtk_incompatible_subnormal_values(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "invalid_subnormal.vtp"
+    _write_ascii_polydata_vtk(
+        output,
+        [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)],
+        [(0, 1, 2)],
+        {"velocityX": [0.0]},
+    )
+    tree = ElementTree.parse(output)
+    velocity_x = tree.getroot().find(
+        ".//PointData/DataArray[@Name='velocityX']"
+    )
+    assert velocity_x is not None
+    velocity_x.text = "1e-311 1e-311 1e-311"
+    tree.write(output)
+
+    with pytest.raises(ValueError, match="subnormal"):
+        validate_preview_polydata(output)
 
 
 def test_panel_preview_initializes_structural_cell_fields(tmp_path: Path) -> None:
