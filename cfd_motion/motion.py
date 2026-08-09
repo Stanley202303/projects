@@ -167,6 +167,13 @@ def rotational_inertia_about_axis(component: AeroComponent, axis: Vec3) -> float
     )
 
 
+def collision_angular_speed_limit() -> float:
+    """Return an explicit cap or the rotation-CFL cap for this timestep."""
+    if COLLISION_MAX_ANGULAR_SPEED_RAD_S > 0.0:
+        return COLLISION_MAX_ANGULAR_SPEED_RAD_S
+    return MAX_ROTATION_PER_STEP_RAD / max(MOTION_DT, 1e-9)
+
+
 def angular_acceleration_from_moment(component: AeroComponent, moment: Vec3, axes: Sequence[Vec3]) -> Vec3:
     if not axes:
         return (0.0, 0.0, 0.0)
@@ -637,7 +644,7 @@ def update_component_motion(
     new_av = v_mul(new_av, angular_decay)
     new_av = clamp_vector_magnitude(
         new_av,
-        COLLISION_MAX_ANGULAR_SPEED_RAD_S,
+        collision_angular_speed_limit(),
     )
     unconstrained_rotation = v_mul(new_av, dt)
     rotation_vector_step = clamp_vector_magnitude(
@@ -845,7 +852,13 @@ def rotate_component_for_collision(component: AeroComponent, normal: Vec3, conta
     move_component_rigidly(component, (0.0, 0.0, 0.0), best_axis, angle, origin)
     drot = v_mul(best_axis, angle)
     component.total_rotation = v_add(component.total_rotation, drot)
-    component.angular_velocity = clamp_vector_magnitude(v_add(component.angular_velocity, v_mul(drot, 1.0 / max(MOTION_DT, 1e-9))), COLLISION_MAX_ANGULAR_SPEED_RAD_S)
+    component.angular_velocity = clamp_vector_magnitude(
+        v_add(
+            component.angular_velocity,
+            v_mul(drot, 1.0 / max(MOTION_DT, 1e-9)),
+        ),
+        collision_angular_speed_limit(),
+    )
     return drot
 
 
@@ -862,7 +875,7 @@ def apply_collision_impulse(component: AeroComponent, impulse: Vec3, contact_poi
         delta_av = angular_acceleration_from_moment(component, angular_impulse, component.freedom.rotate_axes)
         component.angular_velocity = clamp_vector_magnitude(
             v_add(component.angular_velocity, delta_av),
-            COLLISION_MAX_ANGULAR_SPEED_RAD_S,
+            collision_angular_speed_limit(),
         )
 
 

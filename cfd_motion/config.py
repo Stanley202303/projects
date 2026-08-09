@@ -467,7 +467,12 @@ COLLISION_MANIFOLD_TOLERANCE_M = max(
 COLLISION_MAX_PASSES = max(1, int(os.environ.get("COLLISION_MAX_PASSES", "6")))
 COLLISION_MIN_OVERLAP_M = float(os.environ.get("COLLISION_MIN_OVERLAP_M", "1e-7"))
 COLLISION_MAX_LINEAR_SPEED_MPS = float(os.environ.get("COLLISION_MAX_LINEAR_SPEED_MPS", "20"))
-COLLISION_MAX_ANGULAR_SPEED_RAD_S = float(os.environ.get("COLLISION_MAX_ANGULAR_SPEED_RAD_S", "20"))
+# Zero selects the timestep-aware limit MAX_ROTATION_PER_STEP_RAD / MOTION_DT.
+# A positive value remains an explicit absolute override.
+COLLISION_MAX_ANGULAR_SPEED_RAD_S = max(
+    0.0,
+    float(os.environ.get("COLLISION_MAX_ANGULAR_SPEED_RAD_S", "0")),
+)
 COLLISION_ROTATION_SWEEP_MAX_ANGLE_RAD = math.radians(
     max(0.1, float(os.environ.get("COLLISION_ROTATION_SWEEP_MAX_ANGLE_DEG", "2")))
 )

@@ -16,6 +16,7 @@ from cfd_motion.motion import (
     arrange_collision_convergence_initial_gap,
     closest_point_on_triangle,
     collision_convergence_approach_axis,
+    collision_angular_speed_limit,
     component_has_decoded_assembly_mate,
     component_center_from_bounds,
     configure_collision_convergence_components,
@@ -3125,6 +3126,17 @@ class CollisionConvergenceTest(TestCase):
         self.assertAlmostEqual(moving.linear_velocity[1], 2.0)
         self.assertNotEqual(moving.angular_velocity, (0.0, 0.0, 0.0))
         self.assertGreater(moving.angular_velocity[2], 0.0)
+
+    def test_collision_rotation_limit_scales_with_dynamic_timestep(self) -> None:
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.0008),
+            patch("cfd_motion.motion.MAX_ROTATION_PER_STEP_RAD", math.radians(10.0)),
+            patch("cfd_motion.motion.COLLISION_MAX_ANGULAR_SPEED_RAD_S", 0.0),
+        ):
+            limit = collision_angular_speed_limit()
+
+        self.assertAlmostEqual(limit, math.radians(10.0) / 0.0008)
+        self.assertGreater(limit, 20.0)
 
     def test_oblique_plate_impact_uses_normal_energy_and_ricochets(self) -> None:
         moving = rectangular_component(
