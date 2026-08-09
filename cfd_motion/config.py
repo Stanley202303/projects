@@ -535,6 +535,8 @@ if COLLISION_STRUCTURAL_SOLVER in {"material_point", "material_points", "mpm"}:
     COLLISION_STRUCTURAL_SOLVER = "mpm"
 if COLLISION_STRUCTURAL_SOLVER in {"hybrid", "hybrid_shell", "hybrid-thin-target"}:
     COLLISION_STRUCTURAL_SOLVER = "hybrid_shell"
+if COLLISION_STRUCTURAL_SOLVER in {"fem_mpm", "hybrid-fem-mpm", "volumetric", "solid"}:
+    COLLISION_STRUCTURAL_SOLVER = "hybrid_fem_mpm"
 COLLISION_SHELL_DAMPING_RATIO = max(
     0.0,
     float(os.environ.get("COLLISION_SHELL_DAMPING_RATIO", "0.08")),

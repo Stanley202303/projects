@@ -3038,6 +3038,7 @@ def register_collision_hole(
         "dynamic_shell",
         "mpm",
         "hybrid_shell",
+        "hybrid_fem_mpm",
     }
     if solver_supports_shell and component.collision_structural_state is None:
         build_args = (
@@ -3056,8 +3057,10 @@ def register_collision_hole(
             collision_shell_displacement_limit(component, target_hole_radius, radius),
             damage.target_hole_radius_m,
         )
-        if COLLISION_STRUCTURAL_SOLVER == "hybrid_shell":
+        if COLLISION_STRUCTURAL_SOLVER in {"hybrid_shell", "hybrid_fem_mpm"}:
             state = build_hybrid_shell_collision_state(*build_args)
+            state.solver_backend = COLLISION_STRUCTURAL_SOLVER
+            state.shell_state.solver_backend = COLLISION_STRUCTURAL_SOLVER
             apply_shell_impact_energy(
                 state.shell_state,
                 absorbed_energy_j,
