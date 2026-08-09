@@ -3402,6 +3402,102 @@ def component_has_thin_axis(component: AeroComponent) -> bool:
     return extents[0] < 0.1 * max(extents[2], 1e-9)
 
 
+def dominant_planar_surface_normal(
+    component: AeroComponent,
+    direction_hint: Vec3,
+) -> Optional[Vec3]:
+    """Return a stable broad-face normal for a plate-like closed surface.
+
+    Opposite faces of a closed plate have cancelling signed normals.  The
+    classic area-weighted normal structure tensor, sum(A n n^T), avoids that
+    cancellation.  Its dominant eigenvector identifies the plate normal even
+    when the CAD body is rotated relative to the world axes.  Reference
+    triangles are preferred so local dents do not flip the collision normal.
+    """
+    triangles = component.deformation_reference_triangles or component.triangles
+    tensor = [[0.0, 0.0, 0.0] for _ in range(3)]
+    trace = 0.0
+    seed = v_unit(direction_hint, (1.0, 0.0, 0.0))
+    largest_area = 0.0
+    for triangle in triangles:
+        area, _centroid, normal = triangle_area_centroid_normal(triangle)
+        if area <= 1e-16:
+            continue
+        unit_normal = v_unit(normal)
+        trace += area
+        if area > largest_area:
+            largest_area = area
+            seed = unit_normal
+        for row in range(3):
+            for column in range(3):
+                tensor[row][column] += (
+                    area * unit_normal[row] * unit_normal[column]
+                )
+    if trace <= 1e-16:
+        return None
+
+    vector = seed
+    for _iteration in range(12):
+        multiplied = tuple(
+            sum(tensor[row][column] * vector[column] for column in range(3))
+            for row in range(3)
+        )
+        if v_norm(multiplied) <= 1e-16:
+            return None
+        vector = v_unit(multiplied)
+    eigenvalue = v_dot(
+        vector,
+        tuple(
+            sum(tensor[row][column] * vector[column] for column in range(3))
+            for row in range(3)
+        ),
+    )
+    # A cube has no dominant broad-face direction.  A plate does.
+    if eigenvalue / trace < 0.60:
+        return None
+    if v_dot(vector, direction_hint) < 0.0:
+        vector = v_mul(vector, -1.0)
+    return vector
+
+
+def stable_collision_normal(
+    a: AeroComponent,
+    b: AeroComponent,
+    detected_normal: Vec3,
+    preserve_detected_orientation: bool = False,
+) -> Vec3:
+    """Use reference plate geometry to stabilise a triangle contact normal."""
+    center_offset = v_sub(
+        component_center_from_bounds(a),
+        component_center_from_bounds(b),
+    )
+    candidates: List[Tuple[int, float, Vec3]] = []
+    for component in (a, b):
+        candidate = dominant_planar_surface_normal(component, detected_normal)
+        if candidate is None:
+            continue
+        candidates.append(
+            (
+                1 if component.is_assembly_anchor else 0,
+                component.aref,
+                candidate,
+            )
+        )
+    if not candidates:
+        return detected_normal
+    _anchor_priority, _area, normal = max(
+        candidates,
+        key=lambda item: (item[0], item[1]),
+    )
+    if (
+        not preserve_detected_orientation
+        and v_norm(center_offset) > 1e-12
+        and v_dot(normal, center_offset) < 0.0
+    ):
+        normal = v_mul(normal, -1.0)
+    return normal
+
+
 def component_separation_distance_along_normal(
     a: AeroComponent,
     b: AeroComponent,
@@ -4344,6 +4440,14 @@ def resolve_part_collisions(
                     if hit is None:
                         continue
                     depth, normal, contact = hit
+                    normal = stable_collision_normal(
+                        a,
+                        b,
+                        normal,
+                        preserve_detected_orientation=(
+                            is_swept_pair or relative_swept_contact is not None
+                        ),
+                    )
                     depth = max(
                         depth - initial_overlap_depth,
                         COLLISION_MIN_OVERLAP_M,
@@ -5186,6 +5290,12 @@ def apply_collision_convergence_step(
         if earliest_hit is not None:
             _distance, contact_moving, contact_stationary, mesh_hit = earliest_hit
             travel_to_contact, contact_point, contact_normal, manifold_points = mesh_hit
+            contact_normal = stable_collision_normal(
+                contact_moving,
+                contact_stationary,
+                contact_normal,
+                preserve_detected_orientation=True,
+            )
             contact_time = travel_to_contact / max(
                 COLLISION_CONVERGENCE_SPEED_MPS,
                 1e-9,
@@ -5202,10 +5312,15 @@ def apply_collision_convergence_step(
                 contact_point,
                 contact_normal,
             )
+            impact_velocity = v_mul(axis, COLLISION_CONVERGENCE_SPEED_MPS)
+            normal_impact_speed = max(
+                0.0,
+                -v_dot(impact_velocity, contact_normal),
+            )
             shell_response = thin_shell_impact_response(
                 contact_moving,
                 contact_stationary,
-                COLLISION_CONVERGENCE_SPEED_MPS,
+                normal_impact_speed,
                 moving_contact_point,
                 contact_normal,
             )
@@ -5213,7 +5328,7 @@ def apply_collision_convergence_step(
                 impact_indentation = impact_contact_indentation(
                     contact_moving,
                     contact_stationary,
-                    COLLISION_CONVERGENCE_SPEED_MPS,
+                    normal_impact_speed,
                     geometry=contact_geometry,
                 )
                 controlled_penetration = max(

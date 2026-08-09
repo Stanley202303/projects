@@ -3126,6 +3126,80 @@ class CollisionConvergenceTest(TestCase):
         self.assertNotEqual(moving.angular_velocity, (0.0, 0.0, 0.0))
         self.assertGreater(moving.angular_velocity[2], 0.0)
 
+    def test_oblique_plate_impact_uses_normal_energy_and_ricochets(self) -> None:
+        moving = rectangular_component(
+            "oblique_tungsten",
+            -0.05,
+            0.0,
+            -0.01,
+            0.01,
+            -0.01,
+            0.01,
+        )
+        moving.mass = 1.0
+        moving.material.material_name = "Tungsten"
+        target = rectangular_component(
+            "oblique_abs_plate",
+            0.1,
+            0.105,
+            -0.2,
+            0.2,
+            -0.2,
+            0.2,
+        )
+        target.is_assembly_anchor = True
+        target.material = MaterialProperties(
+            material_name="ABS",
+            density_kg_m3=1052.0,
+            young_modulus_pa=2.31e9,
+            poisson_ratio=0.364,
+            thickness_m=0.005,
+            yield_strength_pa=4.48e7,
+            failure_strain=0.20,
+        )
+        move_component_rigidly(
+            target,
+            (0.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            math.pi / 4.0,
+            target.cofr,
+        )
+
+        with (
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_SPEED_MPS", 30.0),
+            patch("cfd_motion.motion.COLLISION_CONVERGENCE_AXIS", "x"),
+            TemporaryDirectory() as tmpdir,
+        ):
+            pair = configure_collision_convergence_components([moving, target])
+            self.assertIsNotNone(pair)
+            assert pair is not None
+            convergence_log = Path(tmpdir) / "convergence.txt"
+            collision_log = Path(tmpdir) / "collisions.txt"
+            write_collision_convergence_log_header(convergence_log, pair)
+            _move, _target_move, contact = apply_collision_convergence_step(
+                pair,
+                0,
+                0.01,
+                convergence_log,
+                (1.0, 0.0, 0.0),
+            )
+            self.assertIsNotNone(contact)
+            assert contact is not None
+            # At 45 degrees only half the translational kinetic energy is in
+            # the normal direction: 0.5 * 1 kg * (30/sqrt(2))^2 = 225 J.
+            self.assertAlmostEqual(contact.absorbed_energy_j, 225.0, places=6)
+            resolve_part_collisions(
+                [moving, target],
+                0,
+                collision_log,
+                contact,
+                pair,
+            )
+
+        self.assertGreater(moving.linear_velocity[0], 0.0)
+        self.assertGreater(moving.linear_velocity[2], 0.0)
+        self.assertNotEqual(moving.angular_velocity, (0.0, 0.0, 0.0))
+
     def test_collision_shock_affects_nearby_non_contact_part(self) -> None:
         moving = box_component("moving", 0.0, 1.0)
         stationary = box_component("stationary", 1.1, 2.1)
