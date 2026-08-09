@@ -3,5 +3,7 @@
   <Collection>
     <DataSet timestep="0" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_000_combined_moving_surfaces.vtp"/>
     <DataSet timestep="1" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_001_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="2" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_002_combined_moving_surfaces.vtp"/>
+    <DataSet timestep="3" group="panel_preview_surfaces" part="0" file="panel_preview_timeseries/frame_003_combined_moving_surfaces.vtp"/>
   </Collection>
 </VTKFile>

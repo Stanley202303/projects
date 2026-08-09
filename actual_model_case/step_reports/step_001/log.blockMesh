@@ -8,9 +8,9 @@
 Build  : 11-9cbf94f3339d
 Exec   : blockMesh
 Date   : Aug 09 2026
-Time   : 09:39:32
-Host   : "26663e2afb25"
-PID    : 162
+Time   : 11:34:02
+Host   : "6f8dddd2bb0f"
+PID    : 161
 I/O    : uncollated
 Case   : /root/step_work
 nProcs : 1
@@ -47,7 +47,7 @@ Creating merge list .
 Creating polyMesh from blockMesh
 Creating points with scale 1
     Block 0 cell size :
-        i : 0.14594781
+        i : 0.14601719 .. 0.14601719
         j : 0.14545455
         k : 0.14545455
 Creating cells
@@ -57,7 +57,7 @@ Writing polyMesh
 ----------------
 Mesh Information
 ----------------
-  boundingBox: (-4.26055 -4.79065 -4.78652) (12.3775 4.80935 4.81348)
+  boundingBox: (-4.26846 -4.79065 -4.78652) (12.3775 4.80935 4.81348)
   nPoints: 516235
   nCells: 496584
   nFaces: 1509156

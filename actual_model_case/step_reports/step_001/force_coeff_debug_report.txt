@@ -1,5 +1,5 @@
 # forceCoeffs debug report
-case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_lc6edb4f/step_work
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_njrnbvdt/step_work
 
 Detected coefficient data by patch:
 - Part_1_1: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
@@ -51,68 +51,68 @@ OpenFOAM boundary file exists: True
       {
           type            patch;
           nFaces          4356;
-          startFace       1629683;
+          startFace       1629341;
       }
       outlet
       {
           type            patch;
           nFaces          4356;
-          startFace       1634039;
+          startFace       1633697;
       }
       farfield
       {
           type            patch;
           nFaces          30096;
-          startFace       1638395;
+          startFace       1638053;
       }
       Part_1_5
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          51;
-          startFace       1668491;
+          nFaces          49;
+          startFace       1668149;
       }
       Part_1_4
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          51;
-          startFace       1668542;
+          nFaces          49;
+          startFace       1668198;
       }
       Part_1_1
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          76;
-          startFace       1668593;
+          nFaces          84;
+          startFace       1668247;
       }
       Part_1_2
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          52;
-          startFace       1668669;
+          nFaces          84;
+          startFace       1668331;
       }
       Part_1_3
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          51;
-          startFace       1668721;
+          nFaces          49;
+          startFace       1668415;
       }
       Part_1_6
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          51;
-          startFace       1668772;
+          nFaces          49;
+          startFace       1668464;
       }
       Part_1_1_2
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          822;
-          startFace       1668823;
+          nFaces          810;
+          startFace       1668513;
       }
   )
   // ************************************************************************* //

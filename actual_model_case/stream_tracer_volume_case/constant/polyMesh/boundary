@@ -20,68 +20,68 @@ FoamFile
     {
         type            patch;
         nFaces          4356;
-        startFace       1629683;
+        startFace       1629041;
     }
     outlet
     {
         type            patch;
         nFaces          4356;
-        startFace       1634039;
+        startFace       1633397;
     }
     farfield
     {
         type            patch;
         nFaces          30096;
-        startFace       1638395;
+        startFace       1637753;
     }
     Part_1_5
     {
         type            wall;
         inGroups        List<word> 1(wall);
-        nFaces          51;
-        startFace       1668491;
+        nFaces          66;
+        startFace       1667849;
     }
     Part_1_4
     {
         type            wall;
         inGroups        List<word> 1(wall);
-        nFaces          51;
-        startFace       1668542;
+        nFaces          66;
+        startFace       1667915;
     }
     Part_1_1
     {
         type            wall;
         inGroups        List<word> 1(wall);
-        nFaces          76;
-        startFace       1668593;
+        nFaces          100;
+        startFace       1667981;
     }
     Part_1_2
     {
         type            wall;
         inGroups        List<word> 1(wall);
-        nFaces          52;
-        startFace       1668669;
+        nFaces          136;
+        startFace       1668081;
     }
     Part_1_3
     {
         type            wall;
         inGroups        List<word> 1(wall);
-        nFaces          51;
-        startFace       1668721;
+        nFaces          66;
+        startFace       1668217;
     }
     Part_1_6
     {
         type            wall;
         inGroups        List<word> 1(wall);
-        nFaces          51;
-        startFace       1668772;
+        nFaces          66;
+        startFace       1668283;
     }
     Part_1_1_2
     {
         type            wall;
         inGroups        List<word> 1(wall);
-        nFaces          822;
-        startFace       1668823;
+        nFaces          1244;
+        startFace       1668349;
     }
 )
 

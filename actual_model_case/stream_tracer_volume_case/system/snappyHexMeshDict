@@ -128,12 +128,12 @@ castellatedMeshControls
         Part_1_5
         {
             mode distance;
-            levels ((0.0762588 4));
+            levels ((0.0766925 4));
         }
         Part_1_4
         {
             mode distance;
-            levels ((0.0762588 4));
+            levels ((0.0765894 4));
         }
         Part_1_1
         {
@@ -148,12 +148,12 @@ castellatedMeshControls
         Part_1_3
         {
             mode distance;
-            levels ((0.0762588 4));
+            levels ((0.0766017 4));
         }
         Part_1_6
         {
             mode distance;
-            levels ((0.0762588 4));
+            levels ((0.0766286 4));
         }
         Part_1_1_2
         {
@@ -162,7 +162,7 @@ castellatedMeshControls
         }
     }
 
-    locationInMesh (-2.59674 1.68935 1.69348);
+    locationInMesh (-2.5507 1.68935 1.69348);
 
     allowFreeStandingZoneFaces false;
 }
