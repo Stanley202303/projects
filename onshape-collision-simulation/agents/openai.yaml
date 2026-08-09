@@ -1,0 +1,4 @@
+interface:
+  display_name: "Onshape Collision Simulation"
+  short_description: "Build and validate cache-aware Onshape collision simulations"
+  default_prompt: "Use $onshape-collision-simulation to diagnose, implement, and validate realistic Onshape collision/fracture simulations."

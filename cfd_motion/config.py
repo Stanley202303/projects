@@ -7,6 +7,7 @@ import hmac
 import json
 import math
 import os
+from pathlib import Path
 import re
 import secrets
 import shutil
@@ -253,6 +254,23 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Successful GET responses are cached by normalized request URL.  This avoids
+# repeating expensive STL/BOM/assembly calls across simulation runs while
+# retaining a finite freshness window for workspace URLs.
+ONSHAPE_CACHE_ENABLED = env_bool("ONSHAPE_CACHE_ENABLED", True)
+ONSHAPE_CACHE_REFRESH = env_bool("ONSHAPE_CACHE_REFRESH", False)
+ONSHAPE_CACHE_TTL_S = max(
+    0.0,
+    float(os.environ.get("ONSHAPE_CACHE_TTL_S", str(24.0 * 3600.0))),
+)
+ONSHAPE_CACHE_DIR = Path(
+    os.environ.get(
+        "ONSHAPE_CACHE_DIR",
+        str(Path.home() / ".cache" / "cfd_motion" / "onshape_api"),
+    )
+).expanduser()
+
+
 def flow_is_positive_x() -> bool:
     """True when the imposed freestream velocity points from low X to high X.
 
@@ -488,15 +506,6 @@ COLLISION_SWEEP_PENETRATION_M = float(os.environ.get("COLLISION_SWEEP_PENETRATIO
 COLLISION_CONVERGENCE_STOP_AFTER_CONTACT = env_bool("COLLISION_CONVERGENCE_STOP_AFTER_CONTACT", True)
 COLLISION_CONVERGENCE_LOG_NAME = "assembly_collision_convergence_log.txt"
 COLLISION_DAMAGE_LOG_NAME = "assembly_collision_damage_log.txt"
-CFD_ALLOW_SKEW_ONLY_MESH_WARNING = env_bool("CFD_ALLOW_SKEW_ONLY_MESH_WARNING", True)
-CFD_MAX_ACCEPTED_SKEWNESS = max(
-    0.0,
-    float(os.environ.get("CFD_MAX_ACCEPTED_SKEWNESS", "8.0")),
-)
-CFD_MAX_ACCEPTED_SKEW_FACES = max(
-    0,
-    int(os.environ.get("CFD_MAX_ACCEPTED_SKEW_FACES", "1")),
-)
 COLLISION_DAMAGE_MIN_RESPONSE_TIME_S = max(
     0.0,
     float(os.environ.get("COLLISION_DAMAGE_MIN_RESPONSE_TIME_S", str(4.0 * MOTION_DT))),

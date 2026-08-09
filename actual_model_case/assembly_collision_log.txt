@@ -1,5 +1,8 @@
-# Part collision log. Prescribed two-object impacts use swept mesh-surface contact; other assembly pairs use conservative AABB contact.
-# Swept impacts preserve prescribed speed until real triangle surfaces meet.
+# Part collision log. Every independent body pair uses continuous swept mesh-surface contact; current overlap is a fallback.
+# Only members of the same explicit mate-created rigid body are excluded from self-collision.
+# Swept prescribed impacts preserve launch speed until real triangle surfaces meet.
 # Curved contact uses Hertz elasticity; flat contact uses the classical elastic flat-punch relation. Thin targets use membrane energy, yielding, and perforation with residual impactor velocity.
 step	pass	patch_a	patch_b	depth_m	nx	ny	nz	cx	cy	cz	impulse_Ns	move_a_m	move_b_m	deform_a_m	deform_b_m	contact_radius_m	indent_a_m	indent_b_m	failure_mode	perforated	absorbed_energy_J	residual_speed_mps	displaced_fragments	manifold_points	friction_coefficient
-0	0	object_1	object_2	0.019380629	-1	1.7269172e-30	-8.2495739e-16	0.092402369	0.0093535407	0.0046397176	0	0	0	2.2268595e-05	0.01	0.025935	0	0	plastic_membrane_perforation	1	780.75434	25.019059	0	72	0
+1	0	Part_1_5	Part_1_4	7.8061621e-05	0	-1	0	-0.17146568	0.0093298154	-0.0074678447	0.00054777062	0	0	3.9030811e-05	3.9030811e-05	0.002	3.9030811e-05	3.9030811e-05	elastic_contact	0	0	0	0	1	0.25
+1	0	Part_1_4	Part_1_3	7.7989996e-05	0	0	-1	-0.17146536	0.03029995	0.013454803	0.00054701216	0	0	3.901651e-05	3.8973486e-05	0.002	3.901651e-05	3.8973486e-05	elastic_contact	0	0	0	0	1	0.25
+1	0	Part_1_3	Part_1_6	6.9028871e-05	0	1	0	-0.17146562	0.0093772906	0.03442495	0.00046959426	0	0	3.4533476e-05	3.4495395e-05	0.002	3.4533476e-05	3.4495395e-05	elastic_contact	0	0	0	0	1	0.25

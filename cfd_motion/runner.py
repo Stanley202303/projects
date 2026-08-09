@@ -599,6 +599,26 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
             copy_step_cfd_sampled_preview_to_root(root_case, step_case, step)
             copy_step_panel_preview_to_root(root_case, step_case, step)
             copy_step_debug_reports_to_root(root_case, step_case, step)
+            if SAVE_MOTION_STEPS:
+                create_paraview_pvd_timeseries(
+                    root_case,
+                    steps_dir,
+                    step + 1,
+                )
+                create_panel_preview_pvd(
+                    root_case,
+                    steps_dir,
+                    step + 1,
+                )
+            else:
+                create_root_safe_pvd_from_copied_previews(
+                    root_case,
+                    step + 1,
+                )
+                create_root_panel_preview_pvd(
+                    root_case,
+                    step + 1,
+                )
             enforce_case_storage_budget(root_case, f"after copying compact frame {step}")
 
             if not SAVE_MOTION_STEPS and step_case.exists():
@@ -824,7 +844,7 @@ def _split_unmated_component_bodies(component: AeroComponent) -> List[AeroCompon
     """Split disconnected STL solids into independent rigid collision bodies."""
     body_ids = connected_surface_body_ids(component)
     body_count = max(body_ids, default=-1) + 1
-    if body_count <= 1 or component.freedom.source.startswith("mate:"):
+    if body_count <= 1:
         return [component]
 
     triangle_groups = [
@@ -854,6 +874,20 @@ def _split_unmated_component_bodies(component: AeroComponent) -> List[AeroCompon
         material = MaterialProperties(**vars(component.material))
         material.mass_kg = mass
         material.volume_m3 = volume
+        independent_freedom = MotionFreedom(
+            translate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+            rotate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+            mate_type="FREE",
+            source="split-disconnected-body",
+        )
         body = AeroComponent(
             name=f"{component.name} body {body_id + 1}",
             patch=f"{component.patch}_body_{body_id + 1}",
@@ -861,24 +895,7 @@ def _split_unmated_component_bodies(component: AeroComponent) -> List[AeroCompon
             cofr=cofr,
             lref=lref,
             aref=aref,
-            freedom=MotionFreedom(
-                translate_axes=list(component.freedom.translate_axes),
-                rotate_axes=list(component.freedom.rotate_axes),
-                mate_type=component.freedom.mate_type,
-                source=component.freedom.source,
-                limits=dict(component.freedom.limits),
-                mate_origin=component.freedom.mate_origin,
-                mate_reference_origin=component.freedom.mate_reference_origin,
-                mate_reference_occurrence=(
-                    component.freedom.mate_reference_occurrence
-                ),
-                mate_x_axis=component.freedom.mate_x_axis,
-                mate_y_axis=component.freedom.mate_y_axis,
-                mate_z_axis=component.freedom.mate_z_axis,
-                mate_reference_x_axis=component.freedom.mate_reference_x_axis,
-                mate_reference_y_axis=component.freedom.mate_reference_y_axis,
-                mate_reference_z_axis=component.freedom.mate_reference_z_axis,
-            ),
+            freedom=independent_freedom,
             material=material,
             mass=mass,
             inertia=estimate_scalar_inertia(mass, triangles),
@@ -892,6 +909,15 @@ def _split_unmated_component_bodies(component: AeroComponent) -> List[AeroCompon
         )
         bodies.append(body)
     return bodies
+
+
+def _expand_disconnected_component_bodies(
+    components: Sequence[AeroComponent],
+) -> List[AeroComponent]:
+    expanded: List[AeroComponent] = []
+    for component in components:
+        expanded.extend(_split_unmated_component_bodies(component))
+    return expanded
 
 
 def _subdivide_triangle(triangle: Triangle) -> List[Triangle]:
@@ -965,6 +991,7 @@ def build_collision_source_components(source: str, index: int, workdir: Path, cl
             source_dir.mkdir(parents=True, exist_ok=True)
             components, assembly_def = build_assembly_components(ref, client, source_dir)
             (workdir / f"source_{index:02d}_assembly_definition.json").write_text(json.dumps(assembly_def, indent=2))
+            components = _expand_disconnected_component_bodies(components)
             for component in components:
                 component.collision_source_index = index
             return components
@@ -1078,6 +1105,7 @@ def run_source(source: str) -> int:
                 if element_type == "assembly":
                     try:
                         components, assembly_def = build_assembly_components(ref, client, tmp)
+                        components = _expand_disconnected_component_bodies(components)
                     except Exception:
                         # Preserve diagnostics even when strict occurrence export fails.
                         case.mkdir(parents=True, exist_ok=True)

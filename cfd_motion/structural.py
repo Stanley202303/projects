@@ -724,6 +724,10 @@ def build_hybrid_shell_collision_state(
         perforation_radius_m,
     )
     shell_state.solver_backend = "explicit_shell"
+    # The imported target already carries its physical front/back faces.  Do
+    # not extrude that triangulated surface a second time: doing so creates a
+    # visibly thicker duplicate plate after impact.  Detached fragments are
+    # thickened separately from their material thickness.
     shell_state.render_as_midsurface = True
     return HybridShellCollisionState(shell_state=shell_state)
 
@@ -869,19 +873,30 @@ def _material_ductility_ratio(state: ExplicitShellState) -> float:
     return max(1.0, min(25.0, failure_strain / yield_strain))
 
 
+def _material_brittleness_ratio(state: ExplicitShellState) -> float:
+    """Return a bounded brittleness multiplier from BOM-derived strains.
+
+    Low failure strain relative to yield strain indicates a material that
+    releases damage by cracking rather than by stretching plastically.
+    """
+    ductility = _material_ductility_ratio(state)
+    return max(1.0, min(6.0, math.sqrt(25.0 / ductility)))
+
+
 def _fragment_detachment_radius_m(
     state: ExplicitShellState,
     hole_radius_m: float,
 ) -> float:
-    ductility = _material_ductility_ratio(state)
-    contact_factor = max(1.2, min(2.5, 2.5 / math.sqrt(ductility)))
-    return min(
-        hole_radius_m,
-        max(
-            contact_factor * state.contact_radius_m,
-            4.0 * state.thickness_m,
-        ),
-    )
+    brittleness = _material_brittleness_ratio(state)
+    # The energy/perforation model has already computed the physical hole
+    # radius.  A ductile plate (ABS, metals, most polymers) should therefore
+    # eject only the plug inside that radius.  The previous 2*contact-radius
+    # and 4*thickness lower bounds could exceed the hole by several times and
+    # detach two enormous plate sectors.  Brittle materials may crack/chip
+    # beyond the hole, but keep that extension bounded and material-driven.
+    brittle_extension = max(0.0, brittleness - 1.6)
+    radius_factor = 1.0 + min(1.5, 0.45 * brittle_extension)
+    return max(hole_radius_m, 1.0e-9) * radius_factor
 
 
 def update_shell_perforation(
@@ -928,7 +943,8 @@ def update_shell_perforation(
                 newly_detached.append(nearest_index)
     if not newly_detached:
         return
-    minimum_detached_triangles = 3 if state.emitted_triangles else 1
+    brittleness = _material_brittleness_ratio(state)
+    minimum_detached_triangles = 1 if brittleness >= 1.75 else (3 if state.emitted_triangles else 1)
     coherent_detached: List[int] = []
     for group in _connected_fragment_groups(state, set(newly_detached)):
         if len(group) < minimum_detached_triangles:
@@ -1150,9 +1166,18 @@ def _fragment_transverse_span_m(
 
 
 def _fragment_merge_span_limit_m(state: ExplicitShellState) -> float:
+    brittleness = _material_brittleness_ratio(state)
+    if brittleness < 1.75:
+        # A ductile perforation ejects one coherent plug.  Allow the complete
+        # resolved hole disk to remain one body even when its boundary cuts
+        # through coarse triangles.
+        return max(
+            3.5 * state.current_hole_radius_m,
+            2.5 * state.thickness_m,
+        )
     return max(
-        2.1 * max(state.current_hole_radius_m, state.contact_radius_m),
-        6.0 * state.thickness_m,
+        1.5 * state.current_hole_radius_m,
+        2.0 * state.thickness_m,
     )
 
 
@@ -1162,22 +1187,50 @@ def _fragment_component_from_triangles(
     triangle_indices: Set[int],
 ) -> DetachedFragmentBody:
     shell_state = state.shell_state
-    triangles = [
-        (
-            v_unit(
-                v_cross(
-                    v_sub(shell_state.positions[nodes[1]], shell_state.positions[nodes[0]]),
-                    v_sub(shell_state.positions[nodes[2]], shell_state.positions[nodes[0]]),
+    fragment_nodes = {
+        node
+        for index in triangle_indices
+        for node in shell_state.triangle_nodes[index]
+    }
+    mean_displacement = (0.0, 0.0, 0.0)
+    displacement_mass = 0.0
+    for node in fragment_nodes:
+        node_mass = shell_state.masses_kg[node]
+        mean_displacement = v_add(
+            mean_displacement,
+            v_mul(
+                v_sub(
+                    shell_state.positions[node],
+                    shell_state.reference_positions[node],
                 ),
-                shell_state.triangle_normals[index],
+                node_mass,
             ),
-            shell_state.positions[nodes[0]],
-            shell_state.positions[nodes[1]],
-            shell_state.positions[nodes[2]],
         )
-        for index in sorted(triangle_indices)
-        for nodes in [shell_state.triangle_nodes[index]]
-    ]
+        displacement_mass += node_mass
+    if displacement_mass > 1e-18:
+        mean_displacement = v_mul(mean_displacement, 1.0 / displacement_mass)
+    # Preserve the resolved plug outline.  Raw explicit-shell nodal positions
+    # can contain large pre-detachment strain, which previously stretched a
+    # 90 mm plug into a 170 mm pane.  The detached plug carries the mean rigid
+    # displacement and velocity; subsequent collisions can deform it normally.
+    mid_surface_triangles = []
+    for index in sorted(triangle_indices):
+        nodes = shell_state.triangle_nodes[index]
+        points = tuple(
+            v_add(shell_state.reference_positions[node], mean_displacement)
+            for node in nodes
+        )
+        normal = v_unit(
+            v_cross(v_sub(points[1], points[0]), v_sub(points[2], points[0])),
+            shell_state.triangle_normals[index],
+        )
+        mid_surface_triangles.append((normal, points[0], points[1], points[2]))
+    # Keep one authoritative surface for each detached element.  Extruding a
+    # fragment here creates a second coincident sheet on either face and is
+    # exactly the visual split seen in ParaView.  Thickness remains in the
+    # structural mass/material model; it must not be represented by duplicate
+    # display surfaces.
+    triangles = mid_surface_triangles
     group_mass = sum(shell_state.triangle_masses_kg[index] for index in triangle_indices)
     group_velocity = (0.0, 0.0, 0.0)
     group_centroid = (0.0, 0.0, 0.0)
@@ -1203,6 +1256,34 @@ def _fragment_component_from_triangles(
         counted_centroid_mass += triangle_mass
     if counted_mass > 1e-18:
         group_velocity = v_mul(group_velocity, 1.0 / counted_mass)
+    unconstrained_group_velocity = group_velocity
+    brittleness = _material_brittleness_ratio(shell_state)
+    axial_speed = v_dot(group_velocity, shell_state.inward_direction)
+    axial_velocity = v_mul(shell_state.inward_direction, axial_speed)
+    transverse_velocity = v_sub(group_velocity, axial_velocity)
+    transverse_speed = v_norm(transverse_velocity)
+    transverse_fraction = 0.10 if brittleness < 1.75 else 0.60
+    transverse_limit = transverse_fraction * abs(axial_speed)
+    if transverse_speed > transverse_limit and transverse_speed > 1e-18:
+        transverse_velocity = v_mul(
+            transverse_velocity,
+            transverse_limit / transverse_speed,
+        )
+        group_velocity = v_add(axial_velocity, transverse_velocity)
+    removed_fragment_velocity = v_sub(unconstrained_group_velocity, group_velocity)
+    if (
+        v_norm(removed_fragment_velocity) > 1e-18
+        and parent.freedom.translate_axes
+        and not parent.is_assembly_anchor
+    ):
+        remaining_parent_mass = max(parent.mass - group_mass, 1e-12)
+        parent.linear_velocity = v_add(
+            parent.linear_velocity,
+            v_mul(
+                removed_fragment_velocity,
+                group_mass / remaining_parent_mass,
+            ),
+        )
     if counted_centroid_mass > 1e-18:
         group_centroid = v_mul(group_centroid, 1.0 / counted_centroid_mass)
     fragment_component = AeroComponent(
@@ -1267,10 +1348,16 @@ def sync_hybrid_shell_fragments(
         _triangle_reference_vertices(shell_state, fragment.triangle_indices)
         for fragment in state.fragment_bodies
     ]
-    for group in _connected_fragment_groups(shell_state, new_triangles):
+    fragment_groups = _connected_fragment_groups(shell_state, new_triangles)
+    if _material_brittleness_ratio(shell_state) < 1.75:
+        fragment_groups = [set(new_triangles)]
+    for group in fragment_groups:
         group_vertices = _triangle_reference_vertices(shell_state, group)
         merge_index: Optional[int] = None
         for index, existing_vertices in enumerate(fragment_vertices):
+            if _material_brittleness_ratio(shell_state) < 1.75:
+                merge_index = index
+                break
             if existing_vertices & group_vertices:
                 merged_triangles = state.fragment_bodies[index].triangle_indices | group
                 if (
@@ -1584,20 +1671,61 @@ def _attached_shell_vertex_positions(
     return averaged_positions, node_to_key
 
 
-def _deformed_shell_mid_surface_triangles(state: ExplicitShellState) -> List[Triangle]:
-    """Render attached shell elements on the solved midsurface only.
+def shell_triangle_von_mises_stress_pa(
+    state: ExplicitShellState,
+    triangle_index: int,
+) -> float:
+    """Return classic constant-strain-triangle plane-stress von Mises stress."""
+    if not 0 <= triangle_index < len(state.membrane_elements):
+        return 0.0
+    element = state.membrane_elements[triangle_index]
+    twice_area = max(2.0 * element.area_m2, 1e-18)
+    local_displacements: List[Tuple[float, float]] = []
+    for node in element.nodes:
+        displacement = v_sub(state.positions[node], state.reference_positions[node])
+        local_displacements.append(
+            (
+                v_dot(displacement, element.basis_x),
+                v_dot(displacement, element.basis_y),
+            )
+        )
+    strain_x = sum(
+        element.b_coefficients[i] * local_displacements[i][0]
+        for i in range(3)
+    ) / twice_area
+    strain_y = sum(
+        element.c_coefficients[i] * local_displacements[i][1]
+        for i in range(3)
+    ) / twice_area
+    shear_strain = sum(
+        element.c_coefficients[i] * local_displacements[i][0]
+        + element.b_coefficients[i] * local_displacements[i][1]
+        for i in range(3)
+    ) / twice_area
+    modulus = max(state.young_modulus_pa, 1.0)
+    poisson = max(0.0, min(state.poisson_ratio, 0.49))
+    plane_stress_scale = modulus / max(1.0 - poisson * poisson, 1e-12)
+    stress_x = plane_stress_scale * (strain_x + poisson * strain_y)
+    stress_y = plane_stress_scale * (strain_y + poisson * strain_x)
+    shear_stress = modulus * shear_strain / max(2.0 * (1.0 + poisson), 1e-12)
+    von_mises_squared = (
+        stress_x * stress_x
+        - stress_x * stress_y
+        + stress_y * stress_y
+        + 3.0 * shear_stress * shear_stress
+    )
+    if not math.isfinite(von_mises_squared):
+        return 0.0
+    return math.sqrt(max(von_mises_squared, 0.0))
 
-    The hybrid solver tracks mass and momentum on a shell midsurface.  Rendering
-    artificial front/back skins can make a highly deformed thin plate look as if
-    it has gained thickness, so the default hybrid output exports the actual
-    solved midsurface and omits perforated faces from the visible hole.
-    """
+
+def shell_rendered_triangle_indices(state: ExplicitShellState) -> List[int]:
+    """Map midsurface output triangles back to their structural elements."""
     vertex_positions, node_to_key = _attached_shell_vertex_positions(state)
     if not vertex_positions:
         return []
-
-    triangles: List[Triangle] = []
-    seen_triangles: Set[
+    rendered: List[int] = []
+    seen: Set[
         Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]
     ] = set()
     for triangle_index, node_ids in enumerate(state.triangle_nodes):
@@ -1616,10 +1744,51 @@ def _deformed_shell_mid_surface_triangles(state: ExplicitShellState) -> List[Tri
             keys = tuple(node_to_key[node] for node in node_ids)
         except KeyError:
             continue
-        canonical_triangle_key = tuple(sorted(keys))
-        if canonical_triangle_key in seen_triangles:
+        canonical_key = tuple(sorted(keys))
+        if canonical_key in seen:
             continue
-        seen_triangles.add(canonical_triangle_key)
+        seen.add(canonical_key)
+        rendered.append(triangle_index)
+    if not rendered:
+        # Extremely coarse meshes can leave one attached carrier element whose
+        # vertices all touch the hole disk.  Do not let the display filter erase
+        # that last mass-bearing element: downstream geometry references require
+        # a non-empty parent surface on the step after fragmentation.
+        attached = [
+            index
+            for index in range(len(state.triangle_nodes))
+            if index not in state.emitted_triangles
+        ]
+        if attached:
+            rendered.append(
+                max(
+                    attached,
+                    key=lambda index: _radial_distance(
+                        state.triangle_reference_centroids[index],
+                        state.contact_point,
+                        state.inward_direction,
+                    ),
+                )
+            )
+    return rendered
+
+
+def _deformed_shell_mid_surface_triangles(state: ExplicitShellState) -> List[Triangle]:
+    """Render attached shell elements on the solved midsurface only.
+
+    The hybrid solver tracks mass and momentum on a shell midsurface.  Rendering
+    artificial front/back skins can make a highly deformed thin plate look as if
+    it has gained thickness, so the default hybrid output exports the actual
+    solved midsurface and omits perforated faces from the visible hole.
+    """
+    vertex_positions, node_to_key = _attached_shell_vertex_positions(state)
+    if not vertex_positions:
+        return []
+
+    triangles: List[Triangle] = []
+    for triangle_index in shell_rendered_triangle_indices(state):
+        node_ids = state.triangle_nodes[triangle_index]
+        keys = tuple(node_to_key[node] for node in node_ids)
         a, b, c = (vertex_positions[key] for key in keys)
         normal = v_unit(
             v_cross(v_sub(b, a), v_sub(c, a)),

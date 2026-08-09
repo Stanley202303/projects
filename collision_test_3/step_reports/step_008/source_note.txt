@@ -1,2 +1,0 @@
-These are small debug reports copied from a temporary step case.
-The full step case was not retained because SAVE_MOTION_STEPS=0.

@@ -151,11 +151,9 @@ def test_small_body_gets_local_refinement_and_patch_validation(
     assert "retained_body_patches.txt" in allrun
     assert "retained no fluid-facing body patches; CFD solve aborted" in allrun
     assert "checkMesh | tee log.checkMesh" in allrun
-    assert "ALLOW_SKEW_ONLY_MESH_WARNING=1" in allrun
-    assert "MAX_ACCEPTED_SKEWNESS=8" in allrun
-    assert "MAX_ACCEPTED_SKEW_FACES=1" in allrun
-    assert "isolated skew-only mesh quality warning within configured limits" in allrun
-    assert "skewness <= max_skew && face_count <= max_faces" in allrun
+    assert "MAX_ACCEPTED_SKEWNESS" not in allrun
+    assert "MAX_ACCEPTED_SKEW_FACES" not in allrun
+    assert "continuing CFD solve without a skew-face limit" in allrun
     assert "found hard mesh failures; CFD solve aborted" in allrun
     assert "small_insert\t0.005\t7\t7" in report
 

@@ -1,8 +1,8 @@
 # Unsteady / FSI architecture report
 cfd_solver_mode=steady
 solver_application=simpleFoam
-component_count=2
-movable_component_count=1
+component_count=7
+movable_component_count=6
 
 Implemented in this case:
 - Steady fluid solver dictionaries are written directly into the OpenFOAM case.

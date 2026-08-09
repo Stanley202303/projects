@@ -26,9 +26,13 @@ and is intentionally not written to a third file.
 
 import json
 import math
+import shutil
 import socket
+import subprocess
 import time
 from collections import deque
+from datetime import datetime
+from pathlib import Path
 
 try:
     import pygame
@@ -44,25 +48,36 @@ try:
         GL_COLOR_BUFFER_BIT,
         GL_DEPTH_BUFFER_BIT,
         GL_DEPTH_TEST,
+        GL_BLEND,
         GL_LINES,
         GL_LINE_LOOP,
         GL_LINE_STRIP,
         GL_MODELVIEW,
         GL_PROJECTION,
         GL_QUADS,
+        GL_RGB,
+        GL_RGBA,
+        GL_ONE_MINUS_SRC_ALPHA,
+        GL_SRC_ALPHA,
+        GL_UNSIGNED_BYTE,
         glBegin,
+        glBlendFunc,
         glClear,
         glClearColor,
         glColor3f,
         glDisable,
+        glDrawPixels,
         glEnable,
         glEnd,
         glLineWidth,
         glLoadIdentity,
+        glMultMatrixf,
         glMatrixMode,
         glOrtho,
         glPopMatrix,
         glPushMatrix,
+        glRasterPos2f,
+        glReadPixels,
         glRotatef,
         glVertex3f,
         glViewport,
@@ -86,22 +101,60 @@ ORTHO_HALF_HEIGHT = 3.4
 
 # The simple view draws a top-down stick: X is screen-right and Y is screen-up.
 # Flip DISPLAY_YAW_SIGN to -1.0 if clockwise/counter-clockwise motion is mirrored.
-SIMPLE_TOP_DOWN_VIEW = True
+SIMPLE_TOP_DOWN_VIEW = False
 DISPLAY_YAW_SIGN = 1.0
+DISPLAY_PITCH_SIGN = -1.0
 DISPLAY_YAW_OFFSET_DEGREES = 0.0
+# Static drawing correction only. This does not change the IMU data or filter.
+# Flip this between 0.0 and 180.0 if the racket face appears upside down.
+DISPLAY_MODEL_UPSIDE_DOWN_CORRECTION_DEGREES = 180.0
 
 # Acceleration history shown in the lower-left overlay. Keep every packet
-# received from the Pico; 400 points is approximately 0.8 seconds at 500 Hz.
-ACCEL_GRAPH_SAMPLES = 400
+# received from the Pico; 320 points is approximately 0.8 seconds at 400 Hz.
+ACCEL_GRAPH_SAMPLES = 320
 ACCEL_GRAPH_HALF_RANGE_G = 32.0
-ACCEL_GRAPH_TRIGGER_G = 2.5
+ACCEL_GRAPH_TRIGGER_G = 4
+ANGLE_GRAPH_SAMPLES = 96  # approximately 0.8 seconds at 120 display frames/s
+VIDEO_FPS = 240
+# Unlock only on deliberate movement; low-level MPU6050 noise must not
+# repeatedly release the stationary-pose lock.
+STATIONARY_GYRO_LIMIT_DPS = 20.0
+STATIONARY_ACCEL_TOLERANCE_G = 0.12
+STATIONARY_LOCK_DELAY_SECONDS = 0.0
+ZERO_MOTION_GYRO_LIMIT_DPS = 25.0
+ZERO_MOTION_ACCEL_TOLERANCE_G = 0.30
+GYRO_DEADBAND_DPS = 2.0
+GYRO_BIAS_LEARNING_RATE = 0.03
 
-# Each axis mapping item is (source axis index, sign).
-# The same map is used for MPU6050 accelerometer and gyro data.
-IMU_AXIS_MAP = ((0, 1.0), (1, 1.0), (2, 1.0))
+# Axis mapping items are (source axis index, sign). Set an entry in either
+# inversion tuple to True when that physical axis is mounted backwards.
+# The IMU map is shared by accelerometer, gyro, and the 3D model.
+IMU_AXIS_ORDER = (0, 1, 2)
+IMU_AXIS_INVERT = (False, False, True)
+IMU_AXIS_MAP = tuple(
+    (source, -1.0 if inverted else 1.0)
+    for source, inverted in zip(IMU_AXIS_ORDER, IMU_AXIS_INVERT)
+)
+
+# Keep the sensor and model coordinates explicit and unchanged by default.
+# If the board is physically mounted differently, change IMU_AXIS_MAP once;
+# acceleration, gyro, and the 3D model then use the same convention.
+RACKET_ROLL_AXIS = 0
+RACKET_PITCH_AXIS = 1
+
+# Use the magnetometer to limit long-term yaw drift, but do not use gravity to
+# pull the racket's deliberate tilt/roll back toward level.
+USE_ABSOLUTE_ORIENTATION_CORRECTION = False
+USE_ACCELEROMETER_CORRECTION = True
+USE_MAGNETOMETER_CORRECTION = True
 
 # Change this when the MMC5603 breakout has a different physical orientation.
-MAG_AXIS_MAP = ((0, 1.0), (1, 1.0), (2, 1.0))
+MAG_AXIS_ORDER = (0, 1, 2)
+MAG_AXIS_INVERT = (False, True, False)
+MAG_AXIS_MAP = tuple(
+    (source, -1.0 if inverted else 1.0)
+    for source, inverted in zip(MAG_AXIS_ORDER, MAG_AXIS_INVERT)
+)
 
 # Kalman tuning values are variances in radians. Larger process noise trusts
 # the gyro prediction less; larger measurement noise trusts that sensor less.
@@ -128,6 +181,25 @@ def vector_norm(vector):
 
 def apply_axis_map(vector, mapping):
     return tuple(vector[index] * sign for index, sign in mapping)
+
+
+def apply_gyro_deadband(gyro):
+    """Remove low-rate gyro noise that would otherwise accumulate as drift."""
+    return tuple(
+        0.0 if abs(value) < GYRO_DEADBAND_DPS else value
+        for value in gyro
+    )
+
+
+def subtract_vectors(left, right):
+    return tuple(left[index] - right[index] for index in range(3))
+
+
+def blend_vectors(current, measured, amount):
+    return tuple(
+        current[index] + amount * (measured[index] - current[index])
+        for index in range(3)
+    )
 
 
 def wrap_angle(angle):
@@ -178,6 +250,40 @@ def quaternion_from_euler(roll, pitch, yaw):
     )
 
 
+def opengl_matrix_from_quaternion(q):
+    """Return a column-major OpenGL rotation matrix from a normalized quaternion."""
+    w, x, y, z = quaternion_normalize(q)
+
+    xx = x * x
+    yy = y * y
+    zz = z * z
+    xy = x * y
+    xz = x * z
+    yz = y * z
+    wx = w * x
+    wy = w * y
+    wz = w * z
+
+    return (
+        1.0 - 2.0 * (yy + zz),
+        2.0 * (xy + wz),
+        2.0 * (xz - wy),
+        0.0,
+        2.0 * (xy - wz),
+        1.0 - 2.0 * (xx + zz),
+        2.0 * (yz + wx),
+        0.0,
+        2.0 * (xz + wy),
+        2.0 * (yz - wx),
+        1.0 - 2.0 * (xx + yy),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
+
+
 def euler_from_quaternion(q):
     w, x, y, z = quaternion_normalize(q)
 
@@ -195,6 +301,22 @@ def euler_from_quaternion(q):
     )
 
     return roll, pitch, yaw
+
+
+def racket_angles(q):
+    """Return angles labelled for the racket convention (roll about shaft)."""
+    raw_angles = euler_from_quaternion(q)
+    return (
+        raw_angles[RACKET_ROLL_AXIS],
+        raw_angles[RACKET_PITCH_AXIS],
+        raw_angles[2],
+    )
+
+
+def unwrap_degrees(previous, current):
+    """Choose the equivalent current angle nearest to the previous one."""
+    delta = (current - previous + 180.0) % 360.0 - 180.0
+    return previous + delta
 
 
 def accel_tilt(acceleration):
@@ -348,6 +470,8 @@ class KalmanOrientation:
         magnetic,
         dt,
         use_magnetometer=True,
+        use_absolute_corrections=True,
+        use_accelerometer=True,
     ):
         dt = clamp(dt, 0.001, 0.1)
 
@@ -372,7 +496,14 @@ class KalmanOrientation:
 
         # Correct roll and pitch only while acceleration remains close to 1 g.
         acceleration_magnitude = vector_norm(acceleration)
-        if 0.75 <= acceleration_magnitude <= 1.25:
+        gyro_magnitude = vector_norm(gyro_dps)
+        is_stationary = gyro_magnitude < 8.0
+        if (
+            use_absolute_corrections
+            and use_accelerometer
+            and is_stationary
+            and 0.75 <= acceleration_magnitude <= 1.25
+        ):
             measured_roll, measured_pitch = accel_tilt(acceleration)
             roll = self.roll_filter.correct(roll, measured_roll)
             pitch = self.pitch_filter.correct(pitch, measured_pitch)
@@ -380,7 +511,9 @@ class KalmanOrientation:
         # Correct long-term yaw drift from the magnetometer.
         magnetic_magnitude = vector_norm(magnetic)
         if (
-            use_magnetometer
+            use_absolute_corrections
+            and use_magnetometer
+            and is_stationary
             and MAG_MIN_FIELD <= magnetic_magnitude <= MAG_MAX_FIELD
         ):
             measured_yaw = tilt_compensated_heading(
@@ -459,6 +592,181 @@ def draw_cuboid():
     glVertex3f(0.0, CUBOID_HALF_LENGTH, CUBOID_HALF_THICKNESS * 1.35)
     glEnd()
 
+
+def draw_racket_model():
+    """Draw a badminton racket with unambiguous six-axis markers."""
+    draw_cuboid()
+
+    # Handle and neck, extending from the bottom of the head toward negative Y.
+    glColor3f(0.12, 0.12, 0.14)
+    glLineWidth(10.0)
+    glBegin(GL_LINES)
+    glVertex3f(0.0, -CUBOID_HALF_LENGTH, 0.0)
+    glVertex3f(0.0, -CUBOID_HALF_LENGTH - 1.5, 0.0)
+    glEnd()
+
+    glLineWidth(5.0)
+    glBegin(GL_LINES)
+    glVertex3f(-0.28, 0.0, 0.0)
+    glVertex3f(-0.75, 0.55, 0.0)
+    glVertex3f(0.28, 0.0, 0.0)
+    glVertex3f(0.75, 0.55, 0.0)
+    glEnd()
+
+    # Oval badminton-racket head in the X/Y plane, with an inner frame and
+    # a simple string bed. It is intentionally not a symmetric cuboid.
+    center_y = 1.75
+    outer_radius_x = 1.45
+    outer_radius_y = 1.65
+    inner_radius_x = 1.25
+    inner_radius_y = 1.45
+    segments = 48
+
+    glColor3f(0.82, 0.86, 0.92)
+    glLineWidth(6.0)
+    glBegin(GL_LINE_LOOP)
+    for index in range(segments):
+        angle = 2.0 * math.pi * index / segments
+        glVertex3f(
+            outer_radius_x * math.cos(angle),
+            center_y + outer_radius_y * math.sin(angle),
+            0.0,
+        )
+    glEnd()
+
+    glColor3f(0.38, 0.65, 0.82)
+    glLineWidth(2.0)
+    glBegin(GL_LINE_LOOP)
+    for index in range(segments):
+        angle = 2.0 * math.pi * index / segments
+        glVertex3f(
+            inner_radius_x * math.cos(angle),
+            center_y + inner_radius_y * math.sin(angle),
+            0.02,
+        )
+    glEnd()
+
+    glColor3f(0.62, 0.72, 0.82)
+    glLineWidth(1.0)
+    glBegin(GL_LINES)
+    for index in range(-4, 5):
+        x = index * inner_radius_x / 4.0
+        half_height = inner_radius_y * math.sqrt(
+            max(0.0, 1.0 - (x / inner_radius_x) ** 2)
+        )
+        glVertex3f(x, center_y - half_height, 0.03)
+        glVertex3f(x, center_y + half_height, 0.03)
+    for index in range(-4, 5):
+        y = index * inner_radius_y / 4.0
+        half_width = inner_radius_x * math.sqrt(
+            max(0.0, 1.0 - (y / inner_radius_y) ** 2)
+        )
+        glVertex3f(-half_width, center_y + y, 0.03)
+        glVertex3f(half_width, center_y + y, 0.03)
+    glEnd()
+
+    # Six colored rays identify both signs of every body axis. Bright colors
+    # are positive directions; darker colors are the corresponding negatives.
+    axis_markers = (
+        ((1.0, 0.18, 0.18), (3.2, 0.0, 0.0)),
+        ((0.45, 0.04, 0.04), (-3.2, 0.0, 0.0)),
+        ((0.18, 1.0, 0.28), (0.0, 3.2, 0.0)),
+        ((0.72, 0.48, 0.04), (0.0, -3.2, 0.0)),
+        ((0.25, 0.55, 1.0), (0.0, 0.0, 3.2)),
+        ((0.08, 0.22, 0.58), (0.0, 0.0, -3.2)),
+    )
+    glLineWidth(4.0)
+    for color, endpoint in axis_markers:
+        glColor3f(*color)
+        glBegin(GL_LINES)
+        glVertex3f(0.0, 0.0, 0.0)
+        glVertex3f(*endpoint)
+        glEnd()
+
+
+def start_video_recording(width, height):
+    """Start an ffmpeg pipe for rendered RGB frames."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None and Path("/opt/homebrew/bin/ffmpeg").is_file():
+        ffmpeg = "/opt/homebrew/bin/ffmpeg"
+    if ffmpeg is None:
+        print("Could not start video recording: ffmpeg is not on PATH.")
+        return None, None
+    recording_directory = Path(__file__).resolve().parent / "recordings"
+    recording_directory.mkdir(parents=True, exist_ok=True)
+    filename = datetime.now().strftime("swing_%Y%m%d_%H%M%S_%f.mp4")
+    path = recording_directory / filename
+    command = (
+        ffmpeg, "-loglevel", "error", "-y",
+        "-f", "rawvideo", "-pix_fmt", "rgb24",
+        "-s", f"{width}x{height}", "-framerate", str(VIDEO_FPS), "-i", "-",
+        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+        "-an", "-c:v", "libx264", "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p", str(path),
+    )
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as error:
+        print(f"Could not start video recording: {error}")
+        return None, None
+    print(f"Video recording started: {path}")
+    return process, path
+
+
+def write_video_frame(process, width, height):
+    """Read the OpenGL back buffer and append one vertically-corrected frame."""
+    if process is None or process.stdin is None:
+        return False
+    if process.poll() is not None:
+        print(f"Video encoder exited early with status {process.returncode}.")
+        return False
+    try:
+        pixels = bytes(glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE))
+    except (TypeError, ValueError, RuntimeError) as error:
+        print(f"OpenGL frame capture failed: {error}")
+        return False
+    row_size = width * 3
+    expected_size = row_size * height
+    if len(pixels) != expected_size:
+        print(
+            "OpenGL frame capture returned "
+            f"{len(pixels)} bytes; expected {expected_size}."
+        )
+        return False
+    frame = b"".join(
+        pixels[row:row + row_size]
+        for row in range((height - 1) * row_size, -1, -row_size)
+    )
+    try:
+        process.stdin.write(frame)
+        process.stdin.flush()
+    except (BrokenPipeError, OSError) as error:
+        print(f"Video frame write failed: {error}")
+        return False
+    return True
+
+
+def finish_video_recording(process):
+    """Close ffmpeg cleanly and return whether encoding succeeded."""
+    if process is None:
+        return False
+    try:
+        if process.stdin is not None:
+            process.stdin.close()
+        return_code = process.wait(timeout=10)
+        diagnostics = b"" if process.stderr is None else process.stderr.read()
+        if return_code != 0:
+            message = diagnostics.decode(errors="replace").strip()
+            print(f"Video encoder failed ({return_code}): {message}")
+        return return_code == 0
+    except (BrokenPipeError, OSError, subprocess.TimeoutExpired) as error:
+        print(f"Video finalization failed: {error}")
+        process.kill()
+        return False
 
 def draw_world_axes():
     glLineWidth(2.0)
@@ -553,6 +861,120 @@ def draw_acceleration_graph(history, width, height):
     glEnable(GL_DEPTH_TEST)
 
 
+def draw_overlay_text(font, text, x, y, color=(230, 230, 235)):
+    """Draw a small pygame label at OpenGL overlay coordinates."""
+    surface = font.render(text, True, color)
+    pixels = pygame.image.tostring(surface, "RGBA", True)
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+    glRasterPos2f(float(x), float(y))
+    glDrawPixels(
+        surface.get_width(),
+        surface.get_height(),
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        pixels,
+    )
+    glDisable(GL_BLEND)
+
+
+def draw_angle_graph(history, width, height, font):
+    """Draw recent roll/pitch/yaw traces in degrees as a labeled overlay."""
+    graph_width = min(700.0, max(320.0, width * 0.70))
+    graph_height = 180.0
+    left = 20.0
+    bottom = 220.0
+    right = left + graph_width
+    top = bottom + graph_height
+
+    glDisable(GL_DEPTH_TEST)
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    glOrtho(0.0, float(width), 0.0, float(height), -1.0, 1.0)
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+
+    glColor3f(0.04, 0.05, 0.07)
+    glBegin(GL_QUADS)
+    glVertex3f(left, bottom, 0.0)
+    glVertex3f(right, bottom, 0.0)
+    glVertex3f(right, top, 0.0)
+    glVertex3f(left, top, 0.0)
+    glEnd()
+
+    glColor3f(0.35, 0.37, 0.42)
+    glLineWidth(1.0)
+    glBegin(GL_LINE_LOOP)
+    glVertex3f(left, bottom, 0.0)
+    glVertex3f(right, bottom, 0.0)
+    glVertex3f(right, top, 0.0)
+    glVertex3f(left, top, 0.0)
+    glEnd()
+
+    zero_y = bottom + graph_height * 0.5
+    glColor3f(0.28, 0.29, 0.33)
+    glBegin(GL_LINES)
+    glVertex3f(left, zero_y, 0.0)
+    glVertex3f(right, zero_y, 0.0)
+    glEnd()
+
+    samples = tuple(history)
+    angle_min = min((value for sample in samples for value in sample), default=-180.0)
+    angle_max = max((value for sample in samples for value in sample), default=180.0)
+    angle_center = (angle_min + angle_max) * 0.5
+    angle_half_range = max(180.0, (angle_max - angle_min) * 0.6)
+
+    # The scale follows the unwrapped data, preventing a 180/-180 seam from
+    # becoming a false vertical line.
+    for tick in (
+        angle_center - angle_half_range,
+        angle_center,
+        angle_center + angle_half_range,
+    ):
+        y = bottom + (tick - angle_center + angle_half_range) / (
+            2.0 * angle_half_range
+        ) * graph_height
+        glColor3f(0.25, 0.26, 0.30)
+        glBegin(GL_LINES)
+        glVertex3f(left, y, 0.0)
+        glVertex3f(left + 8.0, y, 0.0)
+        glEnd()
+
+    if history:
+        colors = ((0.95, 0.25, 0.25), (0.25, 0.85, 0.35), (0.30, 0.55, 1.0))
+        denominator = max(1, len(samples) - 1)
+        for axis, color in enumerate(colors):
+            glColor3f(*color)
+            glLineWidth(2.0)
+            glBegin(GL_LINE_STRIP)
+            for index, sample in enumerate(samples):
+                x = left + graph_width * index / denominator
+                y = bottom + (
+                    (sample[axis] - angle_center + angle_half_range)
+                    / (2.0 * angle_half_range)
+                ) * graph_height
+                glVertex3f(x, y, 0.0)
+            glEnd()
+
+    draw_overlay_text(font, "Angle (degrees)", left + 8.0, top - 18.0)
+    draw_overlay_text(font, "X / roll", right - 175.0, top - 18.0, (240, 80, 80))
+    draw_overlay_text(font, "Y / pitch", right - 110.0, top - 18.0, (80, 220, 100))
+    draw_overlay_text(font, "Z / yaw", right - 42.0, top - 18.0, (90, 150, 255))
+    draw_overlay_text(font, f"{angle_center + angle_half_range:.0f}", left - 2.0, top - 34.0)
+    draw_overlay_text(font, f"{angle_center:.0f}", left + 4.0, zero_y - 5.0)
+    draw_overlay_text(font, f"{angle_center - angle_half_range:.0f}", left - 2.0, bottom + 4.0)
+    draw_overlay_text(font, "angle", left + 8.0, bottom + 22.0)
+    draw_overlay_text(font, "time (0.8 s)", right - 78.0, bottom + 4.0)
+
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+    glEnable(GL_DEPTH_TEST)
+
+
 def configure_projection(width, height):
     height = max(height, 1)
     aspect = width / height
@@ -622,9 +1044,20 @@ def main():
     orientation = KalmanOrientation()
     zero_inverse = (1.0, 0.0, 0.0, 0.0)
     acceleration_history = deque(maxlen=ACCEL_GRAPH_SAMPLES)
+    angle_history = deque(maxlen=ANGLE_GRAPH_SAMPLES)
     acceleration_triggered = False
     graph_frozen = False
+    orientation_frozen = False
+    stationary_pose_locked = False
+    stationary_since = None
+    gyro_bias = (0.0, 0.0, 0.0)
+    last_graph_angles = None
+    video_process = None
+    video_path = None
+    video_frame_count = 0
+    last_video_path = None
     window_width, window_height = WINDOW_SIZE
+    graph_font = pygame.font.Font(None, 16)
 
     clock = pygame.time.Clock()
     running = True
@@ -647,6 +1080,11 @@ def main():
             if event.type == QUIT:
                 running = False
             elif event.type == VIDEORESIZE:
+                if video_process is not None:
+                    finish_video_recording(video_process)
+                    video_process = None
+                    video_path = None
+                    print("Video capture stopped because the window was resized.")
                 pygame.display.set_mode(
                     (event.w, event.h),
                     DOUBLEBUF | OPENGL | RESIZABLE,
@@ -668,8 +1106,20 @@ def main():
                     calibration.clear()
                 elif event.key == pygame.K_SPACE:
                     acceleration_history.clear()
+                    angle_history.clear()
                     acceleration_triggered = False
                     graph_frozen = False
+                    orientation_frozen = False
+                    stationary_pose_locked = False
+                    stationary_since = None
+                    gyro_bias = (0.0, 0.0, 0.0)
+                    last_graph_angles = None
+                    if video_process is not None:
+                        finish_video_recording(video_process)
+                        video_process = None
+                    video_path = None
+                    video_frame_count = 0
+                    last_video_path = None
                     print("Acceleration graph capture restarted.")
 
         # Drain queued UDP datagrams. The orientation uses the newest sample,
@@ -698,12 +1148,23 @@ def main():
                     acceleration_history.append(packet_acceleration)
                     acceleration_magnitude = vector_norm(packet_acceleration)
                     if acceleration_magnitude > ACCEL_GRAPH_TRIGGER_G:
+                        if not acceleration_triggered:
+                            stationary_pose_locked = False
+                            stationary_since = None
+                            video_process, video_path = start_video_recording(
+                                window_width,
+                                window_height,
+                            )
+                            video_frame_count = 0
+                            print("Swing recording started.")
                         acceleration_triggered = True
-                    elif acceleration_triggered:
+
+                    if acceleration_triggered and acceleration_magnitude <= ACCEL_GRAPH_TRIGGER_G:
                         graph_frozen = True
                         print(
                             "Acceleration graph frozen after swing "
-                            f"({acceleration_magnitude:.2f} g). Press Space to restart."
+                            f"({acceleration_magnitude:.2f} g). "
+                            "Press Space to restart."
                         )
                 newest_packet = packet
             else:
@@ -720,10 +1181,54 @@ def main():
                 tuple(float(value) for value in newest_packet["g"]),
                 IMU_AXIS_MAP,
             )
+            acceleration_magnitude = vector_norm(acceleration)
+            raw_gyro = gyro
+            gyro = subtract_vectors(raw_gyro, gyro_bias)
+            raw_gyro_magnitude = vector_norm(raw_gyro)
+            corrected_gyro_magnitude = vector_norm(gyro)
+            if (
+                not acceleration_triggered
+                and 1.0 - STATIONARY_ACCEL_TOLERANCE_G
+                <= acceleration_magnitude
+                <= 1.0 + STATIONARY_ACCEL_TOLERANCE_G
+                and corrected_gyro_magnitude <= STATIONARY_GYRO_LIMIT_DPS
+            ):
+                gyro_bias = blend_vectors(
+                    gyro_bias,
+                    raw_gyro,
+                    GYRO_BIAS_LEARNING_RATE,
+                )
+                gyro = subtract_vectors(raw_gyro, gyro_bias)
+                corrected_gyro_magnitude = vector_norm(gyro)
+            gyro = apply_gyro_deadband(gyro)
+            if (
+                not acceleration_triggered
+                and corrected_gyro_magnitude <= STATIONARY_GYRO_LIMIT_DPS
+            ):
+                gyro = (0.0, 0.0, 0.0)
             magnetic_uncalibrated = apply_axis_map(
                 tuple(float(value) for value in newest_packet["m"]),
                 MAG_AXIS_MAP,
             )
+
+            gyro_magnitude = vector_norm(gyro)
+            zero_motion_sample = gyro_magnitude < GYRO_DEADBAND_DPS
+            if acceleration_triggered:
+                stationary_pose_locked = False
+                stationary_since = None
+            elif stationary_pose_locked:
+                if gyro_magnitude > STATIONARY_GYRO_LIMIT_DPS:
+                    stationary_pose_locked = False
+                    stationary_since = None
+            else:
+                if gyro_magnitude > STATIONARY_GYRO_LIMIT_DPS:
+                    stationary_since = None
+                else:
+                    if stationary_since is None:
+                        stationary_since = now
+                    if now - stationary_since >= STATIONARY_LOCK_DELAY_SECONDS:
+                        stationary_pose_locked = True
+                        print("Stationary pose locked; movement will unlock it.")
 
             calibration.add(magnetic_uncalibrated)
             magnetic = calibration.apply(magnetic_uncalibrated)
@@ -744,56 +1249,133 @@ def main():
                 last_sample_time_ms = sample_time_ms
             last_packet_time = now
 
-            orientation.update(
-                gyro,
-                acceleration,
-                magnetic,
-                dt,
-                use_magnetometer=not calibration.active,
-            )
+            if not orientation_frozen and not stationary_pose_locked:
+                orientation.update(
+                    gyro,
+                    acceleration,
+                    magnetic,
+                    dt,
+                    use_magnetometer=(
+                        USE_MAGNETOMETER_CORRECTION
+                        and not calibration.active
+                        and not acceleration_triggered
+                    ),
+                    use_absolute_corrections=(
+                        USE_ABSOLUTE_ORIENTATION_CORRECTION
+                        and not zero_motion_sample
+                    ),
+                    use_accelerometer=USE_ACCELEROMETER_CORRECTION,
+                )
+            if (
+                not graph_frozen
+                and not orientation_frozen
+                and not stationary_pose_locked
+            ):
+                raw_angles = tuple(
+                    value * DEG for value in racket_angles(orientation.q)
+                )
+                if last_graph_angles is None:
+                    graph_angles = raw_angles
+                else:
+                    graph_angles = tuple(
+                        unwrap_degrees(previous, current)
+                        for previous, current in zip(last_graph_angles, raw_angles)
+                    )
+                last_graph_angles = graph_angles
+                angle_history.append(graph_angles)
+            if graph_frozen:
+                orientation_frozen = True
             latest_temperature = float(newest_packet.get("temp", 0.0))
             packet_count += 1
 
         display_q = quaternion_multiply(zero_inverse, orientation.q)
-        roll, pitch, yaw = euler_from_quaternion(display_q)
+        roll, pitch, yaw = racket_angles(display_q)
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
         gluLookAt(
+            7.0,
+            -9.0,
+            7.0,
             0.0,
-            0.0,
-            8.0,
             0.0,
             0.0,
             0.0,
             0.0,
             1.0,
-            0.0,
         )
 
         draw_world_axes()
 
         glPushMatrix()
-        glRotatef(
-            DISPLAY_YAW_OFFSET_DEGREES + DISPLAY_YAW_SIGN * yaw * DEG,
-            0.0,
-            0.0,
-            1.0,
-        )
-        if not SIMPLE_TOP_DOWN_VIEW:
-            glRotatef(pitch * DEG, 0.0, 1.0, 0.0)
-            glRotatef(roll * DEG, 1.0, 0.0, 0.0)
-        draw_cuboid()
+        if SIMPLE_TOP_DOWN_VIEW:
+            glRotatef(
+                DISPLAY_YAW_OFFSET_DEGREES + DISPLAY_YAW_SIGN * yaw * DEG,
+                0.0,
+                0.0,
+                1.0,
+            )
+        else:
+            # Drive the 3D racket directly from the quaternion. Using Euler
+            # rotations here makes a pure lift leak into apparent clockwise
+            # rotation near vertical attitudes.
+            glRotatef(DISPLAY_YAW_OFFSET_DEGREES, 0.0, 0.0, 1.0)
+            glMultMatrixf(opengl_matrix_from_quaternion(display_q))
+            glRotatef(
+                DISPLAY_MODEL_UPSIDE_DOWN_CORRECTION_DEGREES,
+                0.0,
+                1.0,
+                0.0,
+            )
+        draw_racket_model()
         glPopMatrix()
 
         draw_acceleration_graph(
-                acceleration_history,
-                window_width,
-                window_height,
-            )
+            acceleration_history,
+            window_width,
+            window_height,
+        )
+        draw_angle_graph(
+            angle_history,
+            window_width,
+            window_height,
+            graph_font,
+        )
+
+        if video_process is not None:
+            if not write_video_frame(video_process, window_width, window_height):
+                finish_video_recording(video_process)
+                video_process = None
+                video_path = None
+                video_frame_count = 0
+                print("Video recording stopped because ffmpeg closed the pipe.")
+            elif graph_frozen and video_frame_count >= 3:
+                video_frame_count += 1
+                video_ok = finish_video_recording(video_process)
+                video_process = None
+                if (
+                    video_ok
+                    and video_frame_count > 0
+                    and video_path is not None
+                    and video_path.is_file()
+                    and video_path.stat().st_size > 0
+                ):
+                    last_video_path = video_path
+                    print(
+                        f"Swing video saved to {last_video_path} "
+                        f"({video_path.stat().st_size} bytes)"
+                    )
+                else:
+                    if video_ok:
+                        print("Video recording had no frames; no MP4 was saved.")
+                    video_path = None
+                    video_frame_count = 0
+            else:
+                video_frame_count += 1
 
         pygame.display.flip()
-        clock.tick(60)
+
+        clock.tick(VIDEO_FPS)
 
         if now - last_title_update > 0.1:
             connected = (
@@ -807,9 +1389,13 @@ def main():
                 status += " | SWING DETECTED"
             elif graph_frozen:
                 status += " | GRAPH FROZEN"
+            if last_video_path is not None:
+                status += " | VIDEO SAVED"
+            elif video_process is not None:
+                status += " | RECORDING VIDEO"
 
             pygame.display.set_caption(
-                "Pico IMU Cuboid | top-down Kalman | {} | packets {} | "
+                "Pico IMU Racket | 3D Kalman | {} | packets {} | "
                 "roll {:+6.1f} pitch {:+6.1f} yaw {:+6.1f} deg | "
                 "temp {:.1f} C | graph X:red Y:green Z:blue (auto ±32 g min, 0.8 s) | "
                 "R zero, C calibrate, L clear, Space restart".format(
@@ -823,6 +1409,19 @@ def main():
             )
             last_title_update = now
 
+    if video_process is not None:
+        if (
+            finish_video_recording(video_process)
+            and video_frame_count > 0
+            and video_path is not None
+            and video_path.is_file()
+            and video_path.stat().st_size > 0
+        ):
+            last_video_path = video_path
+            print(
+                f"Swing video saved to {last_video_path} "
+                f"({video_path.stat().st_size} bytes)"
+            )
     udp_socket.close()
     pygame.quit()
     print(

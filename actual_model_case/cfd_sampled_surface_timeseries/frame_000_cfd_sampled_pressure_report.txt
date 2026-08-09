@@ -3,7 +3,7 @@
 #   pressureCoeff
 #   pressurePa
 #   pressureVisible01
-#   CpPanel / pPaPanel
+#   Cp / pPaPanel
 # not plain OpenFOAM p unless you are opening the raw case.foam volume.
 
 field	min	max	range
@@ -15,9 +15,9 @@ U_mag	0	0	0
 Ux	0	0	0
 Uy	0	0	0
 Uz	0	0	0
-k	5.17556333e-13	5.86546667e-13	6.89903333e-14
+k	5.20029667e-13	6.11189e-13	9.11593333e-14
 nut	0	0	0
-omega	11.4644167	47.8649	36.4004833
+omega	2.77003333	214.802	212.031967
 p	0	0	0
 pPa	0	0	0
 pressureCoeff	0	0	0

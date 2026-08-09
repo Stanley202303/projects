@@ -1,18 +1,33 @@
 # forceCoeffs debug report
-case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_rqmvpces/step_work
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_lc6edb4f/step_work
 
 Detected coefficient data by patch:
+- Part_1_1: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
+- Part_1_1_2: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
+- Part_1_2: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
+- Part_1_3: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
+- Part_1_4: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
+- Part_1_5: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
+- Part_1_6: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
 - all: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
-- object_1: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
-- object_2: keys=['Cd', 'Cl', 'Cl(f)', 'Cl(r)', 'Cm', 'Time'], values={'Time': 1.0, 'Cm': nan, 'Cd': nan, 'Cl': nan, 'Cl(f)': nan, 'Cl(r)': nan}
 
 postProcessing .dat files:
+- postProcessing/forceCoeffs_Part_1_1/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_Part_1_1_2/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_Part_1_2/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_Part_1_3/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_Part_1_4/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_Part_1_5/0/forceCoeffs.dat
+- postProcessing/forceCoeffs_Part_1_6/0/forceCoeffs.dat
 - postProcessing/forceCoeffs_all/0/forceCoeffs.dat
-- postProcessing/forceCoeffs_object_1/0/forceCoeffs.dat
-- postProcessing/forceCoeffs_object_2/0/forceCoeffs.dat
+- postProcessing/forces_Part_1_1/0/forces.dat
+- postProcessing/forces_Part_1_1_2/0/forces.dat
+- postProcessing/forces_Part_1_2/0/forces.dat
+- postProcessing/forces_Part_1_3/0/forces.dat
+- postProcessing/forces_Part_1_4/0/forces.dat
+- postProcessing/forces_Part_1_5/0/forces.dat
+- postProcessing/forces_Part_1_6/0/forces.dat
 - postProcessing/forces_all/0/forces.dat
-- postProcessing/forces_object_1/0/forces.dat
-- postProcessing/forces_object_2/0/forces.dat
 
 OpenFOAM boundary file exists: True
   /*--------------------------------*- C++ -*----------------------------------*\
@@ -30,39 +45,74 @@ OpenFOAM boundary file exists: True
       object      boundary;
   }
   // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
-  5
+  10
   (
       inlet
       {
           type            patch;
           nFaces          4356;
-          startFace       1564172;
+          startFace       1629683;
       }
       outlet
       {
           type            patch;
           nFaces          4356;
-          startFace       1568528;
+          startFace       1634039;
       }
       farfield
       {
           type            patch;
-          nFaces          29568;
-          startFace       1572884;
+          nFaces          30096;
+          startFace       1638395;
       }
-      object_1
+      Part_1_5
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          120;
-          startFace       1602452;
+          nFaces          51;
+          startFace       1668491;
       }
-      object_2
+      Part_1_4
       {
           type            wall;
           inGroups        List<word> 1(wall);
-          nFaces          896;
-          startFace       1602572;
+          nFaces          51;
+          startFace       1668542;
+      }
+      Part_1_1
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          76;
+          startFace       1668593;
+      }
+      Part_1_2
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          52;
+          startFace       1668669;
+      }
+      Part_1_3
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          51;
+          startFace       1668721;
+      }
+      Part_1_6
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          51;
+          startFace       1668772;
+      }
+      Part_1_1_2
+      {
+          type            wall;
+          inGroups        List<word> 1(wall);
+          nFaces          822;
+          startFace       1668823;
       }
   )
   // ************************************************************************* //

@@ -1,0 +1,13 @@
+# Per-component surface-mesh resolution
+base_cell_width_m=0.14656985
+minimum_component_cells_across=3
+maximum_adaptive_surface_refinement=7
+
+patch	cross_section_m	surface_level_min	surface_level_max	region_distance_m	region_level	estimated_finest_cell_m
+Part_1_5	0.038070293	4	4	0.076140585	4	0.0091606153
+Part_1_4	0.038070293	4	4	0.076140585	4	0.0091606153
+Part_1_1	0.037	4	4	0.074	4	0.0091606153
+Part_1_2	0.076	3	3	0.152	3	0.018321231
+Part_1_3	0.038070293	4	4	0.076140585	4	0.0091606153
+Part_1_6	0.038070293	4	4	0.076140585	4	0.0091606153
+Part_1_1_2	0.58689863	2	2	0.4	2	0.036642461

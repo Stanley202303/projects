@@ -34,8 +34,10 @@ from .motion import *
 from .structural import (
     ExplicitShellState,
     HybridShellCollisionState,
+    shell_rendered_triangle_indices,
     shell_fragment_triangles,
     shell_fragment_velocity,
+    shell_triangle_von_mises_stress_pa,
 )
 
 
@@ -320,11 +322,9 @@ def _xml_attr(value: str) -> str:
 def validate_preview_polydata(path: Path) -> None:
     """Validate the restricted VTP dialect used by the animation PVD files.
 
-    Preview vertices are deliberately duplicated for every triangle.  Fields
-    are therefore stored as PointData with each face value repeated at its
-    three vertices.  This avoids a vtkXMLPolyDataReader CellData tuple-count
-    failure seen in time-varying collision previews while retaining exact
-    face-wise colouring.
+    Preview vertices are deliberately duplicated for every triangle.  Smooth
+    preview fields use PointData; true element quantities such as von Mises
+    stress use one validated CellData value per triangle.
     """
     root = ElementTree.parse(path).getroot()
     piece = root.find(".//Piece")
@@ -361,9 +361,12 @@ def validate_preview_polydata(path: Path) -> None:
     if cell_data is None:
         raise ValueError(f"Preview VTP has no CellData: {path}")
     for array in cell_data.findall("DataArray"):
-        raise ValueError(
-            f"Preview VTP must not contain CellData array {array.attrib.get('Name', 'unnamed')!r}: {path}"
-        )
+        components = int(array.attrib.get("NumberOfComponents", "1"))
+        if len((array.text or "").split()) != polygon_count * components:
+            name = array.attrib.get("Name", "unnamed")
+            raise ValueError(
+                f"Preview VTP CellData array {name!r} has the wrong length: {path}"
+            )
 
 
 def _write_ascii_polydata_vtk(
@@ -492,9 +495,21 @@ def _write_ascii_polydata_vtk(
     for x, y, z in points:
         point_values.extend([x, y, z])
 
+    triangle_cell_scalar_names = {
+        "vonMisesStressPa",
+        "vonMisesStressMPa",
+        "stressToYieldRatio",
+        "materialYielded",
+    }
     point_scalars = {
         name: [value for value in values for _vertex in range(3)]
         for name, values in valid_scalars.items()
+        if name not in triangle_cell_scalar_names
+    }
+    triangle_cell_scalars = {
+        name: values
+        for name, values in valid_scalars.items()
+        if name in triangle_cell_scalar_names
     }
     point_vectors = {
         name: [value for value in values for _vertex in range(3)]
@@ -527,9 +542,20 @@ def _write_ascii_polydata_vtk(
         lines.append(f'        <DataArray type="Float64" Name="{escaped}" NumberOfComponents="3" format="ascii">')
         lines.extend(vector_values_text(vals))
         lines.append('        </DataArray>')
+    lines.append('      </PointData>')
+    if triangle_cell_scalars:
+        lines.append('      <CellData Scalars="vonMisesStressMPa">')
+        for name, vals in triangle_cell_scalars.items():
+            escaped = _xml_attr(name)
+            lines.append(
+                f'        <DataArray type="Float64" Name="{escaped}" format="ascii">'
+            )
+            lines.extend(values_text(vals))
+            lines.append('        </DataArray>')
+        lines.append('      </CellData>')
+    else:
+        lines.append('      <CellData/>')
     lines.extend([
-        '      </PointData>',
-        '      <CellData/>',
         '      <Points>',
         '        <DataArray type="Float64" NumberOfComponents="3" format="ascii">',
     ])
@@ -1228,6 +1254,10 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
         "anchored": [],
         "massKg": [],
         "structuralDisplacementM": [],
+        "vonMisesStressPa": [],
+        "vonMisesStressMPa": [],
+        "stressToYieldRatio": [],
+        "materialYielded": [],
         "perforationPlug": [],
         "structuralFailedEdges": [],
         "velocityX": [],
@@ -1266,6 +1296,10 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
         normal_z_vals: List[float] = []
         area_vals: List[float] = []
         structural_displacement_vals: List[float] = []
+        von_mises_stress_pa_vals: List[float] = []
+        von_mises_stress_mpa_vals: List[float] = []
+        stress_to_yield_ratio_vals: List[float] = []
+        material_yielded_vals: List[float] = []
         perforation_plug_vals: List[float] = []
         structural_failed_edge_vals: List[float] = []
         velocity_x_vals: List[float] = []
@@ -1290,6 +1324,11 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             else comp.collision_structural_state
             if isinstance(comp.collision_structural_state, ExplicitShellState)
             else None
+        )
+        rendered_shell_indices = (
+            shell_rendered_triangle_indices(shell_state)
+            if shell_state is not None and shell_state.render_as_midsurface
+            else []
         )
         surface_body_ids = connected_surface_body_ids(comp)
         surface_body_count = max(surface_body_ids, default=-1) + 1
@@ -1332,11 +1371,16 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             normal_y_vals.append(n[1])
             normal_z_vals.append(n[2])
             area_vals.append(area)
+            shell_element_index = (
+                rendered_shell_indices[triangle_index]
+                if triangle_index < len(rendered_shell_indices)
+                else triangle_index
+            )
             if (
                 shell_state is not None
-                and triangle_index < len(shell_state.triangle_nodes)
+                and shell_element_index < len(shell_state.triangle_nodes)
             ):
-                node_ids = shell_state.triangle_nodes[triangle_index]
+                node_ids = shell_state.triangle_nodes[shell_element_index]
                 structural_displacement = max(
                     v_norm(
                         v_sub(
@@ -1347,14 +1391,29 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
                     for node in node_ids
                 )
                 perforation_plug = float(
-                    triangle_index in shell_state.plug_triangles
+                    shell_element_index in shell_state.plug_triangles
                 )
                 failed_edges = float(shell_state.failed_edges)
+                von_mises_stress_pa = shell_triangle_von_mises_stress_pa(
+                    shell_state,
+                    shell_element_index,
+                )
+                yield_stress_pa = max(
+                    shell_state.young_modulus_pa * shell_state.yield_strain,
+                    1.0,
+                )
+                stress_to_yield_ratio = von_mises_stress_pa / yield_stress_pa
             else:
                 structural_displacement = 0.0
                 perforation_plug = 0.0
                 failed_edges = 0.0
+                von_mises_stress_pa = 0.0
+                stress_to_yield_ratio = 0.0
             structural_displacement_vals.append(structural_displacement)
+            von_mises_stress_pa_vals.append(von_mises_stress_pa)
+            von_mises_stress_mpa_vals.append(von_mises_stress_pa / 1.0e6)
+            stress_to_yield_ratio_vals.append(stress_to_yield_ratio)
+            material_yielded_vals.append(float(stress_to_yield_ratio >= 1.0))
             perforation_plug_vals.append(perforation_plug)
             structural_failed_edge_vals.append(failed_edges)
             velocity_x_vals.append(component_velocity[0])
@@ -1398,6 +1457,12 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             combined_scalars["structuralDisplacementM"].append(
                 structural_displacement
             )
+            combined_scalars["vonMisesStressPa"].append(von_mises_stress_pa)
+            combined_scalars["vonMisesStressMPa"].append(von_mises_stress_pa / 1.0e6)
+            combined_scalars["stressToYieldRatio"].append(stress_to_yield_ratio)
+            combined_scalars["materialYielded"].append(
+                float(stress_to_yield_ratio >= 1.0)
+            )
             combined_scalars["perforationPlug"].append(perforation_plug)
             combined_scalars["structuralFailedEdges"].append(failed_edges)
             combined_scalars["velocityX"].append(component_velocity[0])
@@ -1435,6 +1500,10 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
                 "normalZ": normal_z_vals,
                 "triangleArea": area_vals,
                 "structuralDisplacementM": structural_displacement_vals,
+                "vonMisesStressPa": von_mises_stress_pa_vals,
+                "vonMisesStressMPa": von_mises_stress_mpa_vals,
+                "stressToYieldRatio": stress_to_yield_ratio_vals,
+                "materialYielded": material_yielded_vals,
                 "perforationPlug": perforation_plug_vals,
                 "structuralFailedEdges": structural_failed_edge_vals,
                 "velocityX": velocity_x_vals,

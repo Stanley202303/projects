@@ -1,17 +1,17 @@
 # Visualization validation report
-case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_rqmvpces/step_work
+case=/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_lc6edb4f/step_work
 numeric_time_dirs=['0', '1']
 selected_latest_time=1
-sampled_surface_vtk_count=2
-foamToVTK_vtk_count=2
+sampled_surface_vtk_count=7
+foamToVTK_vtk_count=7
 
 field	min	max	range	file
-p	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_rqmvpces/step_work/1/p
-pPa	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_rqmvpces/step_work/1/pPa
-Cp	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_rqmvpces/step_work/1/Cp
-k	5.1741794e-13	9.9998326e-13	4.8256532e-13	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_rqmvpces/step_work/1/k
-omega	6.0839323e-05	56.291362	56.29130116	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_rqmvpces/step_work/1/omega
-nut	9.3430362e-15	1.6431633e-08	1.643162366e-08	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_rqmvpces/step_work/1/nut
+p	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_lc6edb4f/step_work/1/p
+pPa	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_lc6edb4f/step_work/1/pPa
+Cp	0	0	0	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_lc6edb4f/step_work/1/Cp
+k	5.1314074e-13	9.999958e-13	4.8685506e-13	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_lc6edb4f/step_work/1/k
+omega	6.0782982e-05	262.20943	262.2093692	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_lc6edb4f/step_work/1/omega
+nut	1.9569881e-15	1.6431655e-08	1.643165304e-08	/var/folders/pn/w3l6cyjd6tqbykbcmqf69pdc0000gp/T/actual_model_case_step_work_lc6edb4f/step_work/1/nut
 
 Interpretation:
 - If selected_latest_time is 0, you are still looking at startup fields, not solved CFD.

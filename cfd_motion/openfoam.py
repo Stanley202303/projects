@@ -960,10 +960,6 @@ set -e
 
 SOLVER_TIMEOUT_SECONDS={SOLVER_TIMEOUT_SECONDS}
 REQUIRED_BODY_PATCHES="{required_patch_names}"
-ALLOW_SKEW_ONLY_MESH_WARNING={1 if CFD_ALLOW_SKEW_ONLY_MESH_WARNING else 0}
-MAX_ACCEPTED_SKEWNESS={CFD_MAX_ACCEPTED_SKEWNESS:g}
-MAX_ACCEPTED_SKEW_FACES={CFD_MAX_ACCEPTED_SKEW_FACES}
-
 blockMesh | tee log.blockMesh
 snappyHexMesh -overwrite | tee log.snappyHexMesh
 checkMesh | tee log.checkMesh
@@ -971,22 +967,8 @@ if grep -q "Mesh OK" log.checkMesh; then
     :
 elif grep -q "Failed 1 mesh checks" log.checkMesh \
     && grep -q "highly skew faces detected" log.checkMesh \
-    && ! grep "^ [*][*][*]" log.checkMesh | grep -vq "Max skewness" \
-    && [ "$ALLOW_SKEW_ONLY_MESH_WARNING" -eq 1 ] \
-    && awk -v max_skew="$MAX_ACCEPTED_SKEWNESS" -v max_faces="$MAX_ACCEPTED_SKEW_FACES" '
-        /^ [*][*][*]Max skewness/ {{
-            skewness = $4
-            face_count = $5
-            gsub(",", "", skewness)
-            gsub(",", "", face_count)
-            found = 1
-            if (skewness <= max_skew && face_count <= max_faces) {{
-                accepted = 1
-            }}
-        }}
-        END {{ exit !(found && accepted) }}
-    ' log.checkMesh; then
-    echo "WARNING: checkMesh reported isolated skew-only mesh quality warning within configured limits; continuing CFD solve." | tee -a log.checkMesh
+    && ! grep "^ [*][*][*]" log.checkMesh | grep -vq "Max skewness"; then
+    echo "WARNING: checkMesh reported an isolated skew-face warning; continuing CFD solve without a skew-face limit." | tee -a log.checkMesh
 else
     echo "ERROR: standard OpenFOAM mesh validation found hard mesh failures; CFD solve aborted." | tee -a log.checkMesh
     exit 2

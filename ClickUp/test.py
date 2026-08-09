@@ -7,47 +7,54 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium_stealth import stealth
 from pathlib import Path
 tasks = {
-  "Mathematics - Proof & Problem Solving": {
-    "due_date": "2026-07-14T09:00:00",
-    "duration_minutes": 45,
+  "Morning Mathematics Block - G1C, G3M and AoPS Precalculus": {
+    "due_date": "2026-08-04T08:00:00",
+    "duration_minutes": 110,
     "priority": "High",
     "subject": "Mathematics",
-    "description": "Complete one mathematical proof question and two challenging extension problems. Show every logical step, justify every conclusion, and explain why each method works rather than only writing the answer. Spend the final 10 minutes reviewing your work and rewriting any solutions where reasoning was skipped."
+    "description": "Complete the next ThinkAcademy G1C, ThinkAcademy Mastery G3M and AoPS Precalculus sections. Write two polished solutions that another student could follow without explanation. Mark and correct all work."
   },
 
-  "Geography - Extended Responses": {
-    "due_date": "2026-07-14T09:45:00",
-    "duration_minutes": 40,
-    "priority": "Medium",
-    "subject": "Geography",
-    "description": "Practise climate graphs, anticyclones or the current class topic. Complete two extended-response questions using the structure: Point → Evidence/Example → Explanation → Consequence → Link back to the question. Focus on writing deeper explanations instead of short factual answers."
-  },
-
-  "Biology - Data Analysis": {
-    "due_date": "2026-07-14T10:25:00",
-    "duration_minutes": 35,
+  "English - Comparative Analytical Writing": {
+    "due_date": "2026-08-04T09:50:00",
+    "duration_minutes": 45,
     "priority": "High",
-    "subject": "Biology",
-    "description": "Complete graph and data-analysis questions. Every answer should follow the structure: identify the trend, quote numerical evidence, then provide a biological explanation. Mark your answers afterwards and rewrite any responses that lost marks."
+    "subject": "English",
+    "description": "Choose two short extracts or moments from the same text. Write two comparative paragraphs that connect method, effect, deeper interpretation and writer's purpose. Redraft the weaker paragraph after marking it."
   },
 
-  "History - Source Evaluation": {
-    "due_date": "2026-07-14T11:00:00",
-    "duration_minutes": 30,
-    "priority": "Medium",
-    "subject": "History",
-    "description": "Complete one GCSE-style source usefulness question. Analyse the source by discussing its content, provenance, purpose, audience, reliability, limitations and overall usefulness. Support your judgement using contextual historical knowledge."
-  },
-
-  "French - Speaking & Listening": {
-    "due_date": "2026-07-14T11:30:00",
-    "duration_minutes": 30,
+  "French - Fluency Drill and Corrected Repeat": {
+    "due_date": "2026-08-04T10:35:00",
+    "duration_minutes": 20,
     "priority": "Medium",
     "subject": "French",
-    "description": "Spend 10 minutes listening to native French audio, 10 minutes shadowing the speaker to improve pronunciation, and 10 minutes speaking without a script. Aim to answer questions using complete sentences and improve fluency rather than translating directly from English."
+    "description": "Listen to a short clip twice, shadow it once and give a two-minute spoken summary without reading. Listen back, correct pauses and sentence structure, then repeat it more smoothly."
+  },
+
+  "Reading - Three Daily Sessions": {
+    "due_date": "2026-08-04T12:00:00",
+    "duration_minutes": 90,
+    "priority": "Low",
+    "subject": "Reading",
+    "description": "Read for 30 minutes after breakfast, 30 minutes after lunch and 30 minutes after dinner. Choose one strong sentence from the day's reading and explain why it is effective or informative."
+  },
+
+  "Racket Sensor - Feature Comparison and Evidence Plots": {
+    "due_date": "2026-08-04T14:00:00",
+    "duration_minutes": 50,
+    "priority": "High",
+    "subject": "Design Engineering",
+    "description": "Using labelled data, compare at least three features such as peak acceleration, angular velocity, event duration or signal area. Create clear plots or a comparison table and select the most useful feature with evidence."
+  },
+
+  "Cello - Rhythm and Intonation": {
+    "due_date": "2026-08-04T19:30:00",
+    "duration_minutes": 30,
+    "priority": "Medium",
+    "subject": "Cello",
+    "description": "Practise one scale slowly with a tuner or drone, then use a metronome on the current piece. Isolate an unstable passage and play it accurately three times before continuing."
   }
 }
-
 for i in tasks.keys():
     automation_profile = Path.home() / "selenium-chrome-profile"
     automation_profile.mkdir(exist_ok=True)
@@ -55,6 +62,7 @@ for i in tasks.keys():
     options = webdriver.ChromeOptions()
     options.add_argument(f"--user-data-dir={automation_profile}")
     options.add_argument("--profile-directory=Default")
+    options.add_experimental_option('detach', True)
     driver_1 = webdriver.Chrome(options=options)
     action_1 = ActionChains(driver_1)
 

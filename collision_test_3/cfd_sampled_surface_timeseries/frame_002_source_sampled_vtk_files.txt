@@ -1,2 +1,0 @@
-postProcessing/sampledWallSurfaces/10/object_1_sampled.vtk
-postProcessing/sampledWallSurfaces/10/object_2_sampled.vtk

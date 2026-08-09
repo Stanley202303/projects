@@ -89,6 +89,83 @@ class OnshapeClient:
         self.secret_key = secret_key
         self.opener = urllib.request.build_opener(NoRedirectHandler)
 
+    @staticmethod
+    def _cache_key(method: str, url: str, accept: str, body: Optional[bytes]) -> str:
+        parsed = urllib.parse.urlsplit(url)
+        query = urllib.parse.urlencode(
+            sorted(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+        )
+        normalized = urllib.parse.urlunsplit(
+            (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path, query, "")
+        )
+        digest = hashlib.sha256()
+        digest.update(method.upper().encode("ascii"))
+        digest.update(b"\0")
+        digest.update(accept.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(normalized.encode("utf-8"))
+        if body:
+            digest.update(b"\0")
+            digest.update(body)
+        return digest.hexdigest()
+
+    def _cache_path(self, method: str, url: str, accept: str, body: Optional[bytes]) -> Path:
+        return ONSHAPE_CACHE_DIR / f"{self._cache_key(method, url, accept, body)}.response"
+
+    def _read_cached_response(
+        self,
+        method: str,
+        url: str,
+        accept: str,
+        body: Optional[bytes],
+    ) -> Optional[bytes]:
+        if (
+            not ONSHAPE_CACHE_ENABLED
+            or ONSHAPE_CACHE_REFRESH
+            or method.upper() != "GET"
+            or body is not None
+        ):
+            return None
+        path = self._cache_path(method, url, accept, body)
+        try:
+            age = max(0.0, time.time() - path.stat().st_mtime)
+            if ONSHAPE_CACHE_TTL_S > 0.0 and age > ONSHAPE_CACHE_TTL_S:
+                return None
+            data = path.read_bytes()
+            if data:
+                print(f"Onshape cache hit: {url}")
+                return data
+        except (FileNotFoundError, OSError):
+            return None
+        return None
+
+    def _write_cached_response(
+        self,
+        method: str,
+        url: str,
+        accept: str,
+        body: Optional[bytes],
+        data: bytes,
+    ) -> None:
+        if (
+            not ONSHAPE_CACHE_ENABLED
+            or method.upper() != "GET"
+            or body is not None
+            or not data
+        ):
+            return
+        path = self._cache_path(method, url, accept, body)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_bytes(data)
+            temporary.replace(path)
+        except OSError:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def _signed_headers(self, method: str, url: str, accept: str, content_type: str) -> Dict[str, str]:
         parsed = urllib.parse.urlparse(url)
         path = parsed.path or "/"
@@ -116,6 +193,9 @@ class OnshapeClient:
 
     def request_bytes(self, method: str, url: str, accept: str = "*/*", body: Optional[bytes] = None,
                       content_type: str = JSON_CONTENT_TYPE) -> bytes:
+        cached = self._read_cached_response(method, url, accept, body)
+        if cached is not None:
+            return cached
         current_url = url
         current_method = method.upper()
         current_body = body
@@ -125,7 +205,9 @@ class OnshapeClient:
             req = urllib.request.Request(current_url, data=current_body, headers=headers, method=current_method)
             try:
                 with self.opener.open(req) as response:
-                    return response.read()
+                    data = response.read()
+                    self._write_cached_response(method, url, accept, body, data)
+                    return data
             except urllib.error.HTTPError as exc:
                 if exc.code in {301, 302, 303, 307, 308}:
                     location = exc.headers.get("Location")
@@ -169,6 +251,11 @@ def api_base_candidates(ref: OnshapeRef) -> List[str]:
         if v and v not in versions:
             versions.append(v)
     return [api_base_for_version(ref, v) for v in versions]
+
+
+def _is_onshape_authentication_error(error: Exception) -> bool:
+    message = str(error)
+    return "HTTP 401" in message or "HTTP 403" in message
 
 
 def onshape_credentials_file() -> Path:
@@ -239,6 +326,8 @@ def detect_onshape_element_type(ref: OnshapeRef, client: OnshapeClient) -> str:
             if "partstudio" in element_type or "part studio" in text or "partstudio" in text:
                 return "partstudio"
     except Exception as exc:
+        if _is_onshape_authentication_error(exc):
+            raise
         print(f"Element list probe failed, trying endpoint probes instead: {exc}")
 
     # Endpoint probe: assembly definition is cheap compared with meshing.
@@ -249,7 +338,9 @@ def detect_onshape_element_type(ref: OnshapeRef, client: OnshapeClient) -> str:
     try:
         client.request_json("GET", asm_url)
         return "assembly"
-    except Exception:
+    except Exception as exc:
+        if _is_onshape_authentication_error(exc):
+            raise
         pass
 
     # Final probe: Part Studio STL endpoint. Do not actually download here; just

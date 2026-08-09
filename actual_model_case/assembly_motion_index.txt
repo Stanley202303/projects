@@ -3,7 +3,7 @@ Assembly quasi-dynamic CFD run
 cfd_solver_mode=steady
 solver_application=simpleFoam
 dynamic_steps=10
-motion_dt=0.002
+motion_dt=0.0008
 enable_nonrigid_deformation=True
 deform_anchored_components=True
 deformation_component_name_contains=<all>
@@ -49,7 +49,7 @@ collision_eulerian_grid_min_cell_m=0.0001
 collision_eulerian_penalty_gain=1.0
 collision_mesh_refinement_target_triangles=2048
 collision_mesh_refinement_max_levels=4
-collision_damage_min_response_time_s=0.008
+collision_damage_min_response_time_s=0.0032
 collision_structural_solver=hybrid_shell
 collision_shell_damping_ratio=0.08
 collision_shell_cfl=0.25
@@ -57,19 +57,25 @@ collision_shell_max_substeps=256
 collision_shell_displacement_limit_m=0.03
 collision_shell_impact_energy_fraction=0.65
 collision_topology_changes=True
-collision_convergence_speed_mps=30.0
+collision_convergence_speed_mps=100.0
 collision_convergence_components=<auto>
 collision_convergence_axis=auto
-collision_initial_gap_m=0.05
+collision_initial_gap_m=0.0
 collision_convergence_moving_component=first
 collision_sweep_clamping=True
 collision_sweep_penetration_m=0.001
 collision_convergence_stop_after_contact=True
-collision_convergence_pair=object_1,object_2
+collision_convergence_pair=Part_1_1,Part_1_1_2
+stress_free_initial_same_source_overlaps=14
 aero_reference_frame=body_moving_through_still_air
 body_moving_through_still_air=True
 body_world_velocity_mps=(-0.0, 0.0, 0.0)
 
 components:
-- object_1: name=object_1, material=Tungsten, mass=5.69797 kg, density=19600 kg/m^3, young_modulus=4e+11 Pa, thickness=0.00488255 m, yield_strength=7.5e+08 Pa, failure_strain=0.01, mate_type=COLLISION_IMPACTOR, translate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], rotate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], source=collision-convergence-moving, anchored=False
-- object_2: name=object_2, material=ABS, mass=0.50496 kg, density=1052 kg/m^3, young_modulus=2.31e+09 Pa, thickness=0.003 m, yield_strength=4.48e+07 Pa, failure_strain=0.2, mate_type=COLLISION_TARGET, translate_axes=[], rotate_axes=[], source=collision-convergence-stationary, anchored=True
+- Part_1_5: name=Part 1 <5>, material=Foamcore, mass=0.0308443 kg, density=663 kg/m^3, young_modulus=3e+07 Pa, thickness=0.0024 m, yield_strength=3.5e+07 Pa, failure_strain=0.1, mate_type=COLLISION_IMPACTOR, translate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], rotate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], source=collision-convergence-moving, anchored=False
+- Part_1_4: name=Part 1 <4>, material=Foamcore, mass=0.0308443 kg, density=663 kg/m^3, young_modulus=3e+07 Pa, thickness=0.0024 m, yield_strength=3.5e+07 Pa, failure_strain=0.1, mate_type=COLLISION_IMPACTOR, translate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], rotate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], source=collision-convergence-moving, anchored=False
+- Part_1_1: name=Part 1 <1>, material=Tungsten, mass=1.79169 kg, density=19600 kg/m^3, young_modulus=4e+11 Pa, thickness=0.00436255 m, yield_strength=7.5e+08 Pa, failure_strain=0.01, mate_type=COLLISION_IMPACTOR, translate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], rotate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], source=collision-convergence-moving, anchored=False
+- Part_1_2: name=Part 1 <2>, material=Foamcore, mass=0.00907185 kg, density=663 kg/m^3, young_modulus=3e+07 Pa, thickness=0.003 m, yield_strength=3.5e+07 Pa, failure_strain=0.1, mate_type=COLLISION_IMPACTOR, translate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], rotate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], source=collision-convergence-moving, anchored=False
+- Part_1_3: name=Part 1 <3>, material=Foamcore, mass=0.0308443 kg, density=663 kg/m^3, young_modulus=3e+07 Pa, thickness=0.0024 m, yield_strength=3.5e+07 Pa, failure_strain=0.1, mate_type=COLLISION_IMPACTOR, translate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], rotate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], source=collision-convergence-moving, anchored=False
+- Part_1_6: name=Part 1 <6>, material=Foamcore, mass=0.0308443 kg, density=663 kg/m^3, young_modulus=3e+07 Pa, thickness=0.0024 m, yield_strength=3.5e+07 Pa, failure_strain=0.1, mate_type=COLLISION_IMPACTOR, translate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], rotate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)], source=collision-convergence-moving, anchored=False
+- Part_1_1_2: name=Part 1 <1>, material=ABS, mass=20.1985 kg, density=1052 kg/m^3, young_modulus=2.31e+09 Pa, thickness=0.032 m, yield_strength=4.48e+07 Pa, failure_strain=0.2, mate_type=COLLISION_TARGET, translate_axes=[], rotate_axes=[], source=collision-convergence-stationary, anchored=True

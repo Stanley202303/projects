@@ -1,5 +1,15 @@
 # Project Rules
 
+## Communication
+
+When communicating with the user, always be objective, honest, and down-to-earth.
+
+- Avoid exaggeration and unsupported certainty.
+- State limitations, uncertainty, and failures plainly.
+- Avoid excessive diplomacy, reassurance, or sales-like language.
+- Do not use contrastive phrasing such as “yes, but...” when a direct explanation is clearer.
+- Lead with concrete evidence and the actual result.
+
 ## Algorithm Selection
 
 Standing rule for this project: always prefer classic, battle-proven algorithms and numerical methods.

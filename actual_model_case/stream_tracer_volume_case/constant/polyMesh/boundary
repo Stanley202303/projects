@@ -14,39 +14,74 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-5
+10
 (
     inlet
     {
         type            patch;
         nFaces          4356;
-        startFace       1582734;
+        startFace       1629683;
     }
     outlet
     {
         type            patch;
         nFaces          4356;
-        startFace       1587090;
+        startFace       1634039;
     }
     farfield
     {
         type            patch;
         nFaces          30096;
-        startFace       1591446;
+        startFace       1638395;
     }
-    object_1
+    Part_1_5
     {
         type            wall;
         inGroups        List<word> 1(wall);
-        nFaces          70;
-        startFace       1621542;
+        nFaces          51;
+        startFace       1668491;
     }
-    object_2
+    Part_1_4
     {
         type            wall;
         inGroups        List<word> 1(wall);
-        nFaces          902;
-        startFace       1621612;
+        nFaces          51;
+        startFace       1668542;
+    }
+    Part_1_1
+    {
+        type            wall;
+        inGroups        List<word> 1(wall);
+        nFaces          76;
+        startFace       1668593;
+    }
+    Part_1_2
+    {
+        type            wall;
+        inGroups        List<word> 1(wall);
+        nFaces          52;
+        startFace       1668669;
+    }
+    Part_1_3
+    {
+        type            wall;
+        inGroups        List<word> 1(wall);
+        nFaces          51;
+        startFace       1668721;
+    }
+    Part_1_6
+    {
+        type            wall;
+        inGroups        List<word> 1(wall);
+        nFaces          51;
+        startFace       1668772;
+    }
+    Part_1_1_2
+    {
+        type            wall;
+        inGroups        List<word> 1(wall);
+        nFaces          822;
+        startFace       1668823;
     }
 )
 

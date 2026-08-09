@@ -33,11 +33,31 @@ boundaryField
     {
         type            slip;
     }
-    object_1
+    Part_1_5
     {
         type            noSlip;
     }
-    object_2
+    Part_1_4
+    {
+        type            noSlip;
+    }
+    Part_1_1
+    {
+        type            noSlip;
+    }
+    Part_1_2
+    {
+        type            noSlip;
+    }
+    Part_1_3
+    {
+        type            noSlip;
+    }
+    Part_1_6
+    {
+        type            noSlip;
+    }
+    Part_1_1_2
     {
         type            noSlip;
     }
