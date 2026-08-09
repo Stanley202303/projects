@@ -14,6 +14,14 @@ from .math_utils import (
     v_unit,
 )
 from .models import AeroComponent, MotionFreedom, Triangle, Vec3
+from .geometry import estimate_closed_mesh_volume
+from .fem_mpm import (
+    ConservationAudit,
+    HybridFEMMPMState,
+    advance_fem,
+    make_tetra_element,
+    von_mises_stress,
+)
 
 
 @dataclass
@@ -107,6 +115,30 @@ class HybridShellCollisionState:
 
     def __getattr__(self, name: str) -> object:
         return getattr(self.shell_state, name)
+
+
+@dataclass
+class HybridFEMMPMCollisionState:
+    solid_state: HybridFEMMPMState
+    fragment_bodies: List[DetachedFragmentBody] = field(default_factory=list)
+    emitted_elements: Set[int] = field(default_factory=set)
+    next_fragment_id: int = 0
+    reference_mass_kg: float = 0.0
+    last_audit: Optional[ConservationAudit] = None
+    solver_backend: str = "hybrid_fem_mpm"
+
+    @property
+    def max_displacement_m(self) -> float:
+        return max(
+            (
+                v_norm(v_sub(position, reference))
+                for position, reference in zip(
+                    self.solid_state.positions,
+                    self.solid_state.reference_positions,
+                )
+            ),
+            default=0.0,
+        )
 
 
 def _triangle_area(triangle: Triangle) -> float:
@@ -734,6 +766,365 @@ def build_hybrid_shell_collision_state(
 
 def hybrid_fragment_components(state: HybridShellCollisionState) -> List[AeroComponent]:
     return [fragment.component for fragment in state.fragment_bodies]
+
+
+def component_is_thin_for_solid_fem(component: AeroComponent) -> bool:
+    declared_thickness = component.material.thickness_m
+    if (
+        declared_thickness is not None
+        and declared_thickness > 0.0
+        and declared_thickness / max(component.lref, 1e-12) < 0.1
+    ):
+        return True
+    points = [point for triangle in component.triangles for point in triangle[1:]]
+    if not points:
+        return True
+    extents = (
+        max(point[0] for point in points) - min(point[0] for point in points),
+        max(point[1] for point in points) - min(point[1] for point in points),
+        max(point[2] for point in points) - min(point[2] for point in points),
+    )
+    positive = [extent for extent in extents if extent > 1e-10]
+    if len(positive) < 3:
+        return True
+    return min(positive) / max(positive) < 0.08
+
+
+def build_hybrid_fem_mpm_collision_state(
+    component: AeroComponent,
+    young_modulus_pa: float,
+    poisson_ratio: float,
+    yield_strength_pa: float,
+    failure_strain: float,
+    cfl: float,
+    max_substeps: int,
+) -> HybridFEMMPMCollisionState:
+    """Create a star-conforming tetra mesh whose boundary is the CAD surface.
+
+    A surface triangle and the component centre form one tetrahedron.  This is
+    deterministic, preserves the exact visible boundary vertices and is robust
+    for the convex or locally star-shaped CAD solids normally used as impactors.
+    Thin targets are intentionally routed to the shell backend by the caller.
+    """
+    if not component.triangles:
+        raise ValueError(f"cannot build solid FEM state for empty component {component.patch}")
+    tolerance = max(component.lref * 1e-9, 1e-10)
+    vertex_by_key: Dict[Tuple[int, int, int], int] = {}
+    surface_positions: List[Vec3] = []
+    triangle_vertices: List[Tuple[int, int, int]] = []
+    for triangle in component.triangles:
+        node_ids: List[int] = []
+        for point in triangle[1:]:
+            key = _vertex_key(point, tolerance)
+            node_index = vertex_by_key.get(key)
+            if node_index is None:
+                node_index = len(surface_positions)
+                vertex_by_key[key] = node_index
+                surface_positions.append(point)
+            node_ids.append(node_index)
+        triangle_vertices.append(tuple(node_ids))  # type: ignore[arg-type]
+    edge_counts: Dict[Tuple[int, int], int] = {}
+    for a, b, c in triangle_vertices:
+        for edge in ((a, b), (b, c), (c, a)):
+            key = tuple(sorted(edge))
+            edge_counts[key] = edge_counts.get(key, 0) + 1
+    if any(count != 2 for count in edge_counts.values()):
+        raise ValueError(
+            f"component {component.patch} is not a watertight solid; using fallback"
+        )
+    centre = component.cofr
+    if not all(math.isfinite(value) for value in centre):
+        centre = _centroid(surface_positions)
+    positions = [centre, *surface_positions]
+    surface_triangle_nodes = [
+        (a + 1, b + 1, c + 1) for a, b, c in triangle_vertices
+    ]
+    raw_volumes = [
+        _tetra_volume_from_nodes(positions, (0, *nodes))
+        for nodes in surface_triangle_nodes
+    ]
+    total_volume = sum(raw_volumes)
+    if total_volume <= 1e-18:
+        raise ValueError(f"component {component.patch} has no usable solid volume")
+    closed_volume = estimate_closed_mesh_volume(component.triangles)
+    if closed_volume <= 1e-18 or total_volume > 1.05 * closed_volume:
+        raise ValueError(
+            f"component {component.patch} is not star-shaped about its mass centre; "
+            "using fallback"
+        )
+    elements = []
+    for nodes, volume in zip(surface_triangle_nodes, raw_volumes):
+        if volume <= 1e-18:
+            continue
+        element_mass = component.mass * volume / total_volume
+        elements.append(
+            make_tetra_element(
+                positions,
+                (0, *nodes),
+                young_modulus_pa,
+                poisson_ratio,
+                yield_strength_pa,
+                failure_strain,
+                element_mass,
+            )
+        )
+    if not elements:
+        raise ValueError(f"component {component.patch} produced no valid tetrahedra")
+    # Keep surface-to-element indices in the same order, omitting degenerate
+    # surface triangles from both arrays.
+    valid_surface_nodes = [
+        nodes
+        for nodes, volume in zip(surface_triangle_nodes, raw_volumes)
+        if volume > 1e-18
+    ]
+    masses = [0.0] * len(positions)
+    for element in elements:
+        for node in element.nodes:
+            masses[node] += 0.25 * element.mass_kg
+    velocities = []
+    for position in positions:
+        rotational = v_cross(component.angular_velocity, v_sub(position, component.cofr))
+        velocities.append(v_add(component.linear_velocity, rotational))
+    fixed_nodes = {0} if component.is_assembly_anchor else set()
+    mean_element_size = (
+        sum(element.rest_volume_m3 for element in elements) / len(elements)
+    ) ** (1.0 / 3.0)
+    solid_state = HybridFEMMPMState(
+        positions=positions,
+        reference_positions=list(positions),
+        velocities=velocities,
+        masses_kg=masses,
+        elements=elements,
+        fixed_nodes=fixed_nodes,
+        surface_triangle_nodes=valid_surface_nodes,
+        surface_element_indices=list(range(len(elements))),
+        cfl=max(0.05, min(cfl, 0.8)),
+        max_substeps=max(max_substeps, 1),
+        mpm_cell_size_m=max(mean_element_size, 1e-6),
+    )
+    return HybridFEMMPMCollisionState(
+        solid_state=solid_state,
+        reference_mass_kg=component.mass,
+    )
+
+
+def _tetra_volume_from_nodes(
+    positions: Sequence[Vec3],
+    nodes: Tuple[int, int, int, int],
+) -> float:
+    a, b, c, d = (positions[node] for node in nodes)
+    return abs(v_dot(v_sub(b, a), v_cross(v_sub(c, a), v_sub(d, a)))) / 6.0
+
+
+def apply_fem_impact_energy(
+    state: HybridFEMMPMCollisionState,
+    contact_point: Vec3,
+    inward_direction: Vec3,
+    contact_radius_m: float,
+    absorbed_energy_j: float,
+    energy_fraction: float,
+) -> None:
+    available = max(absorbed_energy_j, 0.0) * max(0.0, min(energy_fraction, 1.0))
+    if available <= 0.0:
+        return
+    solid = state.solid_state
+    axis = v_unit(inward_direction)
+    radius = max(2.5 * contact_radius_m, solid.mpm_cell_size_m, 1e-9)
+    weights: List[float] = []
+    free_mass = 0.0
+    weighted_mass = 0.0
+    for node, position in enumerate(solid.positions):
+        if node in solid.fixed_nodes:
+            weight = 0.0
+        else:
+            distance = v_norm(v_sub(position, contact_point))
+            weight = max(0.0, 1.0 - distance / radius) ** 2
+        weights.append(weight)
+        if node not in solid.fixed_nodes:
+            free_mass += solid.masses_kg[node]
+            weighted_mass += solid.masses_kg[node] * weight
+    mean_weight = weighted_mass / max(free_mass, 1e-18)
+    centred_weights = [
+        0.0 if node in solid.fixed_nodes else weight - mean_weight
+        for node, weight in enumerate(weights)
+    ]
+    effective_mass = sum(
+        solid.masses_kg[node] * weight * weight
+        for node, weight in enumerate(centred_weights)
+    )
+    if effective_mass <= 1e-18:
+        return
+    speed_scale = math.sqrt(2.0 * available / effective_mass)
+    for node, weight in enumerate(centred_weights):
+        if abs(weight) <= 1e-18:
+            continue
+        solid.velocities[node] = v_add(
+            solid.velocities[node],
+            v_mul(axis, speed_scale * weight),
+        )
+
+
+def update_fem_perforation(
+    state: HybridFEMMPMCollisionState,
+    contact_point: Vec3,
+    inward_direction: Vec3,
+    hole_radius_m: float,
+) -> int:
+    solid = state.solid_state
+    axis = v_unit(inward_direction)
+    newly_failed = 0
+    for triangle_nodes, element_index in zip(
+        solid.surface_triangle_nodes,
+        solid.surface_element_indices,
+    ):
+        element = solid.elements[element_index]
+        if element.failed:
+            continue
+        centroid = _centroid([solid.reference_positions[node] for node in triangle_nodes])
+        if _radial_distance(centroid, contact_point, axis) <= hole_radius_m:
+            element.failed = True
+            newly_failed += 1
+    return newly_failed
+
+
+def _solid_fragment_triangle(
+    state: HybridFEMMPMCollisionState,
+    element_index: int,
+    triangle_nodes: Tuple[int, int, int],
+) -> Optional[Triangle]:
+    particles = {
+        particle.source_node: particle
+        for particle in state.solid_state.particles
+        if particle.source_element == element_index
+    }
+    if not all(node in particles for node in triangle_nodes):
+        return None
+    a, b, c = (particles[node].position for node in triangle_nodes)
+    normal = v_unit(v_cross(v_sub(b, a), v_sub(c, a)), (1.0, 0.0, 0.0))
+    return normal, a, b, c
+
+
+def sync_hybrid_fem_mpm_fragments(
+    component: AeroComponent,
+    state: HybridFEMMPMCollisionState,
+) -> Tuple[int, float]:
+    solid = state.solid_state
+    created = 0
+    emitted_mass = 0.0
+    existing_by_element = {
+        next(iter(fragment.triangle_indices)): fragment
+        for fragment in state.fragment_bodies
+        if fragment.triangle_indices
+    }
+    for triangle_nodes, element_index in zip(
+        solid.surface_triangle_nodes,
+        solid.surface_element_indices,
+    ):
+        element = solid.elements[element_index]
+        if not element.transferred:
+            continue
+        triangle = _solid_fragment_triangle(state, element_index, triangle_nodes)
+        if triangle is None:
+            continue
+        particles = [
+            particle
+            for particle in solid.particles
+            if particle.source_element == element_index
+        ]
+        fragment_mass = sum(particle.mass_kg for particle in particles)
+        momentum = (0.0, 0.0, 0.0)
+        for particle in particles:
+            momentum = v_add(momentum, v_mul(particle.velocity, particle.mass_kg))
+        velocity = v_mul(momentum, 1.0 / max(fragment_mass, 1e-18))
+        existing = existing_by_element.get(element_index)
+        if existing is not None:
+            existing.component.triangles = [triangle]
+            existing.component.linear_velocity = velocity
+            existing.component.cofr = _centroid(list(triangle[1:]))
+            continue
+        centroid = _centroid(list(triangle[1:]))
+        patch = f"{component.patch}_fem_fragment_{state.next_fragment_id}"
+        fragment_component = AeroComponent(
+            name=f"{component.name} FEM fragment {state.next_fragment_id}",
+            patch=patch,
+            triangles=[triangle],
+            cofr=centroid,
+            lref=max(v_norm(v_sub(triangle[2], triangle[1])), 1e-9),
+            aref=_triangle_area(triangle),
+            freedom=MotionFreedom(
+                translate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+                rotate_axes=[(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+                mate_type="COLLISION_FRAGMENT",
+                source="hybrid-fem-mpm-fragment",
+            ),
+            material=component.material,
+            mass=fragment_mass,
+            inertia=max(fragment_mass * component.lref * component.lref / 12.0, 1e-12),
+            linear_velocity=velocity,
+            collision_family=component.collision_family or component.patch,
+            collision_fragment_parent_state=state,
+            collision_fragment_source_element=element_index,
+        )
+        state.fragment_bodies.append(
+            DetachedFragmentBody(
+                component=fragment_component,
+                triangle_indices={element_index},
+                mass_kg=fragment_mass,
+                source="hybrid-fem-mpm-fragment",
+            )
+        )
+        state.emitted_elements.add(element_index)
+        state.next_fragment_id += 1
+        created += 1
+        emitted_mass += fragment_mass
+    if emitted_mass > 0.0:
+        previous_mass = component.mass
+        component.mass = max(0.0, component.mass - emitted_mass)
+        component.inertia *= component.mass / max(previous_mass, 1e-18)
+    return created, emitted_mass
+
+
+def refresh_hybrid_fem_mpm_geometry(
+    component: AeroComponent,
+    state: HybridFEMMPMCollisionState,
+) -> float:
+    solid = state.solid_state
+    triangles: List[Triangle] = []
+    for triangle_nodes, element_index in zip(
+        solid.surface_triangle_nodes,
+        solid.surface_element_indices,
+    ):
+        if solid.elements[element_index].transferred:
+            continue
+        a, b, c = (solid.positions[node] for node in triangle_nodes)
+        normal = v_unit(v_cross(v_sub(b, a), v_sub(c, a)), (1.0, 0.0, 0.0))
+        triangles.append((normal, a, b, c))
+    if triangles:
+        component.triangles = triangles
+    maximum = state.max_displacement_m
+    component.deformation_max_m = max(component.deformation_max_m, maximum)
+    return maximum
+
+
+def advance_hybrid_fem_mpm_collision(
+    component: AeroComponent,
+    state: HybridFEMMPMCollisionState,
+    dt_s: float,
+) -> Tuple[float, int, float]:
+    state.last_audit = advance_fem(state.solid_state, dt_s)
+    created, emitted_mass = sync_hybrid_fem_mpm_fragments(component, state)
+    deformation = refresh_hybrid_fem_mpm_geometry(component, state)
+    return deformation, created, emitted_mass
+
+
+def fem_surface_von_mises_stress_pa(
+    state: HybridFEMMPMCollisionState,
+) -> List[float]:
+    return [
+        von_mises_stress(state.solid_state.elements[element_index].stress)
+        for element_index in state.solid_state.surface_element_indices
+        if not state.solid_state.elements[element_index].transferred
+    ]
 
 
 def apply_shell_impact_energy(

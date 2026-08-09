@@ -31,15 +31,21 @@ from .openfoam import *
 from .onshape import *
 from .structural import (
     ExplicitShellState,
+    HybridFEMMPMCollisionState,
     HybridShellCollisionState,
+    advance_hybrid_fem_mpm_collision,
     advance_hybrid_shell_collision,
     advance_explicit_shell,
     apply_shell_contact_work,
     apply_shell_impact_energy,
     build_explicit_shell_state,
+    build_hybrid_fem_mpm_collision_state,
     build_hybrid_shell_collision_state,
+    component_is_thin_for_solid_fem,
     emit_shell_fragments,
     hybrid_fragment_components,
+    apply_fem_impact_energy,
+    update_fem_perforation,
     sync_hybrid_shell_fragments,
     update_shell_perforation,
 )
@@ -340,6 +346,67 @@ def move_component_rigidly(
     origin: Vec3,
 ) -> None:
     component.triangles = move_triangles(component.triangles, translation, rotation_axis, rotation_angle, origin)
+    structural_state = component.collision_structural_state
+    if isinstance(structural_state, HybridFEMMPMCollisionState):
+        solid = structural_state.solid_state
+
+        def transform_point(point: Vec3) -> Vec3:
+            rotated = (
+                rotate_point_around_axis(
+                    point,
+                    origin,
+                    rotation_axis,
+                    rotation_angle,
+                )
+                if rotation_axis is not None
+                else point
+            )
+            return v_add(rotated, translation)
+
+        def rotate_vector(vector: Vec3) -> Vec3:
+            if rotation_axis is None:
+                return vector
+            return rotate_point_around_axis(
+                vector,
+                (0.0, 0.0, 0.0),
+                rotation_axis,
+                rotation_angle,
+            )
+
+        solid.positions = [transform_point(point) for point in solid.positions]
+        solid.reference_positions = [
+            transform_point(point) for point in solid.reference_positions
+        ]
+        solid.velocities = [rotate_vector(velocity) for velocity in solid.velocities]
+        for particle in solid.particles:
+            particle.position = transform_point(particle.position)
+            particle.velocity = rotate_vector(particle.velocity)
+    fragment_parent = component.collision_fragment_parent_state
+    fragment_element = component.collision_fragment_source_element
+    if (
+        isinstance(fragment_parent, HybridFEMMPMCollisionState)
+        and fragment_element is not None
+    ):
+        particles = [
+            particle
+            for particle in fragment_parent.solid_state.particles
+            if particle.source_element == fragment_element
+        ]
+        for particle in particles:
+            if rotation_axis is not None:
+                particle.position = rotate_point_around_axis(
+                    particle.position,
+                    origin,
+                    rotation_axis,
+                    rotation_angle,
+                )
+                particle.velocity = rotate_point_around_axis(
+                    particle.velocity,
+                    (0.0, 0.0, 0.0),
+                    rotation_axis,
+                    rotation_angle,
+                )
+            particle.position = v_add(particle.position, translation)
     if component.deformation_reference_triangles is not None:
         component.deformation_reference_triangles = move_triangles(
             component.deformation_reference_triangles,
@@ -692,6 +759,8 @@ def apply_aerodynamic_velocity_increment(
     """
     if dt <= 0.0 or component.is_assembly_anchor:
         return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+    previous_linear_velocity = component.linear_velocity
+    previous_angular_velocity = component.angular_velocity
     force, source_moment = load_override or surface_pressure_load(component)
     allowed_force = project_vector_on_axes(force, component.freedom.translate_axes)
     acceleration = v_mul(allowed_force, 1.0 / max(component.mass, 1e-9))
@@ -726,6 +795,33 @@ def apply_aerodynamic_velocity_increment(
         component.angular_velocity,
         v_mul(angular_acceleration, dt),
     )
+    fragment_parent = component.collision_fragment_parent_state
+    fragment_element = component.collision_fragment_source_element
+    if (
+        isinstance(fragment_parent, HybridFEMMPMCollisionState)
+        and fragment_element is not None
+    ):
+        delta_velocity = v_sub(
+            component.linear_velocity,
+            previous_linear_velocity,
+        )
+        delta_angular_velocity = v_sub(
+            component.angular_velocity,
+            previous_angular_velocity,
+        )
+        for particle in fragment_parent.solid_state.particles:
+            if particle.source_element != fragment_element:
+                continue
+            particle.velocity = v_add(
+                particle.velocity,
+                v_add(
+                    delta_velocity,
+                    v_cross(
+                        delta_angular_velocity,
+                        v_sub(particle.position, component.cofr),
+                    ),
+                ),
+            )
     return force, total_moment
 
 
@@ -737,7 +833,10 @@ def advance_detached_fragment_aerodynamics(
     advanced = 0
     for parent in components:
         state = parent.collision_structural_state
-        if not isinstance(state, HybridShellCollisionState):
+        if not isinstance(
+            state,
+            (HybridShellCollisionState, HybridFEMMPMCollisionState),
+        ):
             continue
         for fragment in state.fragment_bodies:
             apply_aerodynamic_velocity_increment(fragment.component, dt)
@@ -877,6 +976,51 @@ def apply_collision_impulse(component: AeroComponent, impulse: Vec3, contact_poi
             v_add(component.angular_velocity, delta_av),
             collision_angular_speed_limit(),
         )
+    fragment_parent = component.collision_fragment_parent_state
+    fragment_element = component.collision_fragment_source_element
+    if (
+        isinstance(fragment_parent, HybridFEMMPMCollisionState)
+        and fragment_element is not None
+    ):
+        particles = [
+            particle
+            for particle in fragment_parent.solid_state.particles
+            if particle.source_element == fragment_element
+        ]
+        particle_mass = sum(particle.mass_kg for particle in particles)
+        if particle_mass > 1e-18:
+            weighted_centre = (0.0, 0.0, 0.0)
+            for particle in particles:
+                weighted_centre = v_add(
+                    weighted_centre,
+                    v_mul(particle.position, particle.mass_kg),
+                )
+            centre = v_mul(
+                weighted_centre,
+                1.0 / particle_mass,
+            )
+            delta_velocity = v_mul(impulse, 1.0 / particle_mass)
+            torque = v_cross(v_sub(contact_point, centre), impulse)
+            scalar_inertia = sum(
+                particle.mass_kg
+                * v_dot(
+                    v_sub(particle.position, centre),
+                    v_sub(particle.position, centre),
+                )
+                for particle in particles
+            )
+            delta_omega = v_mul(torque, 1.0 / max(scalar_inertia, 1e-18))
+            for particle in particles:
+                particle.velocity = v_add(
+                    particle.velocity,
+                    v_add(
+                        delta_velocity,
+                        v_cross(
+                            delta_omega,
+                            v_sub(particle.position, centre),
+                        ),
+                    ),
+                )
 
 
 def contact_point_velocity(component: AeroComponent, contact_point: Vec3) -> Vec3:
@@ -1458,6 +1602,41 @@ def deform_component_at_contact(
         return 0.0
     original_cofr = component.cofr
     component.triangles = deformed
+    fragment_parent = component.collision_fragment_parent_state
+    fragment_element = component.collision_fragment_source_element
+    if (
+        isinstance(fragment_parent, HybridFEMMPMCollisionState)
+        and fragment_element is not None
+        and deformed
+    ):
+        solid = fragment_parent.solid_state
+        surface_nodes = next(
+            (
+                nodes
+                for nodes, element_index in zip(
+                    solid.surface_triangle_nodes,
+                    solid.surface_element_indices,
+                )
+                if element_index == fragment_element
+            ),
+            None,
+        )
+        if surface_nodes is not None:
+            particles = {
+                particle.source_node: particle
+                for particle in solid.particles
+                if particle.source_element == fragment_element
+            }
+            for node, point in zip(surface_nodes, deformed[0][1:]):
+                particle = particles.get(node)
+                if particle is None:
+                    continue
+                displacement = v_sub(point, particle.position)
+                particle.position = point
+                particle.velocity = v_add(
+                    particle.velocity,
+                    v_mul(displacement, 1.0 / max(MOTION_DT, 1e-9)),
+                )
     component.aref, component.lref, _geometry_centroid = component_references(component.triangles)
     # A local dent changes surface geometry, not the body's centre of mass.
     component.cofr = original_cofr
@@ -2944,6 +3123,35 @@ def register_collision_dent(
         reference_increment,
         radius,
     )
+    if (
+        COLLISION_STRUCTURAL_SOLVER == "hybrid_fem_mpm"
+        and component.collision_structural_state is None
+        and not component_is_thin_for_solid_fem(component)
+    ):
+        try:
+            component.collision_structural_state = build_hybrid_fem_mpm_collision_state(
+                component,
+                inferred_deformation_young_modulus(component),
+                inferred_deformation_poisson_ratio(component),
+                material_yield_strength_pa(component),
+                material_failure_strain(component),
+                COLLISION_SHELL_CFL,
+                COLLISION_FEM_MAX_SUBSTEPS,
+            )
+        except ValueError:
+            # Non-star-shaped or open CAD meshes retain the proven surface
+            # deformation path instead of creating invalid tetrahedra.
+            component.collision_structural_state = None
+    fem_state = component.collision_structural_state
+    if isinstance(fem_state, HybridFEMMPMCollisionState):
+        apply_fem_impact_energy(
+            fem_state,
+            contact_point,
+            direction,
+            radius,
+            absorbed_energy_j,
+            COLLISION_SHELL_IMPACT_ENERGY_FRACTION,
+        )
     return damage
 
 
@@ -3057,10 +3265,43 @@ def register_collision_hole(
             collision_shell_displacement_limit(component, target_hole_radius, radius),
             damage.target_hole_radius_m,
         )
-        if COLLISION_STRUCTURAL_SOLVER in {"hybrid_shell", "hybrid_fem_mpm"}:
+        if (
+            COLLISION_STRUCTURAL_SOLVER == "hybrid_fem_mpm"
+            and not component_is_thin_for_solid_fem(component)
+        ):
+            try:
+                state = build_hybrid_fem_mpm_collision_state(
+                    component,
+                    inferred_deformation_young_modulus(component),
+                    inferred_deformation_poisson_ratio(component),
+                    material_yield_strength_pa(component),
+                    material_failure_strain(component),
+                    COLLISION_SHELL_CFL,
+                    COLLISION_FEM_MAX_SUBSTEPS,
+                )
+                apply_fem_impact_energy(
+                    state,
+                    contact_point,
+                    direction,
+                    radius,
+                    absorbed_energy_j,
+                    COLLISION_SHELL_IMPACT_ENERGY_FRACTION,
+                )
+                update_fem_perforation(
+                    state,
+                    contact_point,
+                    direction,
+                    damage.current_hole_radius_m,
+                )
+            except ValueError:
+                state = build_hybrid_shell_collision_state(*build_args)
+                apply_shell_impact_energy(
+                    state.shell_state,
+                    absorbed_energy_j,
+                    COLLISION_SHELL_IMPACT_ENERGY_FRACTION,
+                )
+        elif COLLISION_STRUCTURAL_SOLVER in {"hybrid_shell", "hybrid_fem_mpm"}:
             state = build_hybrid_shell_collision_state(*build_args)
-            state.solver_backend = COLLISION_STRUCTURAL_SOLVER
-            state.shell_state.solver_backend = COLLISION_STRUCTURAL_SOLVER
             apply_shell_impact_energy(
                 state.shell_state,
                 absorbed_energy_j,
@@ -3076,6 +3317,11 @@ def register_collision_hole(
             )
         component.collision_structural_state = state
     structural_state = component.collision_structural_state
+    fem_state = (
+        structural_state
+        if isinstance(structural_state, HybridFEMMPMCollisionState)
+        else None
+    )
     hybrid_state = (
         structural_state if isinstance(structural_state, HybridShellCollisionState) else None
     )
@@ -3086,7 +3332,19 @@ def register_collision_hole(
         if isinstance(structural_state, ExplicitShellState)
         else None
     )
-    if shell_state is not None and damage.current_hole_radius_m > previous_hole_radius:
+    if fem_state is not None and damage.current_hole_radius_m > previous_hole_radius:
+        update_fem_perforation(
+            fem_state,
+            contact_point,
+            direction,
+            damage.current_hole_radius_m,
+        )
+        advance_hybrid_fem_mpm_collision(
+            component,
+            fem_state,
+            min(max(damage.response_time_s, 1e-9), max(MOTION_DT, 1e-9)),
+        )
+    elif shell_state is not None and damage.current_hole_radius_m > previous_hole_radius:
         radius_increment = damage.current_hole_radius_m - previous_hole_radius
         update_shell_perforation(
             shell_state,
@@ -3124,6 +3382,11 @@ def advance_collision_damage_state(
     geometry_changed = 0.0
     removed_triangles = 0
     structural_state = component.collision_structural_state
+    fem_state = (
+        structural_state
+        if isinstance(structural_state, HybridFEMMPMCollisionState)
+        else None
+    )
     hybrid_state = (
         structural_state if isinstance(structural_state, HybridShellCollisionState) else None
     )
@@ -3140,7 +3403,12 @@ def advance_collision_damage_state(
         damage.current_depth_m - damage.permanent_depth_m,
     )
     recovery = elastic_depth * evolution_fraction
-    if recovery > 1e-12 and shell_state is None:
+    if recovery > 1e-12 and fem_state is not None:
+        damage.current_depth_m = max(
+            damage.permanent_depth_m,
+            damage.current_depth_m - recovery,
+        )
+    if recovery > 1e-12 and shell_state is None and fem_state is None:
         applied = deform_component_at_contact(
             component,
             damage.contact_point,
@@ -3175,7 +3443,14 @@ def advance_collision_damage_state(
             damage.current_hole_radius_m + hole_increment,
         )
         damage.current_hole_radius_m = next_hole_radius
-        if shell_state is not None:
+        if fem_state is not None:
+            removed_triangles += update_fem_perforation(
+                fem_state,
+                damage.contact_point,
+                damage.inward_direction,
+                next_hole_radius,
+            )
+        elif shell_state is not None:
             update_shell_perforation(
                 shell_state,
                 next_hole_radius,
@@ -3243,7 +3518,42 @@ def advance_collision_damage_state(
                 ),
             )
 
-    if shell_state is not None:
+    if fem_state is not None:
+        if damage.ongoing_contact_energy_j > 1e-12:
+            drive_duration = max(
+                COLLISION_SHELL_ONGOING_RESPONSE_TIMES * response_time,
+                dt,
+                1e-9,
+            )
+            drive_fraction = min(1.0, dt / drive_duration)
+            drive_work = damage.ongoing_contact_energy_j * drive_fraction
+            damage.ongoing_contact_energy_j = max(
+                0.0,
+                damage.ongoing_contact_energy_j - drive_work,
+            )
+            apply_fem_impact_energy(
+                fem_state,
+                damage.contact_point,
+                damage.inward_direction,
+                max(damage.contact_radius_m, damage.current_hole_radius_m),
+                drive_work,
+                1.0,
+            )
+        structural_dt = min(
+            dt,
+            max(MOTION_DT, response_time),
+        )
+        deformation, emitted_count, _emitted_mass = advance_hybrid_fem_mpm_collision(
+            component,
+            fem_state,
+            structural_dt,
+        )
+        removed_triangles += emitted_count
+        geometry_changed = max(geometry_changed, deformation)
+        if damage.target_hole_radius_m > 0.0:
+            damage.current_depth_m = max(damage.current_depth_m, deformation)
+            damage.permanent_depth_m = max(damage.permanent_depth_m, deformation)
+    elif shell_state is not None:
         if damage.ongoing_contact_energy_j > 1e-12:
             drive_duration = max(
                 COLLISION_SHELL_ONGOING_RESPONSE_TIMES * response_time,
@@ -3313,6 +3623,48 @@ def write_collision_damage_log_header(path: Path) -> None:
     )
 
 
+def write_collision_conservation_log_header(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "# Hybrid FEM/MPM conservation audit\n"
+        "step\tpatch\tmass_before_kg\tmass_after_kg\tmass_error_kg\t"
+        "momentum_error_x_ns\tmomentum_error_y_ns\tmomentum_error_z_ns\t"
+        "angular_error_x_nms\tangular_error_y_nms\tangular_error_z_nms\t"
+        "kinetic_before_j\tkinetic_after_j\tstrain_energy_j\t"
+        "plastic_dissipation_j\texternal_work_j\n"
+    )
+
+
+def append_collision_conservation_audits(
+    components: Sequence[AeroComponent],
+    step: int,
+    path: Path,
+) -> int:
+    written = 0
+    with path.open("a") as stream:
+        for component in components:
+            state = component.collision_structural_state
+            if not isinstance(state, HybridFEMMPMCollisionState):
+                continue
+            audit = state.last_audit
+            if audit is None:
+                continue
+            momentum_error = audit.momentum_error
+            angular_error = audit.angular_momentum_error
+            stream.write(
+                f"{step}\t{component.patch}\t{audit.mass_before_kg:.12g}\t"
+                f"{audit.mass_after_kg:.12g}\t{audit.mass_error_kg:.12g}\t"
+                f"{momentum_error[0]:.12g}\t{momentum_error[1]:.12g}\t"
+                f"{momentum_error[2]:.12g}\t{angular_error[0]:.12g}\t"
+                f"{angular_error[1]:.12g}\t{angular_error[2]:.12g}\t"
+                f"{audit.kinetic_before_j:.12g}\t{audit.kinetic_after_j:.12g}\t"
+                f"{audit.strain_energy_j:.12g}\t{audit.plastic_dissipation_j:.12g}\t"
+                f"{audit.external_work_j:.12g}\n"
+            )
+            written += 1
+    return written
+
+
 def evolve_collision_damage(
     components: Sequence[AeroComponent],
     step: int,
@@ -3345,6 +3697,11 @@ def evolve_collision_damage(
                 if isinstance(structural_state, ExplicitShellState)
                 else None
             )
+            fem_state = (
+                structural_state
+                if isinstance(structural_state, HybridFEMMPMCollisionState)
+                else None
+            )
             if geometry_change > 1e-12 or removed_triangles:
                 changed_sites += 1
             with log_path.open("a") as stream:
@@ -3358,7 +3715,7 @@ def evolve_collision_damage(
                     f"{damage.accumulated_energy_j:.8g}\t"
                     f"{damage.ongoing_contact_energy_j:.8g}\t"
                     f"{geometry_change:.8g}\t{removed_triangles}\t{int(active)}\t"
-                    f"{'explicit_shell' if shell_state is not None else 'surface_contact'}\t"
+                    f"{'hybrid_fem_mpm' if fem_state is not None else 'explicit_shell' if shell_state is not None else 'surface_contact'}\t"
                     f"{shell_state.stable_dt_s if shell_state is not None else 0.0:.8g}\t"
                     f"{shell_state.mass_scale if shell_state is not None else 1.0:.8g}\t"
                     f"{shell_state.displacement_limit_m if shell_state is not None else 0.0:.8g}\t"
@@ -3574,6 +3931,37 @@ def aabb_minimum_separation(
 def collision_pair_key(a: AeroComponent, b: AeroComponent) -> Tuple[int, int]:
     first, second = sorted((id(a), id(b)))
     return first, second
+
+
+def persistent_contact_for_pair(
+    a: AeroComponent,
+    b: AeroComponent,
+    step: int,
+    normal: Vec3,
+    point: Vec3,
+) -> Tuple[PersistentContactState, bool]:
+    """Return a cross-timestep contact record and whether impact is new."""
+    key = f"{id(b)}:{b.patch}"
+    previous = a.persistent_contacts.get(key)
+    new_contact = (
+        previous is None
+        or step > previous.last_step + 1
+        or v_dot(previous.normal, normal) < 0.5
+    )
+    if new_contact:
+        contact_state = PersistentContactState(
+            normal=normal,
+            point=point,
+            last_step=step,
+        )
+        a.persistent_contacts[key] = contact_state
+        return contact_state, True
+    previous.normal = v_unit(v_add(previous.normal, normal), normal)
+    previous.point = point
+    if previous.last_step != step:
+        previous.age_steps += 1
+    previous.last_step = step
+    return previous, False
 
 
 @dataclass(frozen=True)
@@ -4281,6 +4669,8 @@ def resolve_part_collisions(
             state = component.collision_structural_state
             if isinstance(state, HybridShellCollisionState):
                 active.extend(hybrid_fragment_components(state))
+            elif isinstance(state, HybridFEMMPMCollisionState):
+                active.extend(fragment.component for fragment in state.fragment_bodies)
         return active
 
     def unresolved_overlap_remains(
@@ -4730,7 +5120,15 @@ def resolve_part_collisions(
                     )
                     rel_normal = v_dot(rel_v, normal)
                     impulse_mag = 0.0
+                    tangent_impulse = (0.0, 0.0, 0.0)
                     friction = contact_friction_coefficient(a, b)
+                    persistent_contact, is_new_contact = persistent_contact_for_pair(
+                        a,
+                        b,
+                        step,
+                        normal,
+                        contact,
+                    )
                     normal_inverse_mass = (
                         contact_inverse_mass(a, contact, normal)
                         + contact_inverse_mass(b, contact, normal)
@@ -4744,7 +5142,7 @@ def resolve_part_collisions(
                                 if is_swept_pair
                                 else COLLISION_RESTITUTION
                             ),
-                        )
+                        ) if is_new_contact else 0.0
                         impulse_mag = -(1.0 + restitution) * rel_normal / normal_inverse_mass
                         impulse = v_mul(normal, impulse_mag)
                         apply_collision_impulse(a, impulse, contact)
@@ -4769,6 +5167,12 @@ def resolve_part_collisions(
                             timpulse = v_mul(tdir, -jt)
                             apply_collision_impulse(a, timpulse, contact)
                             apply_collision_impulse(b, v_mul(timpulse, -1.0), contact)
+                            tangent_impulse = timpulse
+                        persistent_contact.accumulated_normal_impulse_ns += impulse_mag
+                        persistent_contact.accumulated_tangent_impulse = v_add(
+                            persistent_contact.accumulated_tangent_impulse,
+                            tangent_impulse,
+                        )
                         impulse_resolved_pairs.add(pair_key)
                     elif inv_sum <= 0.0:
                         pseudo_force = v_mul(normal, max(depth, COLLISION_MIN_OVERLAP_M) * max(a.mass, b.mass, DEFAULT_PART_MASS_KG) / max(MOTION_DT, 1e-9))
@@ -4790,6 +5194,14 @@ def resolve_part_collisions(
                         if is_swept_pair and pending_swept_contact is not None
                         else 0.0
                     )
+                    secondary_energy = absorbed_energy
+                    if secondary_energy <= 1e-12 and impulse_mag > 0.0:
+                        secondary_energy = (
+                            0.5
+                            * impulse_mag
+                            * impulse_mag
+                            * normal_inverse_mass
+                        )
                     register_collision_dent(
                         a,
                         contact_a,
@@ -4798,7 +5210,7 @@ def resolve_part_collisions(
                         contact_radius,
                         step,
                         failure_mode,
-                        0.5 * absorbed_energy,
+                        0.5 * secondary_energy,
                     )
                     register_collision_dent(
                         b,
@@ -4808,14 +5220,8 @@ def resolve_part_collisions(
                         contact_radius,
                         step,
                         failure_mode,
-                        0.5 * absorbed_energy,
+                        0.5 * secondary_energy,
                     )
-                    secondary_energy = absorbed_energy
-                    if secondary_energy <= 1e-12 and impulse_mag > 0.0:
-                        secondary_energy = 0.5 * impulse_mag * impulse_mag / max(
-                            normal_inverse_mass,
-                            1e-12,
-                        )
                     apply_nearby_collision_effects(
                         components,
                         (a, b),
@@ -5849,6 +6255,15 @@ def update_component_deformation(component: AeroComponent, dt: float) -> Tuple[f
             inferred_deformation_young_modulus(component),
             inferred_deformation_thickness(component),
             len(state.shell_state.positions),
+        )
+    if isinstance(component.collision_structural_state, HybridFEMMPMCollisionState):
+        state = component.collision_structural_state
+        return (
+            max(state.max_displacement_m, component.deformation_max_m),
+            component.deformation_mean_m,
+            inferred_deformation_young_modulus(component),
+            inferred_deformation_thickness(component),
+            len(state.solid_state.positions),
         )
     if isinstance(component.collision_structural_state, ExplicitShellState):
         state = component.collision_structural_state

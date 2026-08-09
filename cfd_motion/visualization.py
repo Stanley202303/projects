@@ -33,7 +33,9 @@ from .onshape import *
 from .motion import *
 from .structural import (
     ExplicitShellState,
+    HybridFEMMPMCollisionState,
     HybridShellCollisionState,
+    fem_surface_von_mises_stress_pa,
     shell_rendered_triangle_indices,
     shell_fragment_triangles,
     shell_fragment_velocity,
@@ -48,7 +50,19 @@ def visualization_components_with_fragments(
     visual_components = list(components)
     for component in components:
         state = component.collision_structural_state
-        if not isinstance(state, (ExplicitShellState, HybridShellCollisionState)):
+        if not isinstance(
+            state,
+            (
+                ExplicitShellState,
+                HybridShellCollisionState,
+                HybridFEMMPMCollisionState,
+            ),
+        ):
+            continue
+        if isinstance(state, HybridFEMMPMCollisionState):
+            visual_components.extend(
+                fragment.component for fragment in state.fragment_bodies
+            )
             continue
         if isinstance(state, HybridShellCollisionState):
             visual_components.extend(
@@ -1325,6 +1339,31 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             if isinstance(comp.collision_structural_state, ExplicitShellState)
             else None
         )
+        fem_state = (
+            comp.collision_structural_state
+            if isinstance(
+                comp.collision_structural_state,
+                HybridFEMMPMCollisionState,
+            )
+            else None
+        )
+        fem_stresses = (
+            fem_surface_von_mises_stress_pa(fem_state)
+            if fem_state is not None
+            else []
+        )
+        fem_attached = (
+            [
+                (nodes, element_index)
+                for nodes, element_index in zip(
+                    fem_state.solid_state.surface_triangle_nodes,
+                    fem_state.solid_state.surface_element_indices,
+                )
+                if not fem_state.solid_state.elements[element_index].transferred
+            ]
+            if fem_state is not None
+            else []
+        )
         rendered_shell_indices = (
             shell_rendered_triangle_indices(shell_state)
             if shell_state is not None and shell_state.render_as_midsurface
@@ -1403,12 +1442,52 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
                     1.0,
                 )
                 stress_to_yield_ratio = von_mises_stress_pa / yield_stress_pa
+            elif fem_state is not None and triangle_index < len(fem_attached):
+                node_ids, element_index = fem_attached[triangle_index]
+                structural_displacement = max(
+                    v_norm(
+                        v_sub(
+                            fem_state.solid_state.positions[node],
+                            fem_state.solid_state.reference_positions[node],
+                        )
+                    )
+                    for node in node_ids
+                )
+                perforation_plug = 0.0
+                failed_edges = float(
+                    sum(element.failed for element in fem_state.solid_state.elements)
+                )
+                von_mises_stress_pa = (
+                    fem_stresses[triangle_index]
+                    if triangle_index < len(fem_stresses)
+                    else 0.0
+                )
+                yield_stress_pa = max(
+                    fem_state.solid_state.elements[element_index].yield_stress_pa,
+                    1.0,
+                )
+                stress_to_yield_ratio = von_mises_stress_pa / yield_stress_pa
             else:
                 structural_displacement = 0.0
                 perforation_plug = 0.0
                 failed_edges = 0.0
                 von_mises_stress_pa = 0.0
                 stress_to_yield_ratio = 0.0
+            triangle_velocity = component_velocity
+            triangle_world_motion = component_world_motion
+            if fem_state is not None and triangle_index < len(fem_attached):
+                node_ids, _element_index = fem_attached[triangle_index]
+                triangle_velocity = tuple(
+                    sum(
+                        fem_state.solid_state.velocities[node][axis]
+                        for node in node_ids
+                    )
+                    / 3.0
+                    for axis in range(3)
+                )
+                triangle_world_motion = triangle_velocity
+            triangle_speed = v_norm(triangle_velocity)
+            triangle_world_speed = v_norm(triangle_world_motion)
             structural_displacement_vals.append(structural_displacement)
             von_mises_stress_pa_vals.append(von_mises_stress_pa)
             von_mises_stress_mpa_vals.append(von_mises_stress_pa / 1.0e6)
@@ -1416,16 +1495,16 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             material_yielded_vals.append(float(stress_to_yield_ratio >= 1.0))
             perforation_plug_vals.append(perforation_plug)
             structural_failed_edge_vals.append(failed_edges)
-            velocity_x_vals.append(component_velocity[0])
-            velocity_y_vals.append(component_velocity[1])
-            velocity_z_vals.append(component_velocity[2])
-            velocity_magnitude_vals.append(component_speed)
-            world_velocity_x_vals.append(component_world_motion[0])
-            world_velocity_y_vals.append(component_world_motion[1])
-            world_velocity_z_vals.append(component_world_motion[2])
-            world_speed_vals.append(component_world_speed)
-            velocity_vectors.append(component_velocity)
-            world_velocity_vectors.append(component_world_motion)
+            velocity_x_vals.append(triangle_velocity[0])
+            velocity_y_vals.append(triangle_velocity[1])
+            velocity_z_vals.append(triangle_velocity[2])
+            velocity_magnitude_vals.append(triangle_speed)
+            world_velocity_x_vals.append(triangle_world_motion[0])
+            world_velocity_y_vals.append(triangle_world_motion[1])
+            world_velocity_z_vals.append(triangle_world_motion[2])
+            world_speed_vals.append(triangle_world_speed)
+            velocity_vectors.append(triangle_velocity)
+            world_velocity_vectors.append(triangle_world_motion)
 
             ci = len(combined_pts)
             combined_pts.extend([v1, v2, v3])
@@ -1465,17 +1544,17 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             )
             combined_scalars["perforationPlug"].append(perforation_plug)
             combined_scalars["structuralFailedEdges"].append(failed_edges)
-            combined_scalars["velocityX"].append(component_velocity[0])
-            combined_scalars["velocityY"].append(component_velocity[1])
-            combined_scalars["velocityZ"].append(component_velocity[2])
-            combined_scalars["velocityMagnitude"].append(component_speed)
-            combined_scalars["speed"].append(component_speed)
-            combined_scalars["worldVelocityX"].append(component_world_motion[0])
-            combined_scalars["worldVelocityY"].append(component_world_motion[1])
-            combined_scalars["worldVelocityZ"].append(component_world_motion[2])
-            combined_scalars["worldSpeed"].append(component_world_speed)
-            combined_vectors["velocity"].append(component_velocity)
-            combined_vectors["worldVelocity"].append(component_world_motion)
+            combined_scalars["velocityX"].append(triangle_velocity[0])
+            combined_scalars["velocityY"].append(triangle_velocity[1])
+            combined_scalars["velocityZ"].append(triangle_velocity[2])
+            combined_scalars["velocityMagnitude"].append(triangle_speed)
+            combined_scalars["speed"].append(triangle_speed)
+            combined_scalars["worldVelocityX"].append(triangle_world_motion[0])
+            combined_scalars["worldVelocityY"].append(triangle_world_motion[1])
+            combined_scalars["worldVelocityZ"].append(triangle_world_motion[2])
+            combined_scalars["worldSpeed"].append(triangle_world_speed)
+            combined_vectors["velocity"].append(triangle_velocity)
+            combined_vectors["worldVelocity"].append(triangle_world_motion)
 
         _write_ascii_polydata_vtk(
             out_dir / f"{safe_patch_name(comp.patch)}_panel_step_{step:03d}.vtp",

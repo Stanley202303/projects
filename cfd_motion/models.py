@@ -93,6 +93,16 @@ class CollisionDamageState:
 
 
 @dataclass
+class PersistentContactState:
+    normal: Vec3
+    point: Vec3
+    last_step: int
+    accumulated_normal_impulse_ns: float = 0.0
+    accumulated_tangent_impulse: Vec3 = (0.0, 0.0, 0.0)
+    age_steps: int = 1
+
+
+@dataclass
 class AeroComponent:
     name: str
     patch: str
@@ -132,6 +142,9 @@ class AeroComponent:
     collision_source_index: Optional[int] = None
     collision_damage: List[CollisionDamageState] = field(default_factory=list)
     collision_structural_state: Optional[Any] = None
+    persistent_contacts: Dict[str, PersistentContactState] = field(default_factory=dict)
+    collision_fragment_parent_state: Optional[Any] = None
+    collision_fragment_source_element: Optional[int] = None
 
 
 # ------------------------- small math helpers -------------------------

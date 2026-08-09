@@ -103,6 +103,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
     geometry_report = root_case / MOTION_GEOMETRY_REPORT_NAME
     collision_log = root_case / COLLISION_LOG_NAME
     collision_damage_log = root_case / COLLISION_DAMAGE_LOG_NAME
+    collision_conservation_log = root_case / COLLISION_CONSERVATION_LOG_NAME
     collision_convergence_log = root_case / COLLISION_CONVERGENCE_LOG_NAME
     write_unsteady_fsi_gap_report(root_case, components)
     apply_relative_motion_policy(components, root_case)
@@ -153,6 +154,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
     if ENABLE_NONRIGID_DEFORMATION:
         write_deformation_log_header(deformation_log)
     write_collision_damage_log_header(collision_damage_log)
+    write_collision_conservation_log_header(collision_conservation_log)
     collision_log.write_text(
         "# Part collision log. Every independent body pair uses continuous swept mesh-surface contact; current overlap is a fallback.\n"
         "# Only members of the same explicit mate-created rigid body are excluded from self-collision.\n"
@@ -579,6 +581,11 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     "Fragment aerodynamics: "
                     f"updated {fragment_aero_count} detached body/bodies."
                 )
+            append_collision_conservation_audits(
+                components,
+                step,
+                collision_conservation_log,
+            )
             collision_elapsed = time.monotonic() - collision_started
             output_started = time.monotonic()
 

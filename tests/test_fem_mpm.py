@@ -1,6 +1,30 @@
 import math
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import xml.etree.ElementTree as ElementTree
 
-from cfd_motion.fem_mpm import HybridFEMMPMState, advance_fem, make_tetra_element
+from cfd_motion.fem_mpm import (
+    HybridFEMMPMState,
+    advance_fem,
+    element_force_and_energy,
+    make_tetra_element,
+)
+from cfd_motion.models import AeroComponent, MaterialProperties
+from cfd_motion.motion import (
+    append_collision_conservation_audits,
+    apply_collision_impulse,
+    deform_component_at_contact,
+    persistent_contact_for_pair,
+    write_collision_conservation_log_header,
+)
+from cfd_motion.structural import (
+    advance_hybrid_fem_mpm_collision,
+    apply_fem_impact_energy,
+    build_hybrid_fem_mpm_collision_state,
+    fem_surface_von_mises_stress_pa,
+    refresh_hybrid_fem_mpm_geometry,
+)
+from cfd_motion.visualization import write_panel_aero_preview_for_step
 
 
 def _state():
@@ -31,3 +55,263 @@ def test_elastic_tetra_responds_to_force():
     forces = [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)]
     advance_fem(state, 1.0e-3, forces)
     assert state.positions[1][0] > 1.0
+
+
+def test_corotational_tetra_has_balanced_restoring_force():
+    state = _state()
+    state.positions[1] = (1.02, 0.0, 0.0)
+    forces, energy, _plastic = element_force_and_energy(state, state.elements[0])
+    total = tuple(sum(force[axis] for force in forces) for axis in range(3))
+    assert all(abs(value) < 1.0e-9 for value in total)
+    assert forces[1][0] < 0.0
+    assert energy > 0.0
+
+
+def test_bom_failure_strain_controls_brittle_fragmentation():
+    brittle = _state()
+    ductile = _state()
+    brittle.elements[0].failure_strain = 1e-3
+    ductile.elements[0].failure_strain = 0.5
+    brittle.positions[1] = (1.02, 0.0, 0.0)
+    ductile.positions[1] = (1.02, 0.0, 0.0)
+    element_force_and_energy(brittle, brittle.elements[0])
+    element_force_and_energy(ductile, ductile.elements[0])
+    assert brittle.elements[0].failed
+    assert not ductile.elements[0].failed
+
+
+def test_linear_tetra_matches_isotropic_uniaxial_strain_stress():
+    state = _state()
+    epsilon = 1e-4
+    state.positions[1] = (1.0 + epsilon, 0.0, 0.0)
+    element_force_and_energy(state, state.elements[0])
+    young = state.elements[0].young_modulus_pa
+    poisson = state.elements[0].poisson_ratio
+    lame_lambda = young * poisson / ((1 + poisson) * (1 - 2 * poisson))
+    shear = young / (2 * (1 + poisson))
+    expected_x = (lame_lambda + 2 * shear) * epsilon
+    assert math.isclose(
+        state.elements[0].stress[0][0],
+        expected_x,
+        rel_tol=2e-4,
+    )
+
+
+def test_corotational_tetra_rejects_rigid_rotation_strain():
+    state = _state()
+    state.positions = [
+        (-point[1], point[0], point[2])
+        for point in state.positions
+    ]
+    forces, energy, _plastic = element_force_and_energy(state, state.elements[0])
+    assert energy < 1e-12
+    assert max(abs(value) for force in forces for value in force) < 1e-7
+
+
+def test_two_failed_tetrahedra_transfer_their_exact_mass_once():
+    positions = [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, -1.0),
+    ]
+    elements = [
+        make_tetra_element(positions, (0, 1, 2, 3), 1e7, 0.3, 1e6, 0.1, 1.0),
+        make_tetra_element(positions, (0, 2, 1, 4), 1e7, 0.3, 1e6, 0.1, 1.0),
+    ]
+    masses = [0.5, 0.5, 0.5, 0.25, 0.25]
+    state = HybridFEMMPMState(
+        positions,
+        [(3.0, 0.0, 0.0)] * len(positions),
+        masses,
+        elements,
+    )
+    for element in elements:
+        element.failed = True
+    audit = advance_fem(state, 1e-5)
+    assert math.isclose(audit.mass_before_kg, 2.0, abs_tol=1e-12)
+    assert math.isclose(audit.mass_after_kg, 2.0, abs_tol=1e-12)
+    assert math.isclose(sum(p.mass_kg for p in state.particles), 2.0, abs_tol=1e-12)
+    advance_fem(state, 1e-5)
+    assert len(state.particles) == 8
+
+
+def _cube_component() -> AeroComponent:
+    p000 = (0.0, 0.0, 0.0)
+    p100 = (1.0, 0.0, 0.0)
+    p010 = (0.0, 1.0, 0.0)
+    p110 = (1.0, 1.0, 0.0)
+    p001 = (0.0, 0.0, 1.0)
+    p101 = (1.0, 0.0, 1.0)
+    p011 = (0.0, 1.0, 1.0)
+    p111 = (1.0, 1.0, 1.0)
+    faces = [
+        (p000, p010, p110), (p000, p110, p100),
+        (p001, p101, p111), (p001, p111, p011),
+        (p000, p100, p101), (p000, p101, p001),
+        (p010, p011, p111), (p010, p111, p110),
+        (p000, p001, p011), (p000, p011, p010),
+        (p100, p110, p111), (p100, p111, p101),
+    ]
+    triangles = []
+    for a, b, c in faces:
+        cross = (
+            (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
+            (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+            (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
+        )
+        triangles.append((cross, a, b, c))
+    return AeroComponent(
+        name="cube",
+        patch="cube",
+        triangles=triangles,
+        cofr=(0.5, 0.5, 0.5),
+        lref=1.0,
+        aref=1.0,
+        material=MaterialProperties(
+            material_name="steel",
+            density_kg_m3=7800.0,
+            young_modulus_pa=2e11,
+            poisson_ratio=0.3,
+            yield_strength_pa=2.5e8,
+            failure_strain=0.2,
+        ),
+        mass=7.8,
+    )
+
+
+def test_solid_adapter_preserves_surface_and_fragment_mass():
+    component = _cube_component()
+    initial_mass = component.mass
+    state = build_hybrid_fem_mpm_collision_state(
+        component, 2e11, 0.3, 2.5e8, 0.2, 0.3, 32
+    )
+    assert len(state.solid_state.elements) == len(component.triangles)
+    assert all(element.young_modulus_pa == 2e11 for element in state.solid_state.elements)
+    assert all(element.yield_stress_pa == 2.5e8 for element in state.solid_state.elements)
+    assert all(element.failure_strain == 0.2 for element in state.solid_state.elements)
+    state.solid_state.elements[0].failed = True
+    _deformation, fragments, _mass = advance_hybrid_fem_mpm_collision(
+        component, state, 1e-6
+    )
+    assert fragments == 1
+    assert len(component.triangles) == 11
+    assert math.isclose(
+        component.mass + sum(fragment.mass_kg for fragment in state.fragment_bodies),
+        initial_mass,
+        rel_tol=1e-12,
+    )
+    assert len(fem_surface_von_mises_stress_pa(state)) == len(component.triangles)
+
+
+def test_fem_impact_energy_does_not_create_net_linear_momentum():
+    component = _cube_component()
+    state = build_hybrid_fem_mpm_collision_state(
+        component, 2e11, 0.3, 2.5e8, 0.2, 0.3, 32
+    )
+    before = state.solid_state.total_momentum()
+    apply_fem_impact_energy(
+        state,
+        (1.0, 0.5, 0.5),
+        (-1.0, 0.0, 0.0),
+        0.3,
+        10.0,
+        1.0,
+    )
+    after = state.solid_state.total_momentum()
+    assert all(abs(after[i] - before[i]) < 1e-12 for i in range(3))
+
+
+def test_persistent_contact_only_restarts_after_separation():
+    a = _cube_component()
+    b = _cube_component()
+    b.patch = "cube_b"
+    _contact, is_new = persistent_contact_for_pair(
+        a, b, 3, (1.0, 0.0, 0.0), (0.5, 0.0, 0.0)
+    )
+    assert is_new
+    contact, is_new = persistent_contact_for_pair(
+        a, b, 4, (1.0, 0.0, 0.0), (0.5, 0.0, 0.0)
+    )
+    assert not is_new
+    assert contact.age_steps == 2
+    _contact, is_new = persistent_contact_for_pair(
+        a, b, 7, (1.0, 0.0, 0.0), (0.5, 0.0, 0.0)
+    )
+    assert is_new
+
+
+def test_fem_surface_exports_one_stress_value_per_triangle():
+    component = _cube_component()
+    state = build_hybrid_fem_mpm_collision_state(
+        component, 2e11, 0.3, 2.5e8, 0.2, 0.3, 32
+    )
+    component.collision_structural_state = state
+    surface_node = state.solid_state.surface_triangle_nodes[0][0]
+    x, y, z = state.solid_state.positions[surface_node]
+    state.solid_state.positions[surface_node] = (x + 1e-4, y, z)
+    state.solid_state.velocities[surface_node] = (9.0, 0.0, 0.0)
+    element_force_and_energy(state.solid_state, state.solid_state.elements[0])
+    refresh_hybrid_fem_mpm_geometry(component, state)
+    with TemporaryDirectory() as temp_dir:
+        case = Path(temp_dir)
+        write_panel_aero_preview_for_step(case, [component], 0)
+        output = case / "panel_preview" / "combined_moving_surfaces.vtp"
+        piece = ElementTree.parse(output).getroot().find(".//Piece")
+        assert piece is not None
+        triangle_count = int(piece.attrib["NumberOfPolys"])
+        stress = piece.find("./CellData/DataArray[@Name='vonMisesStressPa']")
+        assert stress is not None
+        assert len((stress.text or "").split()) == triangle_count
+        velocity = piece.find("./PointData/DataArray[@Name='velocity']")
+        assert velocity is not None
+        velocity_values = [float(value) for value in (velocity.text or "").split()]
+        assert 3.0 in velocity_values
+
+
+def test_fem_fragment_keeps_collision_impulse_and_deformation():
+    component = _cube_component()
+    state = build_hybrid_fem_mpm_collision_state(
+        component, 2e11, 0.3, 2.5e8, 0.2, 0.3, 32
+    )
+    state.solid_state.elements[0].failed = True
+    advance_hybrid_fem_mpm_collision(component, state, 1e-6)
+    fragment = state.fragment_bodies[0].component
+    particles = [
+        particle
+        for particle in state.solid_state.particles
+        if particle.source_element == 0
+    ]
+    before_momentum = sum(p.mass_kg * p.velocity[0] for p in particles)
+    apply_collision_impulse(fragment, (0.2, 0.0, 0.0), fragment.cofr)
+    after_momentum = sum(p.mass_kg * p.velocity[0] for p in particles)
+    assert math.isclose(after_momentum - before_momentum, 0.2, rel_tol=1e-10)
+    before_positions = [particle.position for particle in particles]
+    deform_component_at_contact(
+        fragment,
+        fragment.cofr,
+        (0.0, 0.0, 1.0),
+        1e-3,
+        max(fragment.lref, 1e-3),
+    )
+    assert any(
+        particle.position != before
+        for particle, before in zip(particles, before_positions)
+    )
+
+
+def test_conservation_audit_is_written_for_each_structural_step():
+    component = _cube_component()
+    state = build_hybrid_fem_mpm_collision_state(
+        component, 2e11, 0.3, 2.5e8, 0.2, 0.3, 32
+    )
+    component.collision_structural_state = state
+    advance_hybrid_fem_mpm_collision(component, state, 1e-7)
+    with TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "conservation.txt"
+        write_collision_conservation_log_header(path)
+        assert append_collision_conservation_audits([component], 4, path) == 1
+        rows = [line for line in path.read_text().splitlines() if not line.startswith("#")]
+        assert len(rows) == 2
+        assert rows[1].split("\t")[0:2] == ["4", "cube"]

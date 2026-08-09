@@ -516,6 +516,7 @@ COLLISION_SWEEP_PENETRATION_M = float(os.environ.get("COLLISION_SWEEP_PENETRATIO
 COLLISION_CONVERGENCE_STOP_AFTER_CONTACT = env_bool("COLLISION_CONVERGENCE_STOP_AFTER_CONTACT", True)
 COLLISION_CONVERGENCE_LOG_NAME = "assembly_collision_convergence_log.txt"
 COLLISION_DAMAGE_LOG_NAME = "assembly_collision_damage_log.txt"
+COLLISION_CONSERVATION_LOG_NAME = "assembly_conservation_log.txt"
 COLLISION_DAMAGE_MIN_RESPONSE_TIME_S = max(
     0.0,
     float(os.environ.get("COLLISION_DAMAGE_MIN_RESPONSE_TIME_S", str(4.0 * MOTION_DT))),
@@ -529,7 +530,7 @@ COLLISION_HOLE_INITIAL_RADIUS_FRACTION = max(
 )
 COLLISION_STRUCTURAL_SOLVER = os.environ.get(
     "COLLISION_STRUCTURAL_SOLVER",
-    "hybrid_shell",
+    "hybrid_fem_mpm",
 ).strip().lower()
 if COLLISION_STRUCTURAL_SOLVER in {"material_point", "material_points", "mpm"}:
     COLLISION_STRUCTURAL_SOLVER = "mpm"
@@ -548,6 +549,10 @@ COLLISION_SHELL_CFL = max(
 COLLISION_SHELL_MAX_SUBSTEPS = max(
     1,
     int(os.environ.get("COLLISION_SHELL_MAX_SUBSTEPS", "256")),
+)
+COLLISION_FEM_MAX_SUBSTEPS = max(
+    1,
+    int(os.environ.get("COLLISION_FEM_MAX_SUBSTEPS", "4096")),
 )
 COLLISION_SHELL_DISPLACEMENT_LIMIT_M = max(
     1e-9,
