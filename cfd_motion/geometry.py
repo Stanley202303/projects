@@ -170,10 +170,21 @@ def component_references(triangles: Sequence[Triangle]) -> Tuple[float, float, V
 
 
 def component_bounds(triangles: Sequence[Triangle]) -> Tuple[float, float, float, float, float, float]:
-    pts = stl_points(triangles)
-    if not pts:
+    if not triangles:
         return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    return bounds(pts, 1.0)
+    first_point = triangles[0][1]
+    xmin = xmax = first_point[0]
+    ymin = ymax = first_point[1]
+    zmin = zmax = first_point[2]
+    for triangle in triangles:
+        for point in triangle[1:]:
+            xmin = min(xmin, point[0])
+            xmax = max(xmax, point[0])
+            ymin = min(ymin, point[1])
+            ymax = max(ymax, point[1])
+            zmin = min(zmin, point[2])
+            zmax = max(zmax, point[2])
+    return xmin, xmax, ymin, ymax, zmin, zmax
 
 
 def infer_motion_origin(component: "AeroComponent") -> Vec3:

@@ -145,6 +145,7 @@ class AeroComponent:
     persistent_contacts: Dict[str, PersistentContactState] = field(default_factory=dict)
     collision_fragment_parent_state: Optional[Any] = None
     collision_fragment_source_element: Optional[int] = None
+    collision_fragment_created_step: Optional[int] = None
 
 
 # ------------------------- small math helpers -------------------------

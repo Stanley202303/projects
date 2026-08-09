@@ -18,8 +18,10 @@ from .geometry import estimate_closed_mesh_volume
 from .fem_mpm import (
     ConservationAudit,
     HybridFEMMPMState,
+    MPMParticle,
     advance_fem,
     make_tetra_element,
+    transfer_failed_elements,
     von_mises_stress,
 )
 
@@ -988,18 +990,12 @@ def update_fem_perforation(
 
 
 def _solid_fragment_triangle(
-    state: HybridFEMMPMCollisionState,
-    element_index: int,
+    particles_by_node: Dict[int, MPMParticle],
     triangle_nodes: Tuple[int, int, int],
 ) -> Optional[Triangle]:
-    particles = {
-        particle.source_node: particle
-        for particle in state.solid_state.particles
-        if particle.source_element == element_index
-    }
-    if not all(node in particles for node in triangle_nodes):
+    if not all(node in particles_by_node for node in triangle_nodes):
         return None
-    a, b, c = (particles[node].position for node in triangle_nodes)
+    a, b, c = (particles_by_node[node].position for node in triangle_nodes)
     normal = v_unit(v_cross(v_sub(b, a), v_sub(c, a)), (1.0, 0.0, 0.0))
     return normal, a, b, c
 
@@ -1016,6 +1012,11 @@ def sync_hybrid_fem_mpm_fragments(
         for fragment in state.fragment_bodies
         if fragment.triangle_indices
     }
+    particles_by_element: Dict[int, List[MPMParticle]] = {}
+    for particle in solid.particles:
+        particles_by_element.setdefault(particle.source_element, []).append(
+            particle
+        )
     for triangle_nodes, element_index in zip(
         solid.surface_triangle_nodes,
         solid.surface_element_indices,
@@ -1023,14 +1024,13 @@ def sync_hybrid_fem_mpm_fragments(
         element = solid.elements[element_index]
         if not element.transferred:
             continue
-        triangle = _solid_fragment_triangle(state, element_index, triangle_nodes)
+        particles = particles_by_element.get(element_index, [])
+        particles_by_node = {
+            particle.source_node: particle for particle in particles
+        }
+        triangle = _solid_fragment_triangle(particles_by_node, triangle_nodes)
         if triangle is None:
             continue
-        particles = [
-            particle
-            for particle in solid.particles
-            if particle.source_element == element_index
-        ]
         fragment_mass = sum(particle.mass_kg for particle in particles)
         momentum = (0.0, 0.0, 0.0)
         for particle in particles:
@@ -1099,8 +1099,10 @@ def refresh_hybrid_fem_mpm_geometry(
         a, b, c = (solid.positions[node] for node in triangle_nodes)
         normal = v_unit(v_cross(v_sub(b, a), v_sub(c, a)), (1.0, 0.0, 0.0))
         triangles.append((normal, a, b, c))
-    if triangles:
-        component.triangles = triangles
+    # An entirely failed parent has no remaining carrier surface. Keeping its
+    # previous triangles would render zero-mass ghost geometry on top of the
+    # detached, mass-carrying fragments and would re-enter collision checks.
+    component.triangles = triangles
     maximum = state.max_displacement_m
     component.deformation_max_m = max(component.deformation_max_m, maximum)
     return maximum
@@ -1112,6 +1114,15 @@ def advance_hybrid_fem_mpm_collision(
     dt_s: float,
 ) -> Tuple[float, int, float]:
     state.last_audit = advance_fem(state.solid_state, dt_s)
+    return commit_hybrid_fem_mpm_failure_topology(component, state)
+
+
+def commit_hybrid_fem_mpm_failure_topology(
+    component: AeroComponent,
+    state: HybridFEMMPMCollisionState,
+) -> Tuple[float, int, float]:
+    """Publish failed FEM elements immediately without advancing physical time."""
+    transfer_failed_elements(state.solid_state)
     created, emitted_mass = sync_hybrid_fem_mpm_fragments(component, state)
     deformation = refresh_hybrid_fem_mpm_geometry(component, state)
     return deformation, created, emitted_mass
@@ -1485,6 +1496,21 @@ def update_shell_perforation(
 def emit_shell_fragments(state: ExplicitShellState) -> Tuple[int, float]:
     """Detach failed plug elements from the target surface for visual export."""
     new_fragments = state.plug_triangles - state.emitted_triangles
+    attached = set(range(len(state.triangle_nodes))) - state.emitted_triangles
+    if attached and attached.issubset(new_fragments):
+        # Keep one real carrier element instead of detaching the entire parent
+        # and later duplicating a triangle back into both parent and fragment.
+        # The farthest element is least likely to obstruct the perforation.
+        keep_index = max(
+            attached,
+            key=lambda index: _radial_distance(
+                state.triangle_reference_centroids[index],
+                state.contact_point,
+                state.inward_direction,
+            ),
+        )
+        new_fragments.discard(keep_index)
+        state.plug_triangles.discard(keep_index)
     state.emitted_triangles.update(new_fragments)
     emitted_mass = sum(state.triangle_masses_kg[index] for index in new_fragments)
     state.emitted_fragment_mass_kg += emitted_mass
@@ -1576,6 +1602,8 @@ def _fragment_component_from_triangles(
     parent: AeroComponent,
     state: HybridShellCollisionState,
     triangle_indices: Set[int],
+    apply_parent_reaction: bool = True,
+    reaction_remaining_mass_kg: Optional[float] = None,
 ) -> DetachedFragmentBody:
     shell_state = state.shell_state
     fragment_nodes = {
@@ -1663,11 +1691,17 @@ def _fragment_component_from_triangles(
         group_velocity = v_add(axial_velocity, transverse_velocity)
     removed_fragment_velocity = v_sub(unconstrained_group_velocity, group_velocity)
     if (
-        v_norm(removed_fragment_velocity) > 1e-18
+        apply_parent_reaction
+        and v_norm(removed_fragment_velocity) > 1e-18
         and parent.freedom.translate_axes
         and not parent.is_assembly_anchor
     ):
-        remaining_parent_mass = max(parent.mass - group_mass, 1e-12)
+        remaining_parent_mass = max(
+            reaction_remaining_mass_kg
+            if reaction_remaining_mass_kg is not None
+            else parent.mass - group_mass,
+            1e-12,
+        )
         parent.linear_velocity = v_add(
             parent.linear_velocity,
             v_mul(
@@ -1699,6 +1733,7 @@ def _fragment_component_from_triangles(
         deformation_max_m=0.0,
         deformation_mean_m=0.0,
         collision_family=parent.collision_family or parent.patch,
+        collision_fragment_parent_state=state,
     )
     return DetachedFragmentBody(
         component=fragment_component,
@@ -1742,6 +1777,10 @@ def sync_hybrid_shell_fragments(
     fragment_groups = _connected_fragment_groups(shell_state, new_triangles)
     if _material_brittleness_ratio(shell_state) < 1.75:
         fragment_groups = [set(new_triangles)]
+    new_fragment_mass = sum(
+        shell_state.triangle_masses_kg[index] for index in new_triangles
+    )
+    reaction_remaining_mass = max(parent.mass - new_fragment_mass, 1e-12)
     for group in fragment_groups:
         group_vertices = _triangle_reference_vertices(shell_state, group)
         merge_index: Optional[int] = None
@@ -1759,15 +1798,30 @@ def sync_hybrid_shell_fragments(
                 break
         if merge_index is None:
             state.fragment_bodies.append(
-                _fragment_component_from_triangles(parent, state, group)
+                _fragment_component_from_triangles(
+                    parent,
+                    state,
+                    group,
+                    reaction_remaining_mass_kg=reaction_remaining_mass,
+                )
             )
             fragment_vertices.append(set(group_vertices))
             state.next_fragment_id += 1
         else:
             existing_fragment = state.fragment_bodies[merge_index]
-            new_fragment = _fragment_component_from_triangles(parent, state, group)
+            new_fragment = _fragment_component_from_triangles(
+                parent,
+                state,
+                group,
+                reaction_remaining_mass_kg=reaction_remaining_mass,
+            )
             merged_triangles = existing_fragment.triangle_indices | group
-            updated = _fragment_component_from_triangles(parent, state, merged_triangles)
+            updated = _fragment_component_from_triangles(
+                parent,
+                state,
+                merged_triangles,
+                apply_parent_reaction=False,
+            )
             total_fragment_mass = max(
                 existing_fragment.component.mass + new_fragment.component.mass,
                 1e-18,
@@ -1787,6 +1841,21 @@ def sync_hybrid_shell_fragments(
             )
             updated.component.patch = existing_fragment.component.patch
             updated.component.name = existing_fragment.component.name
+            updated.component.total_translation = (
+                existing_fragment.component.total_translation
+            )
+            updated.component.total_rotation = (
+                existing_fragment.component.total_rotation
+            )
+            updated.component.collision_damage = (
+                existing_fragment.component.collision_damage
+            )
+            updated.component.persistent_contacts = (
+                existing_fragment.component.persistent_contacts
+            )
+            updated.component.collision_fragment_created_step = (
+                existing_fragment.component.collision_fragment_created_step
+            )
             state.fragment_bodies[merge_index] = updated
             fragment_vertices[merge_index].update(group_vertices)
         created += len(group)
@@ -1860,24 +1929,6 @@ def advance_hybrid_shell_collision(
 
 
 def _refresh_shell_geometry(component: AeroComponent, state: ExplicitShellState) -> float:
-    if not any(index not in state.emitted_triangles for index in range(len(state.triangle_nodes))):
-        # Keep a structural carrier element for extremely coarse shells.  A
-        # target with zero attached elements cannot be advanced or rendered.
-        keep_index = max(
-            range(len(state.triangle_nodes)),
-            key=lambda index: _radial_distance(
-                state.triangle_reference_centroids[index],
-                state.contact_point,
-                state.inward_direction,
-            ),
-        )
-        if keep_index in state.emitted_triangles:
-            state.emitted_triangles.remove(keep_index)
-            state.plug_triangles.discard(keep_index)
-            state.emitted_fragment_mass_kg = max(
-                0.0,
-                state.emitted_fragment_mass_kg - state.triangle_masses_kg[keep_index],
-            )
     max_displacement = 0.0
     fragment_nodes = _emitted_fragment_nodes(state)
     for triangle_index, node_ids in enumerate(state.triangle_nodes):
@@ -1910,6 +1961,14 @@ def _refresh_shell_geometry(component: AeroComponent, state: ExplicitShellState)
         1,
     )
     return max_displacement
+
+
+def commit_explicit_shell_topology(
+    component: AeroComponent,
+    state: ExplicitShellState,
+) -> float:
+    """Publish shell cuts/fragments without advancing structural time."""
+    return _refresh_shell_geometry(component, state)
 
 
 def advance_material_point_shell(

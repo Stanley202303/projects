@@ -158,6 +158,40 @@ def test_small_body_gets_local_refinement_and_patch_validation(
     assert "small_insert\t0.005\t7\t7" in report
 
 
+def test_empty_fully_fragmented_parent_is_not_required_as_cfd_patch(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _config, models, openfoam = _reload_openfoam_modules(monkeypatch)
+    empty_parent = models.AeroComponent(
+        name="fully fragmented parent",
+        patch="empty_parent",
+        triangles=[],
+        cofr=(0.0, 0.0, 0.0),
+        lref=1.0,
+        aref=1.0,
+        mass=0.0,
+    )
+    remaining_body = models.AeroComponent(
+        name="remaining body",
+        patch="remaining_body",
+        triangles=_box_triangles(0.0, 0.1, -0.1, 0.1, -0.1, 0.1),
+        cofr=(0.05, 0.0, 0.0),
+        lref=0.2,
+        aref=0.04,
+    )
+
+    case = tmp_path / "empty_parent_case"
+    openfoam.make_case_from_components([empty_parent, remaining_body], case)
+
+    self_contained_run = (case / "Allrun").read_text()
+    control_dict = (case / "system/controlDict").read_text()
+    assert not (case / "constant/triSurface/empty_parent.stl").exists()
+    assert (case / "constant/triSurface/remaining_body.stl").exists()
+    assert 'REQUIRED_BODY_PATCHES="remaining_body"' in self_contained_run
+    assert "empty_parent" not in control_dict
+
+
 def test_transient_mode_writes_pimplefoam_case(monkeypatch, tmp_path: Path) -> None:
     _config, models, openfoam = _reload_openfoam_modules(
         monkeypatch,

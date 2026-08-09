@@ -41,6 +41,8 @@ from .structural import (
     build_explicit_shell_state,
     build_hybrid_fem_mpm_collision_state,
     build_hybrid_shell_collision_state,
+    commit_explicit_shell_topology,
+    commit_hybrid_fem_mpm_failure_topology,
     component_is_thin_for_solid_fem,
     emit_shell_fragments,
     hybrid_fragment_components,
@@ -378,9 +380,6 @@ def move_component_rigidly(
             transform_point(point) for point in solid.reference_positions
         ]
         solid.velocities = [rotate_vector(velocity) for velocity in solid.velocities]
-        for particle in solid.particles:
-            particle.position = transform_point(particle.position)
-            particle.velocity = rotate_vector(particle.velocity)
     fragment_parent = component.collision_fragment_parent_state
     fragment_element = component.collision_fragment_source_element
     if (
@@ -642,6 +641,19 @@ def update_component_motion(
     hold_kinematics: bool = False,
     externally_applied_velocity: Optional[Vec3] = None,
 ) -> Tuple[Vec3, Vec3, Vec3, Vec3]:
+    if not component.triangles and component.mass <= 1e-18:
+        # A fully fragmented parent is only a structural-state container. Its
+        # detached material is advanced through the fragment/MPM paths below;
+        # moving the empty parent would transform that material a second time.
+        component.linear_velocity = (0.0, 0.0, 0.0)
+        component.angular_velocity = (0.0, 0.0, 0.0)
+        return (
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+        )
+
     force, foam_moment = resolve_aerodynamic_load(component, coeffs, load_override)
     free = component.freedom
 
@@ -2083,18 +2095,15 @@ def _swept_linear_component_contact(
         return None
     direction = v_unit(relative_velocity)
     relative_displacement = v_mul(direction, sweep_distance)
-    start_triangles = [
-        (
-            normal,
-            v_sub(point_a, relative_displacement),
-            v_sub(point_b, relative_displacement),
-            v_sub(point_c, relative_displacement),
-        )
-        for normal, point_a, point_b, point_c in a.triangles
-    ]
-
-    start_bounds = component_bounds(start_triangles)
     end_bounds = component_bounds(a.triangles)
+    start_bounds = (
+        end_bounds[0] - relative_displacement[0],
+        end_bounds[1] - relative_displacement[0],
+        end_bounds[2] - relative_displacement[1],
+        end_bounds[3] - relative_displacement[1],
+        end_bounds[4] - relative_displacement[2],
+        end_bounds[5] - relative_displacement[2],
+    )
     b_bounds = component_bounds(b.triangles)
     swept_bounds = (
         min(start_bounds[0], end_bounds[0]),
@@ -2115,6 +2124,15 @@ def _swept_linear_component_contact(
     ):
         return None
 
+    start_triangles = [
+        (
+            normal,
+            v_sub(point_a, relative_displacement),
+            v_sub(point_b, relative_displacement),
+            v_sub(point_c, relative_displacement),
+        )
+        for normal, point_a, point_b, point_c in a.triangles
+    ]
     hit = swept_triangle_mesh_contact(
         start_triangles,
         b.triangles,
@@ -2564,6 +2582,14 @@ def thin_shell_impact_response(
     impactor_contact_point: Vec3,
     normal_from_target_to_impactor: Vec3,
 ) -> Optional[ThinShellImpactResponse]:
+    # A detached structural fragment is already owned by its parent shell or
+    # FEM/MPM state. Treating that proxy as a new thin shell recursively creates
+    # a second continuum model and destroys its inherited momentum. It still
+    # participates in the ordinary impulse/deformation contact path; only a
+    # second, independent perforation topology is inapplicable.
+    if target.collision_fragment_parent_state is not None:
+        return None
+
     target_normal = v_unit(normal_from_target_to_impactor)
     target_points = stl_points(target.triangles)
     tangent_x, tangent_y = contact_tangent_basis(target_normal)
@@ -3333,18 +3359,29 @@ def register_collision_hole(
         else None
     )
     if fem_state is not None and damage.current_hole_radius_m > previous_hole_radius:
+        existing_fragment_count = len(fem_state.fragment_bodies)
         update_fem_perforation(
             fem_state,
             contact_point,
             direction,
             damage.current_hole_radius_m,
         )
-        advance_hybrid_fem_mpm_collision(
-            component,
-            fem_state,
-            min(max(damage.response_time_s, 1e-9), max(MOTION_DT, 1e-9)),
-        )
+        # Publish failed topology now so the perforation is immediately
+        # visible, but do not advance physical time once per contact event.
+        # The scheduled damage-evolution phase performs one stable structural
+        # advance for the component after the contact batch is complete.
+        commit_hybrid_fem_mpm_failure_topology(component, fem_state)
+        for fragment in fem_state.fragment_bodies[existing_fragment_count:]:
+            fragment.component.collision_fragment_created_step = step
     elif shell_state is not None and damage.current_hole_radius_m > previous_hole_radius:
+        existing_fragment_triangles = (
+            {
+                fragment.component.patch: frozenset(fragment.triangle_indices)
+                for fragment in hybrid_state.fragment_bodies
+            }
+            if hybrid_state is not None
+            else {}
+        )
         radius_increment = damage.current_hole_radius_m - previous_hole_radius
         update_shell_perforation(
             shell_state,
@@ -3362,11 +3399,17 @@ def register_collision_hole(
                 inertia_scale = remaining_mass / max(component.mass, 1e-18)
                 component.mass = remaining_mass
                 component.inertia *= inertia_scale
-        advance_dt = min(max(damage.response_time_s, 1e-9), max(MOTION_DT, 1e-9))
-        if hybrid_state is not None:
-            advance_hybrid_shell_collision(component, hybrid_state, advance_dt)
-        else:
-            advance_explicit_shell(component, shell_state, advance_dt)
+            if hybrid_state is not None:
+                for fragment in hybrid_state.fragment_bodies:
+                    previous_triangles = existing_fragment_triangles.get(
+                        fragment.component.patch
+                    )
+                    if previous_triangles != frozenset(fragment.triangle_indices):
+                        fragment.component.collision_fragment_created_step = step
+        commit_explicit_shell_topology(component, shell_state)
+        # As with solid FEM/MPM, topology changes are committed immediately
+        # and structural time integration is deferred to the single scheduled
+        # damage-evolution solve for this component.
     return damage
 
 
@@ -3768,6 +3811,119 @@ def evolve_collision_damage(
                     f"{len(shell_state.plug_triangles) if shell_state is not None else 0}\n"
                 )
     return changed_sites
+
+
+def component_collision_swept_bounds(
+    component: AeroComponent,
+    dt_s: float,
+) -> TriangleBounds:
+    """Return a conservative AABB for one body's complete rigid path.
+
+    The current mesh is the end-of-step pose. Translation expands its bounds
+    back to the inferred start pose. Rotation expands all axes by the maximum
+    chord travelled by any point in the component AABB. The result can contain
+    false positives, but it cannot exclude a contact considered by the linear
+    or angular continuous-collision checks.
+    """
+    current = component_bounds(component.triangles)
+    dt = max(dt_s, 0.0)
+    translation = v_mul(component.linear_velocity, dt)
+    origin = infer_motion_origin(component)
+    radius = math.sqrt(
+        sum(
+            max(
+                abs(current[2 * axis] - origin[axis]),
+                abs(current[2 * axis + 1] - origin[axis]),
+            )
+            ** 2
+            for axis in range(3)
+        )
+    )
+    rotation_angle = v_norm(component.angular_velocity) * dt
+    rotational_padding = min(rotation_angle * radius, 2.0 * radius)
+    margin = max(
+        COLLISION_MARGIN_M,
+        COLLISION_MANIFOLD_TOLERANCE_M,
+        0.0,
+    )
+    expanded: List[float] = []
+    for axis in range(3):
+        current_min = current[2 * axis]
+        current_max = current[2 * axis + 1]
+        start_min = current_min - translation[axis]
+        start_max = current_max - translation[axis]
+        expanded.extend(
+            [
+                min(current_min, start_min) - rotational_padding - margin,
+                max(current_max, start_max) + rotational_padding + margin,
+            ]
+        )
+    return (
+        expanded[0],
+        expanded[1],
+        expanded[2],
+        expanded[3],
+        expanded[4],
+        expanded[5],
+    )
+
+
+def collision_broad_phase_pairs(
+    components: Sequence[AeroComponent],
+    dt_s: float,
+) -> List[Tuple[int, int]]:
+    """Return conservative body-pair candidates using sweep-and-prune.
+
+    This classic broad phase replaces the quadratic loop of expensive swept
+    triangle tests. It only removes pairs whose complete conservative swept
+    AABBs are disjoint; all candidate pairs still use the existing exact mesh
+    intersection and continuous-collision routines.
+    """
+    indexed_bounds = [
+        (index, component_collision_swept_bounds(component, dt_s))
+        for index, component in enumerate(components)
+        if component.triangles
+    ]
+    if len(indexed_bounds) < 2:
+        return []
+
+    # Select the axis with the lowest interval occupancy. This retains the
+    # deterministic sweep-and-prune algorithm while avoiding a poor fixed-axis
+    # choice for a wide plate or a long projectile.
+    axis_scores: List[Tuple[float, int]] = []
+    for axis in range(3):
+        domain_min = min(bounds[2 * axis] for _index, bounds in indexed_bounds)
+        domain_max = max(bounds[2 * axis + 1] for _index, bounds in indexed_bounds)
+        domain_span = max(domain_max - domain_min, 1e-18)
+        occupancy = sum(
+            bounds[2 * axis + 1] - bounds[2 * axis]
+            for _index, bounds in indexed_bounds
+        ) / domain_span
+        axis_scores.append((occupancy, axis))
+    sweep_axis = min(axis_scores)[1]
+    entries = sorted(
+        indexed_bounds,
+        key=lambda item: (item[1][2 * sweep_axis], item[0]),
+    )
+
+    active: List[Tuple[int, TriangleBounds]] = []
+    candidates: List[Tuple[int, int]] = []
+    for index, bounds in entries:
+        interval_min = bounds[2 * sweep_axis]
+        active = [
+            item
+            for item in active
+            if item[1][2 * sweep_axis + 1] >= interval_min
+        ]
+        for other_index, other_bounds in active:
+            if not triangle_bounds_overlap(bounds, other_bounds):
+                continue
+            candidates.append(
+                (min(index, other_index), max(index, other_index))
+            )
+        active.append((index, bounds))
+    candidates.sort()
+    return candidates
 
 
 def aabb_overlap_with_normal(a: AeroComponent, b: AeroComponent) -> Optional[Tuple[float, Vec3, Vec3]]:
@@ -4293,394 +4449,309 @@ def enforce_environment_contact_constraints(
     margin_depth = 2.0 * max(COLLISION_MARGIN_M, 0.0)
     for constraint_pass in range(COLLISION_MAX_PASSES):
         corrected = False
-        for index, a in enumerate(active_components):
-            for b in active_components[index + 1:]:
+        candidate_pairs = collision_broad_phase_pairs(active_components, 0.0)
+        for index_a, index_b in candidate_pairs:
+            a = active_components[index_a]
+            b = active_components[index_b]
+            if (
+                a.rigid_body_group is not None
+                and a.rigid_body_group == b.rigid_body_group
+            ):
+                continue
+            pair_key = collision_pair_key(a, b)
+            overlap = aabb_overlap_with_normal(a, b)
+            if overlap is None:
+                if initial_overlap_pairs is not None:
+                    initial_overlap_pairs.pop(pair_key, None)
+                continue
+            depth, normal, _broad_contact = overlap
+            if initial_overlap_pairs is not None and pair_key in initial_overlap_pairs:
+                initial_depth = initial_overlap_pairs[pair_key].depth_m
+                if depth <= initial_depth + COLLISION_MIN_OVERLAP_M:
+                    continue
+                depth = max(0.0, depth - initial_depth)
+            physical_depth = max(0.0, depth - margin_depth)
+            if physical_depth <= COLLISION_MIN_OVERLAP_M:
+                continue
+            bounds_a = component_bounds(a.triangles)
+            bounds_b = component_bounds(b.triangles)
+            a_contains_b = all(
+                bounds_a[2 * axis] <= bounds_b[2 * axis]
+                and bounds_a[2 * axis + 1] >= bounds_b[2 * axis + 1]
+                for axis in range(3)
+            )
+            b_contains_a = all(
+                bounds_b[2 * axis] <= bounds_a[2 * axis]
+                and bounds_b[2 * axis + 1] >= bounds_a[2 * axis + 1]
+                for axis in range(3)
+            )
+            if a_contains_b or b_contains_a:
+                # Containment is ambiguous for surface CAD: the outer mesh
+                # may be a housing or cavity. Only a crossing boundary is a
+                # reliable solid-contact constraint without volume topology.
+                continue
+            surface_hit = triangle_mesh_intersection_contact(
+                a.triangles,
+                b.triangles,
+            )
+            if surface_hit is None:
+                # AABB overlap alone is not penetration for concave or
+                # hollow surface meshes.
+                continue
+            surface_contact, surface_normal = surface_hit
+            center_offset = v_sub(
+                component_center_from_bounds(a),
+                component_center_from_bounds(b),
+            )
+            surface_normal = v_unit(surface_normal, normal)
+            if v_dot(surface_normal, center_offset) < 0.0:
+                surface_normal = v_mul(surface_normal, -1.0)
+            if initial_overlap_pairs is None or pair_key not in initial_overlap_pairs:
+                surface_depth = component_separation_distance_along_normal(
+                    a,
+                    b,
+                    surface_normal,
+                )
+                aabb_depth, aabb_normal = aabb_minimum_separation(a, b)
+                physical_depth, normal = min(
+                    (surface_depth, surface_normal),
+                    (aabb_depth, aabb_normal),
+                    key=lambda item: item[0],
+                )
+                physical_depth += max(COLLISION_MARGIN_M, 0.0)
+            if physical_depth <= COLLISION_MIN_OVERLAP_M:
+                continue
+            environment_failure_mode = "nonpenetration_constraint"
+            environment_perforated = False
+            environment_absorbed_energy = 0.0
+            environment_residual_speed = 0.0
+            environment_contact_radius = 0.0
+            environment_deform_a = 0.0
+            environment_deform_b = 0.0
+            environment_indent_a = 0.0
+            environment_indent_b = 0.0
+            environment_logged_manifold_points = 1
+            environment_friction = 0.0
+            environment_dynamic_impact = False
+            relative_velocity = v_sub(
+                contact_point_velocity(a, surface_contact),
+                contact_point_velocity(b, surface_contact),
+            )
+            closing_speed = -v_dot(relative_velocity, normal)
+            for impactor, target, target_to_impactor_normal in (
+                (a, b, normal),
+                (b, a, v_mul(normal, -1.0)),
+            ):
+                target_is_supported = target.is_assembly_anchor or not component_has_translation_freedom(target)
+                if not target_is_supported:
+                    continue
+                candidate_relative_velocity = v_sub(
+                    contact_point_velocity(impactor, surface_contact),
+                    contact_point_velocity(target, surface_contact),
+                )
+                impact_axis = v_unit(
+                    candidate_relative_velocity,
+                    v_mul(target_to_impactor_normal, -1.0),
+                )
+                contact_damage_axis = (
+                    thin_component_axis_normal(target, impact_axis)
+                    if component_has_thin_axis(target)
+                    else impact_axis
+                )
+                normal_speed = max(
+                    abs(v_dot(candidate_relative_velocity, target_to_impactor_normal)),
+                    physical_depth / max(MOTION_DT, 1e-9),
+                )
                 if (
-                    a.rigid_body_group is not None
-                    and a.rigid_body_group == b.rigid_body_group
+                    normal_speed
+                    < max(
+                        0.25,
+                        0.5 * physical_depth / max(MOTION_DT, 1e-9),
+                    )
                 ):
                     continue
-                pair_key = collision_pair_key(a, b)
-                overlap = aabb_overlap_with_normal(a, b)
-                if overlap is None:
-                    if initial_overlap_pairs is not None:
-                        initial_overlap_pairs.pop(pair_key, None)
-                    continue
-                depth, normal, _broad_contact = overlap
-                if initial_overlap_pairs is not None and pair_key in initial_overlap_pairs:
-                    initial_depth = initial_overlap_pairs[pair_key].depth_m
-                    if depth <= initial_depth + COLLISION_MIN_OVERLAP_M:
-                        continue
-                    depth = max(0.0, depth - initial_depth)
-                physical_depth = max(0.0, depth - margin_depth)
-                if physical_depth <= COLLISION_MIN_OVERLAP_M:
-                    continue
-                bounds_a = component_bounds(a.triangles)
-                bounds_b = component_bounds(b.triangles)
-                a_contains_b = all(
-                    bounds_a[2 * axis] <= bounds_b[2 * axis]
-                    and bounds_a[2 * axis + 1] >= bounds_b[2 * axis + 1]
-                    for axis in range(3)
+                response = thin_shell_impact_response(
+                    impactor,
+                    target,
+                    normal_speed,
+                    surface_contact,
+                    target_to_impactor_normal,
                 )
-                b_contains_a = all(
-                    bounds_b[2 * axis] <= bounds_a[2 * axis]
-                    and bounds_b[2 * axis + 1] >= bounds_a[2 * axis + 1]
-                    for axis in range(3)
-                )
-                if a_contains_b or b_contains_a:
-                    # Containment is ambiguous for surface CAD: the outer mesh
-                    # may be a housing or cavity. Only a crossing boundary is a
-                    # reliable solid-contact constraint without volume topology.
+                if response is None:
                     continue
-                surface_hit = triangle_mesh_intersection_contact(
-                    a.triangles,
-                    b.triangles,
+                environment_dynamic_impact = True
+                environment_failure_mode = response.failure_mode
+                environment_absorbed_energy = response.absorbed_energy_j
+                environment_residual_speed = response.residual_speed
+                environment_contact_radius = max(
+                    response.hole_radius,
+                    response.indentation,
+                    COLLISION_DEFORMATION_MIN_RADIUS_M,
                 )
-                if surface_hit is None:
-                    # AABB overlap alone is not penetration for concave or
-                    # hollow surface meshes.
-                    continue
-                surface_contact, surface_normal = surface_hit
-                center_offset = v_sub(
-                    component_center_from_bounds(a),
-                    component_center_from_bounds(b),
+                indent_impactor, indent_target = split_contact_indentation(
+                    impactor,
+                    target,
+                    response.indentation,
                 )
-                surface_normal = v_unit(surface_normal, normal)
-                if v_dot(surface_normal, center_offset) < 0.0:
-                    surface_normal = v_mul(surface_normal, -1.0)
-                if initial_overlap_pairs is None or pair_key not in initial_overlap_pairs:
-                    surface_depth = component_separation_distance_along_normal(
-                        a,
-                        b,
-                        surface_normal,
-                    )
-                    aabb_depth, aabb_normal = aabb_minimum_separation(a, b)
-                    physical_depth, normal = min(
-                        (surface_depth, surface_normal),
-                        (aabb_depth, aabb_normal),
-                        key=lambda item: item[0],
-                    )
-                    physical_depth += max(COLLISION_MARGIN_M, 0.0)
-                if physical_depth <= COLLISION_MIN_OVERLAP_M:
-                    continue
-                environment_failure_mode = "nonpenetration_constraint"
-                environment_perforated = False
-                environment_absorbed_energy = 0.0
-                environment_residual_speed = 0.0
-                environment_contact_radius = 0.0
-                environment_deform_a = 0.0
-                environment_deform_b = 0.0
-                environment_indent_a = 0.0
-                environment_indent_b = 0.0
-                environment_logged_manifold_points = 1
-                environment_friction = 0.0
-                environment_dynamic_impact = False
-                relative_velocity = v_sub(
-                    contact_point_velocity(a, surface_contact),
-                    contact_point_velocity(b, surface_contact),
+                deform_impactor = deform_component_at_contact(
+                    impactor,
+                    surface_contact,
+                    v_mul(contact_damage_axis, -1.0),
+                    indent_impactor,
+                    environment_contact_radius,
                 )
-                closing_speed = -v_dot(relative_velocity, normal)
-                for impactor, target, target_to_impactor_normal in (
-                    (a, b, normal),
-                    (b, a, v_mul(normal, -1.0)),
-                ):
-                    target_is_supported = target.is_assembly_anchor or not component_has_translation_freedom(target)
-                    if not target_is_supported:
-                        continue
-                    candidate_relative_velocity = v_sub(
-                        contact_point_velocity(impactor, surface_contact),
-                        contact_point_velocity(target, surface_contact),
-                    )
-                    impact_axis = v_unit(
-                        candidate_relative_velocity,
-                        v_mul(target_to_impactor_normal, -1.0),
-                    )
-                    contact_damage_axis = (
-                        thin_component_axis_normal(target, impact_axis)
-                        if component_has_thin_axis(target)
-                        else impact_axis
-                    )
-                    normal_speed = max(
-                        abs(v_dot(candidate_relative_velocity, target_to_impactor_normal)),
-                        physical_depth / max(MOTION_DT, 1e-9),
-                    )
-                    if (
-                        normal_speed
-                        < max(
-                            0.25,
-                            0.5 * physical_depth / max(MOTION_DT, 1e-9),
-                        )
-                    ):
-                        continue
-                    response = thin_shell_impact_response(
-                        impactor,
-                        target,
-                        normal_speed,
-                        surface_contact,
-                        target_to_impactor_normal,
-                    )
-                    if response is None:
-                        continue
-                    environment_dynamic_impact = True
-                    environment_failure_mode = response.failure_mode
-                    environment_absorbed_energy = response.absorbed_energy_j
-                    environment_residual_speed = response.residual_speed
-                    environment_contact_radius = max(
-                        response.hole_radius,
-                        response.indentation,
-                        COLLISION_DEFORMATION_MIN_RADIUS_M,
-                    )
-                    indent_impactor, indent_target = split_contact_indentation(
-                        impactor,
-                        target,
-                        response.indentation,
-                    )
-                    deform_impactor = deform_component_at_contact(
-                        impactor,
-                        surface_contact,
-                        v_mul(contact_damage_axis, -1.0),
-                        indent_impactor,
-                        environment_contact_radius,
-                    )
-                    deform_target = deform_component_at_contact(
+                deform_target = deform_component_at_contact(
+                    target,
+                    surface_contact,
+                    contact_damage_axis,
+                    indent_target,
+                    environment_contact_radius,
+                )
+                register_collision_dent(
+                    impactor,
+                    surface_contact,
+                    v_mul(contact_damage_axis, -1.0),
+                    deform_impactor,
+                    environment_contact_radius,
+                    step,
+                    response.failure_mode,
+                    0.5 * response.absorbed_energy_j,
+                )
+                if response.perforated:
+                    hole_damage = register_collision_hole(
                         target,
                         surface_contact,
                         contact_damage_axis,
-                        indent_target,
+                        response.hole_radius,
                         environment_contact_radius,
+                        step,
+                        response.failure_mode,
+                        response.absorbed_energy_j,
                     )
+                    environment_contact_radius = hole_damage.current_hole_radius_m
+                    tangent_velocity = v_sub(
+                        impactor.linear_velocity,
+                        v_mul(
+                            impact_axis,
+                            v_dot(impactor.linear_velocity, impact_axis),
+                        ),
+                    )
+                    impactor.linear_velocity = v_add(
+                        tangent_velocity,
+                        v_mul(impact_axis, response.residual_speed),
+                    )
+                    impactor.freedom.source = "post-perforation-ballistic"
+                    impactor.filtered_force = (0.0, 0.0, 0.0)
+                    impactor.filtered_moment = (0.0, 0.0, 0.0)
+                    impactor.aerodynamic_load_initialized = False
+                    environment_perforated = True
+                else:
                     register_collision_dent(
-                        impactor,
+                        target,
                         surface_contact,
-                        v_mul(contact_damage_axis, -1.0),
-                        deform_impactor,
+                        contact_damage_axis,
+                        deform_target,
                         environment_contact_radius,
                         step,
                         response.failure_mode,
                         0.5 * response.absorbed_energy_j,
                     )
-                    if response.perforated:
-                        hole_damage = register_collision_hole(
-                            target,
-                            surface_contact,
-                            contact_damage_axis,
-                            response.hole_radius,
-                            environment_contact_radius,
-                            step,
-                            response.failure_mode,
-                            response.absorbed_energy_j,
-                        )
-                        environment_contact_radius = hole_damage.current_hole_radius_m
-                        tangent_velocity = v_sub(
-                            impactor.linear_velocity,
-                            v_mul(
-                                impact_axis,
-                                v_dot(impactor.linear_velocity, impact_axis),
-                            ),
-                        )
-                        impactor.linear_velocity = v_add(
-                            tangent_velocity,
-                            v_mul(impact_axis, response.residual_speed),
-                        )
-                        impactor.freedom.source = "post-perforation-ballistic"
-                        impactor.filtered_force = (0.0, 0.0, 0.0)
-                        impactor.filtered_moment = (0.0, 0.0, 0.0)
-                        impactor.aerodynamic_load_initialized = False
-                        environment_perforated = True
-                    else:
-                        register_collision_dent(
-                            target,
-                            surface_contact,
-                            contact_damage_axis,
-                            deform_target,
-                            environment_contact_radius,
-                            step,
-                            response.failure_mode,
-                            0.5 * response.absorbed_energy_j,
-                        )
-                        # A non-perforating missed impact must be returned to the
-                        # entrance side along the contact normal, not along the
-                        # full velocity vector, otherwise the projection invents
-                        # sideways drift on oblique impacts.
-                        normal = (
-                            v_mul(contact_damage_axis, -1.0)
-                            if impactor is a
-                            else contact_damage_axis
-                        )
-                    if impactor is a:
-                        environment_deform_a = deform_impactor
-                        environment_deform_b = deform_target
-                        environment_indent_a = indent_impactor
-                        environment_indent_b = indent_target
-                    else:
-                        environment_deform_a = deform_target
-                        environment_deform_b = deform_impactor
-                        environment_indent_a = indent_target
-                        environment_indent_b = indent_impactor
-                    break
-                if environment_perforated:
-                    corrected = True
-                    lines.append(
-                        f"{step}\t{COLLISION_MAX_PASSES + constraint_pass}\t"
-                        f"{a.patch}\t{b.patch}\t{physical_depth:.8g}\t"
-                        f"{normal[0]:.8g}\t{normal[1]:.8g}\t{normal[2]:.8g}\t"
-                        f"{surface_contact[0]:.8g}\t{surface_contact[1]:.8g}\t"
-                        f"{surface_contact[2]:.8g}\t0\t0\t0\t"
-                        f"{environment_deform_a:.8g}\t{environment_deform_b:.8g}\t"
-                        f"{environment_contact_radius:.8g}\t"
-                        f"{environment_indent_a:.8g}\t{environment_indent_b:.8g}\t"
-                        f"{environment_failure_mode}\t1\t"
-                        f"{environment_absorbed_energy:.8g}\t"
-                        f"{environment_residual_speed:.8g}\t0\t"
-                        f"{environment_logged_manifold_points}\t"
-                        f"{environment_friction:.8g}"
+                    # A non-perforating missed impact must be returned to the
+                    # entrance side along the contact normal, not along the
+                    # full velocity vector, otherwise the projection invents
+                    # sideways drift on oblique impacts.
+                    normal = (
+                        v_mul(contact_damage_axis, -1.0)
+                        if impactor is a
+                        else contact_damage_axis
                     )
-                    continue
-                if (
-                    environment_dynamic_impact
-                    and environment_failure_mode != "nonpenetration_constraint"
-                ):
-                    a_can_translate = component_has_translation_freedom(a)
-                    b_can_translate = component_has_translation_freedom(b)
-                    inv_a = 1.0 / max(a.mass, 1e-9) if a_can_translate else 0.0
-                    inv_b = 1.0 / max(b.mass, 1e-9) if b_can_translate else 0.0
-                    inv_sum = inv_a + inv_b
-                    if inv_sum > 0.0:
-                        correction = v_mul(normal, physical_depth / inv_sum)
-                        translate_component_for_collision(
-                            a,
-                            v_mul(correction, inv_a),
-                        )
-                        translate_component_for_collision(
-                            b,
-                            v_mul(correction, -inv_b),
-                        )
-                    for _velocity_cleanup_pass in range(2):
-                        relative_velocity = v_sub(
-                            contact_point_velocity(a, surface_contact),
-                            contact_point_velocity(b, surface_contact),
-                        )
-                        closing_speed = v_dot(relative_velocity, normal)
-                        inverse_contact_mass = (
-                            contact_inverse_mass(a, surface_contact, normal)
-                            + contact_inverse_mass(b, surface_contact, normal)
-                        )
-                        if closing_speed >= -1e-9 or inverse_contact_mass <= 1e-12:
-                            break
-                        impulse_mag = -closing_speed / inverse_contact_mass
-                        impulse = v_mul(normal, impulse_mag)
-                        apply_collision_impulse(a, impulse, surface_contact)
-                        apply_collision_impulse(b, v_mul(impulse, -1.0), surface_contact)
-                    relative_velocity = v_sub(
-                        contact_point_velocity(a, surface_contact),
-                        contact_point_velocity(b, surface_contact),
-                    )
-                    closing_speed = v_dot(relative_velocity, normal)
-                    if closing_speed < -1e-9:
-                        if a_can_translate and not b_can_translate:
-                            a.linear_velocity = v_sub(
-                                a.linear_velocity,
-                                v_mul(normal, closing_speed),
-                            )
-                        elif b_can_translate and not a_can_translate:
-                            b.linear_velocity = v_add(
-                                b.linear_velocity,
-                                v_mul(normal, closing_speed),
-                            )
-                    corrected = True
-                    lines.append(
-                        f"{step}\t{COLLISION_MAX_PASSES + constraint_pass}\t"
-                        f"{a.patch}\t{b.patch}\t{physical_depth:.8g}\t"
-                        f"{normal[0]:.8g}\t{normal[1]:.8g}\t{normal[2]:.8g}\t"
-                        f"{surface_contact[0]:.8g}\t{surface_contact[1]:.8g}\t"
-                        f"{surface_contact[2]:.8g}\t0\t0\t0\t"
-                        f"{environment_deform_a:.8g}\t{environment_deform_b:.8g}\t"
-                        f"{environment_contact_radius:.8g}\t"
-                        f"{environment_indent_a:.8g}\t{environment_indent_b:.8g}\t"
-                        f"{environment_failure_mode}\t0\t"
-                        f"{environment_absorbed_energy:.8g}\t"
-                        f"{environment_residual_speed:.8g}\t0\t"
-                        f"{environment_logged_manifold_points}\t"
-                        f"{environment_friction:.8g}"
-                    )
-                    continue
-                if b.is_assembly_anchor and component_has_thin_axis(b):
-                    normal = thin_component_axis_normal(b, normal)
-                elif a.is_assembly_anchor and component_has_thin_axis(a):
-                    normal = v_mul(
-                        thin_component_axis_normal(a, v_mul(normal, -1.0)),
-                        -1.0,
-                    )
-                a_can_translate = component_has_translation_freedom(a)
-                b_can_translate = component_has_translation_freedom(b)
-                inv_a = 1.0 / max(a.mass, 1e-9) if a_can_translate else 0.0
-                inv_b = 1.0 / max(b.mass, 1e-9) if b_can_translate else 0.0
-                inv_sum = inv_a + inv_b
-                applied_a = (0.0, 0.0, 0.0)
-                applied_b = (0.0, 0.0, 0.0)
-                applied_rotation_a = (0.0, 0.0, 0.0)
-                applied_rotation_b = (0.0, 0.0, 0.0)
-                if inv_sum > 0.0:
-                    correction = v_mul(normal, physical_depth / inv_sum)
-                    applied_a = translate_component_for_collision(
-                        a,
-                        v_mul(correction, inv_a),
-                    )
-                    applied_b = translate_component_for_collision(
-                        b,
-                        v_mul(correction, -inv_b),
-                    )
-                if (
-                    v_norm(applied_a) <= 1e-14
-                    and component_has_rotation_freedom(a)
-                ):
-                    applied_rotation_a = rotate_component_for_collision(
-                        a,
-                        normal,
-                        surface_contact,
-                        physical_depth,
-                    )
-                if (
-                    v_norm(applied_b) <= 1e-14
-                    and component_has_rotation_freedom(b)
-                ):
-                    applied_rotation_b = rotate_component_for_collision(
-                        b,
-                        v_mul(normal, -1.0),
-                        surface_contact,
-                        physical_depth,
-                    )
-                if (
-                    v_norm(applied_a) <= 1e-14
-                    and v_norm(applied_b) <= 1e-14
-                    and v_norm(applied_rotation_a) <= 1e-14
-                    and v_norm(applied_rotation_b) <= 1e-14
-                ):
-                    continue
-
-                relative_velocity = v_sub(
-                    contact_point_velocity(a, surface_contact),
-                    contact_point_velocity(b, surface_contact),
-                )
-                closing_speed = v_dot(relative_velocity, normal)
-                impulse_mag = 0.0
-                inverse_contact_mass = (
-                    contact_inverse_mass(a, surface_contact, normal)
-                    + contact_inverse_mass(b, surface_contact, normal)
-                )
-                if closing_speed < 0.0 and inverse_contact_mass > 1e-12:
-                    impulse_mag = -closing_speed / inverse_contact_mass
-                    impulse = v_mul(normal, impulse_mag)
-                    apply_collision_impulse(a, impulse, surface_contact)
-                    apply_collision_impulse(b, v_mul(impulse, -1.0), surface_contact)
+                if impactor is a:
+                    environment_deform_a = deform_impactor
+                    environment_deform_b = deform_target
+                    environment_indent_a = indent_impactor
+                    environment_indent_b = indent_target
+                else:
+                    environment_deform_a = deform_target
+                    environment_deform_b = deform_impactor
+                    environment_indent_a = indent_target
+                    environment_indent_b = indent_impactor
+                break
+            if environment_perforated:
                 corrected = True
                 lines.append(
                     f"{step}\t{COLLISION_MAX_PASSES + constraint_pass}\t"
                     f"{a.patch}\t{b.patch}\t{physical_depth:.8g}\t"
                     f"{normal[0]:.8g}\t{normal[1]:.8g}\t{normal[2]:.8g}\t"
                     f"{surface_contact[0]:.8g}\t{surface_contact[1]:.8g}\t"
-                    f"{surface_contact[2]:.8g}\t{impulse_mag:.8g}\t"
-                    f"{v_norm(applied_a):.8g}\t{v_norm(applied_b):.8g}\t"
+                    f"{surface_contact[2]:.8g}\t0\t0\t0\t"
+                    f"{environment_deform_a:.8g}\t{environment_deform_b:.8g}\t"
+                    f"{environment_contact_radius:.8g}\t"
+                    f"{environment_indent_a:.8g}\t{environment_indent_b:.8g}\t"
+                    f"{environment_failure_mode}\t1\t"
+                    f"{environment_absorbed_energy:.8g}\t"
+                    f"{environment_residual_speed:.8g}\t0\t"
+                    f"{environment_logged_manifold_points}\t"
+                    f"{environment_friction:.8g}"
+                )
+                continue
+            if (
+                environment_dynamic_impact
+                and environment_failure_mode != "nonpenetration_constraint"
+            ):
+                a_can_translate = component_has_translation_freedom(a)
+                b_can_translate = component_has_translation_freedom(b)
+                inv_a = 1.0 / max(a.mass, 1e-9) if a_can_translate else 0.0
+                inv_b = 1.0 / max(b.mass, 1e-9) if b_can_translate else 0.0
+                inv_sum = inv_a + inv_b
+                if inv_sum > 0.0:
+                    correction = v_mul(normal, physical_depth / inv_sum)
+                    translate_component_for_collision(
+                        a,
+                        v_mul(correction, inv_a),
+                    )
+                    translate_component_for_collision(
+                        b,
+                        v_mul(correction, -inv_b),
+                    )
+                for _velocity_cleanup_pass in range(2):
+                    relative_velocity = v_sub(
+                        contact_point_velocity(a, surface_contact),
+                        contact_point_velocity(b, surface_contact),
+                    )
+                    closing_speed = v_dot(relative_velocity, normal)
+                    inverse_contact_mass = (
+                        contact_inverse_mass(a, surface_contact, normal)
+                        + contact_inverse_mass(b, surface_contact, normal)
+                    )
+                    if closing_speed >= -1e-9 or inverse_contact_mass <= 1e-12:
+                        break
+                    impulse_mag = -closing_speed / inverse_contact_mass
+                    impulse = v_mul(normal, impulse_mag)
+                    apply_collision_impulse(a, impulse, surface_contact)
+                    apply_collision_impulse(b, v_mul(impulse, -1.0), surface_contact)
+                relative_velocity = v_sub(
+                    contact_point_velocity(a, surface_contact),
+                    contact_point_velocity(b, surface_contact),
+                )
+                closing_speed = v_dot(relative_velocity, normal)
+                if closing_speed < -1e-9:
+                    if a_can_translate and not b_can_translate:
+                        a.linear_velocity = v_sub(
+                            a.linear_velocity,
+                            v_mul(normal, closing_speed),
+                        )
+                    elif b_can_translate and not a_can_translate:
+                        b.linear_velocity = v_add(
+                            b.linear_velocity,
+                            v_mul(normal, closing_speed),
+                        )
+                corrected = True
+                lines.append(
+                    f"{step}\t{COLLISION_MAX_PASSES + constraint_pass}\t"
+                    f"{a.patch}\t{b.patch}\t{physical_depth:.8g}\t"
+                    f"{normal[0]:.8g}\t{normal[1]:.8g}\t{normal[2]:.8g}\t"
+                    f"{surface_contact[0]:.8g}\t{surface_contact[1]:.8g}\t"
+                    f"{surface_contact[2]:.8g}\t0\t0\t0\t"
                     f"{environment_deform_a:.8g}\t{environment_deform_b:.8g}\t"
                     f"{environment_contact_radius:.8g}\t"
                     f"{environment_indent_a:.8g}\t{environment_indent_b:.8g}\t"
@@ -4690,6 +4761,93 @@ def enforce_environment_contact_constraints(
                     f"{environment_logged_manifold_points}\t"
                     f"{environment_friction:.8g}"
                 )
+                continue
+            if b.is_assembly_anchor and component_has_thin_axis(b):
+                normal = thin_component_axis_normal(b, normal)
+            elif a.is_assembly_anchor and component_has_thin_axis(a):
+                normal = v_mul(
+                    thin_component_axis_normal(a, v_mul(normal, -1.0)),
+                    -1.0,
+                )
+            a_can_translate = component_has_translation_freedom(a)
+            b_can_translate = component_has_translation_freedom(b)
+            inv_a = 1.0 / max(a.mass, 1e-9) if a_can_translate else 0.0
+            inv_b = 1.0 / max(b.mass, 1e-9) if b_can_translate else 0.0
+            inv_sum = inv_a + inv_b
+            applied_a = (0.0, 0.0, 0.0)
+            applied_b = (0.0, 0.0, 0.0)
+            applied_rotation_a = (0.0, 0.0, 0.0)
+            applied_rotation_b = (0.0, 0.0, 0.0)
+            if inv_sum > 0.0:
+                correction = v_mul(normal, physical_depth / inv_sum)
+                applied_a = translate_component_for_collision(
+                    a,
+                    v_mul(correction, inv_a),
+                )
+                applied_b = translate_component_for_collision(
+                    b,
+                    v_mul(correction, -inv_b),
+                )
+            if (
+                v_norm(applied_a) <= 1e-14
+                and component_has_rotation_freedom(a)
+            ):
+                applied_rotation_a = rotate_component_for_collision(
+                    a,
+                    normal,
+                    surface_contact,
+                    physical_depth,
+                )
+            if (
+                v_norm(applied_b) <= 1e-14
+                and component_has_rotation_freedom(b)
+            ):
+                applied_rotation_b = rotate_component_for_collision(
+                    b,
+                    v_mul(normal, -1.0),
+                    surface_contact,
+                    physical_depth,
+                )
+            if (
+                v_norm(applied_a) <= 1e-14
+                and v_norm(applied_b) <= 1e-14
+                and v_norm(applied_rotation_a) <= 1e-14
+                and v_norm(applied_rotation_b) <= 1e-14
+            ):
+                continue
+
+            relative_velocity = v_sub(
+                contact_point_velocity(a, surface_contact),
+                contact_point_velocity(b, surface_contact),
+            )
+            closing_speed = v_dot(relative_velocity, normal)
+            impulse_mag = 0.0
+            inverse_contact_mass = (
+                contact_inverse_mass(a, surface_contact, normal)
+                + contact_inverse_mass(b, surface_contact, normal)
+            )
+            if closing_speed < 0.0 and inverse_contact_mass > 1e-12:
+                impulse_mag = -closing_speed / inverse_contact_mass
+                impulse = v_mul(normal, impulse_mag)
+                apply_collision_impulse(a, impulse, surface_contact)
+                apply_collision_impulse(b, v_mul(impulse, -1.0), surface_contact)
+            corrected = True
+            lines.append(
+                f"{step}\t{COLLISION_MAX_PASSES + constraint_pass}\t"
+                f"{a.patch}\t{b.patch}\t{physical_depth:.8g}\t"
+                f"{normal[0]:.8g}\t{normal[1]:.8g}\t{normal[2]:.8g}\t"
+                f"{surface_contact[0]:.8g}\t{surface_contact[1]:.8g}\t"
+                f"{surface_contact[2]:.8g}\t{impulse_mag:.8g}\t"
+                f"{v_norm(applied_a):.8g}\t{v_norm(applied_b):.8g}\t"
+                f"{environment_deform_a:.8g}\t{environment_deform_b:.8g}\t"
+                f"{environment_contact_radius:.8g}\t"
+                f"{environment_indent_a:.8g}\t{environment_indent_b:.8g}\t"
+                f"{environment_failure_mode}\t0\t"
+                f"{environment_absorbed_energy:.8g}\t"
+                f"{environment_residual_speed:.8g}\t0\t"
+                f"{environment_logged_manifold_points}\t"
+                f"{environment_friction:.8g}"
+            )
         if not corrected:
             break
     return lines
@@ -4718,32 +4876,45 @@ def resolve_part_collisions(
                 active.extend(fragment.component for fragment in state.fragment_bodies)
         return active
 
+    def discard_separated_initial_overlaps(
+        active: Sequence[AeroComponent],
+    ) -> None:
+        if not initial_overlap_pairs:
+            return
+        component_by_id = {id(component): component for component in active}
+        for pair_key in list(initial_overlap_pairs):
+            a = component_by_id.get(pair_key[0])
+            b = component_by_id.get(pair_key[1])
+            if a is None or b is None or aabb_overlap_with_normal(a, b) is None:
+                initial_overlap_pairs.pop(pair_key, None)
+
     def unresolved_overlap_remains(
         active: Sequence[AeroComponent],
     ) -> bool:
-        for index, a in enumerate(active):
-            for b in active[index + 1:]:
-                if (
-                    a.rigid_body_group is not None
-                    and a.rigid_body_group == b.rigid_body_group
-                ):
+        for index_a, index_b in collision_broad_phase_pairs(active, 0.0):
+            a = active[index_a]
+            b = active[index_b]
+            if (
+                a.rigid_body_group is not None
+                and a.rigid_body_group == b.rigid_body_group
+            ):
+                continue
+            overlap = aabb_overlap_with_normal(a, b)
+            if overlap is None:
+                continue
+            depth, _normal, _contact = overlap
+            pair_key = collision_pair_key(a, b)
+            if (
+                initial_overlap_pairs is not None
+                and pair_key in initial_overlap_pairs
+            ):
+                baseline = initial_overlap_pairs[pair_key].depth_m
+                if depth <= baseline + COLLISION_MIN_OVERLAP_M:
                     continue
-                overlap = aabb_overlap_with_normal(a, b)
-                if overlap is None:
-                    continue
-                depth, _normal, _contact = overlap
-                pair_key = collision_pair_key(a, b)
-                if (
-                    initial_overlap_pairs is not None
-                    and pair_key in initial_overlap_pairs
-                ):
-                    baseline = initial_overlap_pairs[pair_key].depth_m
-                    if depth <= baseline + COLLISION_MIN_OVERLAP_M:
-                        continue
-                if depth <= COLLISION_MIN_OVERLAP_M:
-                    continue
-                if triangle_mesh_intersection_contact(a.triangles, b.triangles) is not None:
-                    return True
+            if depth <= COLLISION_MIN_OVERLAP_M:
+                continue
+            if triangle_mesh_intersection_contact(a.triangles, b.triangles) is not None:
+                return True
         return False
 
     lines: List[str] = []
@@ -4751,567 +4922,599 @@ def resolve_part_collisions(
     impulse_resolved_pairs: Set[Tuple[int, int]] = set()
     pending_swept_contact = swept_contact
     max_outer_passes = max(1, COLLISION_MAX_PASSES)
+    broad_phase_candidates = 0
+    brute_force_pair_checks = 0
+    peak_active_bodies = 0
+    collision_resolution_started = time.monotonic()
     for _outer_pass in range(max_outer_passes):
         active_components = current_active_components()
+        discard_separated_initial_overlaps(active_components)
+        peak_active_bodies = max(peak_active_bodies, len(active_components))
         outer_progress = False
         for collision_pass in range(COLLISION_MAX_PASSES):
             any_collision = False
-            for i in range(len(active_components)):
+            candidate_pairs = collision_broad_phase_pairs(
+                active_components,
+                MOTION_DT,
+            )
+            if pending_swept_contact is not None:
+                index_by_id = {
+                    id(component): index
+                    for index, component in enumerate(active_components)
+                }
+                moving_index = index_by_id.get(id(pending_swept_contact.moving))
+                stationary_index = index_by_id.get(
+                    id(pending_swept_contact.stationary)
+                )
+                if moving_index is not None and stationary_index is not None:
+                    prescribed_indices = (
+                        min(moving_index, stationary_index),
+                        max(moving_index, stationary_index),
+                    )
+                    if prescribed_indices not in candidate_pairs:
+                        candidate_pairs.append(prescribed_indices)
+                        candidate_pairs.sort()
+            broad_phase_candidates += len(candidate_pairs)
+            brute_force_pair_checks += (
+                len(active_components) * (len(active_components) - 1) // 2
+            )
+            for i, j in candidate_pairs:
                 a = active_components[i]
-                for j in range(i + 1, len(active_components)):
-                    b = active_components[j]
-                    pair_key = collision_pair_key(a, b)
-                    if pair_key in impulse_resolved_pairs:
-                        # One contact pair receives at most one impact impulse
-                        # during a physical time step.  Geometry may remain
-                        # overlapped while the elastic/plastic deformation is
-                        # applied; the later Signorini projection removes that
-                        # overlap without a second impulse whose independently
-                        # estimated normal can flip and cancel the rebound.
-                        continue
-                    initial_overlap_depth = 0.0
-                    relative_swept_contact: Optional[RelativeSweptContact] = None
-                    is_swept_pair = (
-                        pending_swept_contact is not None
-                        and {id(a), id(b)}
-                        == {
-                            id(pending_swept_contact.moving),
-                            id(pending_swept_contact.stationary),
-                        }
+                b = active_components[j]
+                pair_key = collision_pair_key(a, b)
+                if pair_key in impulse_resolved_pairs:
+                    # One contact pair receives at most one impact impulse
+                    # during a physical time step.  Geometry may remain
+                    # overlapped while the elastic/plastic deformation is
+                    # applied; the later Signorini projection removes that
+                    # overlap without a second impulse whose independently
+                    # estimated normal can flip and cancel the rebound.
+                    continue
+                initial_overlap_depth = 0.0
+                relative_swept_contact: Optional[RelativeSweptContact] = None
+                is_swept_pair = (
+                    pending_swept_contact is not None
+                    and {id(a), id(b)}
+                    == {
+                        id(pending_swept_contact.moving),
+                        id(pending_swept_contact.stationary),
+                    }
+                )
+                same_rigid_group = (
+                    a.rigid_body_group is not None
+                    and a.rigid_body_group == b.rigid_body_group
+                )
+                if (
+                    pair_key not in handled_relative_sweeps
+                    and not same_rigid_group
+                    and not is_swept_pair
+                    and a.collision_fragment_created_step != step
+                    and b.collision_fragment_created_step != step
+                ):
+                    relative_swept_contact = swept_relative_component_contact(
+                        a,
+                        b,
+                        MOTION_DT,
                     )
-                    same_rigid_group = (
-                        a.rigid_body_group is not None
-                        and a.rigid_body_group == b.rigid_body_group
-                    )
-                    if (
-                        pair_key not in handled_relative_sweeps
-                        and not same_rigid_group
-                        and not is_swept_pair
-                    ):
-                        relative_swept_contact = swept_relative_component_contact(
-                            a,
-                            b,
-                            MOTION_DT,
-                        )
-                    if initial_overlap_pairs is not None and pair_key in initial_overlap_pairs:
-                        # This pair started in an intentional CAD fit.  Do not turn
-                        # broad-phase overlap into strain energy.  Re-enable normal
-                        # collision handling after the bodies have truly separated.
-                        initial_overlap = initial_overlap_pairs[pair_key]
-                        current_overlap = aabb_overlap_with_normal(a, b)
-                        if current_overlap is None:
-                            initial_overlap_pairs.pop(pair_key, None)
-                        else:
-                            initial_overlap_depth = initial_overlap.depth_m
-                            if initial_overlap.surfaces_intersect:
-                                # Surface-intersecting bodies are already at their
-                                # assembled CAD interface. A tiny difference in
-                                # aerodynamic acceleration must not turn that
-                                # interface into a new impact and alter their
-                                # imported relative pose. Only overlap beyond the
-                                # recorded baseline is physical penetration.
-                                if (
-                                    current_overlap[0]
-                                    <= initial_overlap_depth
-                                    + COLLISION_MIN_OVERLAP_M
-                                ):
-                                    continue
-                                relative_swept_contact = None
-                            elif (
+                if initial_overlap_pairs is not None and pair_key in initial_overlap_pairs:
+                    # This pair started in an intentional CAD fit.  Do not turn
+                    # broad-phase overlap into strain energy.  Re-enable normal
+                    # collision handling after the bodies have truly separated.
+                    initial_overlap = initial_overlap_pairs[pair_key]
+                    current_overlap = aabb_overlap_with_normal(a, b)
+                    if current_overlap is None:
+                        initial_overlap_pairs.pop(pair_key, None)
+                    else:
+                        initial_overlap_depth = initial_overlap.depth_m
+                        if initial_overlap.surfaces_intersect:
+                            # Surface-intersecting bodies are already at their
+                            # assembled CAD interface. A tiny difference in
+                            # aerodynamic acceleration must not turn that
+                            # interface into a new impact and alter their
+                            # imported relative pose. Only overlap beyond the
+                            # recorded baseline is physical penetration.
+                            if (
                                 current_overlap[0]
                                 <= initial_overlap_depth
                                 + COLLISION_MIN_OVERLAP_M
-                                and relative_swept_contact is None
                             ):
                                 continue
-                        if (
-                            relative_swept_contact is not None
-                            and not initial_overlap.surfaces_intersect
+                            relative_swept_contact = None
+                        elif (
+                            current_overlap[0]
+                            <= initial_overlap_depth
+                            + COLLISION_MIN_OVERLAP_M
+                            and relative_swept_contact is None
                         ):
-                            # Relative motion has reached a real triangle surface,
-                            # so the stress-free CAD-fit exemption has ended even
-                            # if the broad AABBs never became disjoint.
-                            initial_overlap_pairs.pop(pair_key, None)
-                            initial_overlap_depth = 0.0
-                    if is_swept_pair and collision_pass > 0:
-                        continue
-                    if is_swept_pair:
-                        assert pending_swept_contact is not None
-                        if a is pending_swept_contact.moving:
-                            hit = pending_swept_contact.depth, pending_swept_contact.normal, pending_swept_contact.point
-                        else:
-                            hit = pending_swept_contact.depth, v_mul(pending_swept_contact.normal, -1.0), pending_swept_contact.point
-                    elif relative_swept_contact is not None:
-                        normal_speed = max(
-                            0.0,
-                            -v_dot(
-                                v_sub(a.linear_velocity, b.linear_velocity),
-                                relative_swept_contact.normal,
-                            ),
-                        )
-                        impact_depth = max(
-                            impact_contact_indentation(
-                                a,
-                                b,
-                                normal_speed,
-                                relative_swept_contact.point,
-                                relative_swept_contact.point,
-                                relative_swept_contact.normal,
-                            ),
-                            2.0 * COLLISION_MIN_OVERLAP_M,
-                        )
-                        hit = (
-                            impact_depth,
-                            relative_swept_contact.normal,
-                            relative_swept_contact.point,
-                        )
-                    else:
-                        hit = aabb_overlap_with_normal(a, b)
-                        if hit is not None:
-                            surface_hit = triangle_mesh_intersection_contact(
-                                a.triangles,
-                                b.triangles,
-                            )
-                            if surface_hit is None:
-                                continue
-                            surface_contact, surface_normal = surface_hit
-                            center_offset = v_sub(
-                                component_center_from_bounds(a),
-                                component_center_from_bounds(b),
-                            )
-                            if (
-                                v_norm(center_offset) > 1e-12
-                                and v_dot(
-                                    surface_normal,
-                                    v_unit(center_offset),
-                                ) < 0.2
-                            ):
-                                surface_normal = hit[1]
-                            hit = hit[0], surface_normal, surface_contact
-                    if hit is None:
-                        continue
-                    depth, normal, contact = hit
-                    normal = stable_collision_normal(
-                        a,
-                        b,
-                        normal,
-                        preserve_detected_orientation=(
-                            is_swept_pair or relative_swept_contact is not None
-                        ),
-                    )
-                    depth = max(
-                        depth - initial_overlap_depth,
-                        COLLISION_MIN_OVERLAP_M,
-                    )
-                    if not is_swept_pair:
-                        relative_velocity = v_sub(
-                            contact_point_velocity(a, contact),
-                            contact_point_velocity(b, contact),
-                        )
-                        normal_speed = max(
-                            0.0,
-                            -v_dot(relative_velocity, normal),
-                        )
-                        if normal_speed <= 1e-9:
                             continue
-                        if relative_swept_contact is None:
-                            depth = min(
-                                depth,
-                                max(
-                                    impact_contact_indentation(
-                                        a,
-                                        b,
-                                        normal_speed,
-                                        contact,
-                                        contact,
-                                        normal,
-                                    ),
-                                    2.0 * COLLISION_MIN_OVERLAP_M,
-                                ),
-                            )
-                    any_collision = True
-                    outer_progress = True
-                    # remainder of inner collision handling unchanged
-                    a_can_translate = component_has_translation_freedom(a)
-                    b_can_translate = component_has_translation_freedom(b)
-                    inv_a = 0.0 if (a.is_assembly_anchor or not a_can_translate) else 1.0 / max(a.mass, 1e-9)
-                    inv_b = 0.0 if (b.is_assembly_anchor or not b_can_translate) else 1.0 / max(b.mass, 1e-9)
-                    inv_sum = inv_a + inv_b
-                    time_of_impact_move_a = (0.0, 0.0, 0.0)
-                    time_of_impact_move_b = (0.0, 0.0, 0.0)
                     if (
                         relative_swept_contact is not None
-                        and relative_swept_contact.rotational
+                        and not initial_overlap.surfaces_intersect
                     ):
-                        time_of_impact_move_a = rewind_component_rotational_sweep(
-                            a,
-                            relative_swept_contact.translation_a,
-                            relative_swept_contact.rotation_a,
-                            relative_swept_contact.time_fraction,
-                        )
-                        time_of_impact_move_b = rewind_component_rotational_sweep(
-                            b,
-                            relative_swept_contact.translation_b,
-                            relative_swept_contact.rotation_b,
-                            relative_swept_contact.time_fraction,
-                        )
-                        handled_relative_sweeps.add(pair_key)
-                    elif relative_swept_contact is not None and inv_sum > 0.0:
-                        overshoot = max(
-                            0.0,
-                            relative_swept_contact.sweep_distance_m
-                            - relative_swept_contact.travel_to_contact_m,
-                        )
-                        if overshoot > 0.0:
-                            correction = v_mul(
-                                relative_swept_contact.direction,
-                                overshoot / inv_sum,
-                            )
-                            time_of_impact_move_a = translate_component_for_collision(
-                                a,
-                                v_mul(correction, -inv_a),
-                            )
-                            time_of_impact_move_b = translate_component_for_collision(
-                                b,
-                                v_mul(correction, inv_b),
-                            )
-                            contact = v_add(contact, time_of_impact_move_b)
-                        handled_relative_sweeps.add(pair_key)
-                    if not is_swept_pair and relative_swept_contact is not None:
-                        later_perforation = relative_swept_perforation_contact(
-                            a,
-                            b,
-                            relative_swept_contact,
-                            MOTION_DT,
-                        )
-                        if later_perforation is not None:
-                            pending_swept_contact = later_perforation
-                            is_swept_pair = True
-                    if is_swept_pair and pending_swept_contact is not None and pending_swept_contact.perforated:
-                        impact_axis = pending_swept_contact.approach_axis
-                        moving_surface_point = v_add(
-                            pending_swept_contact.point,
-                            v_mul(impact_axis, pending_swept_contact.approach_penetration),
-                        )
-                        impact_depth = max(
-                            pending_swept_contact.approach_penetration,
-                            pending_swept_contact.depth,
-                            2.0 * COLLISION_MIN_OVERLAP_M,
-                        )
-                        contact_radius = hertz_contact_area_radius(
-                            pending_swept_contact.moving,
-                            pending_swept_contact.stationary,
-                            impact_depth,
-                            geometry=pending_swept_contact.contact_geometry,
-                        )
-                        indent_moving, indent_stationary = split_contact_indentation(
-                            pending_swept_contact.moving,
-                            pending_swept_contact.stationary,
-                            impact_depth,
-                        )
-                        deform_moving = deform_component_at_contact(
-                            pending_swept_contact.moving,
-                            moving_surface_point,
-                            v_mul(impact_axis, -1.0),
-                            indent_moving,
-                            contact_radius,
-                        )
-                        deform_stationary = deform_component_at_contact(
-                            pending_swept_contact.stationary,
-                            pending_swept_contact.point,
-                            impact_axis,
-                            indent_stationary,
-                            contact_radius,
-                        )
-                        deform_collision_reference(
-                            pending_swept_contact.moving,
-                            moving_surface_point,
-                            v_mul(impact_axis, -1.0),
-                            deform_moving,
-                            contact_radius,
-                        )
-                        deform_collision_reference(
-                            pending_swept_contact.stationary,
-                            pending_swept_contact.point,
-                            impact_axis,
-                            deform_stationary,
-                            contact_radius,
-                        )
-                        hole_damage = register_collision_hole(
-                            pending_swept_contact.stationary,
-                            pending_swept_contact.point,
-                            impact_axis,
-                            pending_swept_contact.hole_radius,
-                            contact_radius,
-                            step,
-                            pending_swept_contact.failure_mode,
-                            pending_swept_contact.absorbed_energy_j,
-                        )
-                        removed_triangles = 0
-                        pending_swept_contact.moving.linear_velocity = v_mul(
-                            impact_axis,
-                            pending_swept_contact.residual_speed,
-                        )
-                        pending_swept_contact.moving.angular_velocity = (0.0, 0.0, 0.0)
-                        pending_swept_contact.moving.freedom.source = "post-perforation-ballistic"
-                        pending_swept_contact.moving.filtered_force = (0.0, 0.0, 0.0)
-                        pending_swept_contact.moving.filtered_moment = (0.0, 0.0, 0.0)
-                        pending_swept_contact.moving.aerodynamic_load_initialized = False
-                        apply_nearby_collision_effects(
-                            components,
-                            (pending_swept_contact.moving, pending_swept_contact.stationary),
-                            pending_swept_contact.point,
-                            impact_axis,
-                            contact_radius,
-                            pending_swept_contact.absorbed_energy_j,
-                            step,
-                            pending_swept_contact.failure_mode,
-                        )
-                        deform_a = deform_moving if a is pending_swept_contact.moving else deform_stationary
-                        deform_b = deform_moving if b is pending_swept_contact.moving else deform_stationary
-                        line = (
-                            f"{step}\t{collision_pass}\t{a.patch}\t{b.patch}\t"
-                            f"{depth:.8g}\t{normal[0]:.8g}\t{normal[1]:.8g}\t{normal[2]:.8g}\t"
-                            f"{contact[0]:.8g}\t{contact[1]:.8g}\t{contact[2]:.8g}\t"
-                            f"0\t0\t0\t{deform_a:.8g}\t{deform_b:.8g}\t"
-                            f"{hole_damage.current_hole_radius_m:.8g}\t0\t0\t"
-                            f"{pending_swept_contact.failure_mode}\t1\t{pending_swept_contact.absorbed_energy_j:.8g}\t"
-                            f"{pending_swept_contact.residual_speed:.8g}\t{removed_triangles}\t"
-                            f"{pending_swept_contact.manifold_points}\t0"
-                        )
-                        lines.append(line)
-                        pending_swept_contact = None
-                        continue
-                    contact_a = contact
-                    contact_b = contact
-                    contact_geometry = (
-                        pending_swept_contact.contact_geometry
-                        if is_swept_pair and pending_swept_contact is not None
-                        else None
-                    )
-                    if is_swept_pair:
-                        assert pending_swept_contact is not None
-                        moving_surface_point = v_add(
-                            pending_swept_contact.point,
-                            v_mul(
-                                pending_swept_contact.approach_axis,
-                                pending_swept_contact.approach_penetration,
-                            ),
-                        )
-                        if a is pending_swept_contact.moving:
-                            contact_a = moving_surface_point
-                        else:
-                            contact_b = moving_surface_point
-                    if contact_geometry is None:
-                        contact_geometry = local_contact_geometry(
-                            a,
-                            b,
-                            contact_a,
-                            contact_b,
-                            normal,
-                        )
-                    contact_radius = hertz_contact_area_radius(
-                        a,
-                        b,
-                        depth,
-                        geometry=contact_geometry,
-                    )
-                    indent_a, indent_b = split_contact_indentation(a, b, depth)
-                    elastic_indentation = min(depth, indent_a + indent_b)
-                    rigid_overlap = max(0.0, depth - elastic_indentation)
-                    # The overlap returned by the broad phase is not a local
-                    # penetration measurement.  A small projectile crossing a
-                    # large plate can therefore report the plate's full span.
-                    # Project only a contact-scale amount per pass and let the
-                    # mesh contact loop recheck the pair.  This prevents large
-                    # artificial bounce translations while retaining
-                    # non-penetration for genuine surface intersections.
-                    contact_scale = max(
-                        4.0 * COLLISION_MIN_OVERLAP_M,
-                        2.0 * contact_radius,
-                    )
-                    correction_depth = rigid_overlap
-                    if (
-                        relative_swept_contact is None
-                        and not is_swept_pair
-                        and rigid_overlap > 4.0 * contact_scale
-                    ):
-                        correction_depth = contact_scale
-                    correction_mag = correction_depth * max(
+                        # Relative motion has reached a real triangle surface,
+                        # so the stress-free CAD-fit exemption has ended even
+                        # if the broad AABBs never became disjoint.
+                        initial_overlap_pairs.pop(pair_key, None)
+                        initial_overlap_depth = 0.0
+                if is_swept_pair and collision_pass > 0:
+                    continue
+                if is_swept_pair:
+                    assert pending_swept_contact is not None
+                    if a is pending_swept_contact.moving:
+                        hit = pending_swept_contact.depth, pending_swept_contact.normal, pending_swept_contact.point
+                    else:
+                        hit = pending_swept_contact.depth, v_mul(pending_swept_contact.normal, -1.0), pending_swept_contact.point
+                elif relative_swept_contact is not None:
+                    normal_speed = max(
                         0.0,
-                        min(COLLISION_POSITION_CORRECTION, 1.0),
+                        -v_dot(
+                            v_sub(a.linear_velocity, b.linear_velocity),
+                            relative_swept_contact.normal,
+                        ),
                     )
-                    applied_a = time_of_impact_move_a
-                    applied_b = time_of_impact_move_b
-                    if inv_sum > 0.0 and correction_mag > 0.0:
-                        corr = v_mul(normal, correction_mag / inv_sum)
-                        applied_a = translate_component_for_collision(a, v_mul(corr, inv_a))
-                        applied_b = translate_component_for_collision(b, v_mul(corr, -inv_b))
-                    if (
-                        not a_can_translate
-                        and v_norm(applied_a) <= 1e-14
-                        and component_has_rotation_freedom(a)
-                    ):
-                        rotate_component_for_collision(a, normal, contact, depth)
-                    if (
-                        not b_can_translate
-                        and v_norm(applied_b) <= 1e-14
-                        and component_has_rotation_freedom(b)
-                    ):
-                        rotate_component_for_collision(b, v_mul(normal, -1.0), contact, depth)
-                    rel_v = v_sub(
+                    impact_depth = max(
+                        impact_contact_indentation(
+                            a,
+                            b,
+                            normal_speed,
+                            relative_swept_contact.point,
+                            relative_swept_contact.point,
+                            relative_swept_contact.normal,
+                        ),
+                        2.0 * COLLISION_MIN_OVERLAP_M,
+                    )
+                    hit = (
+                        impact_depth,
+                        relative_swept_contact.normal,
+                        relative_swept_contact.point,
+                    )
+                else:
+                    hit = aabb_overlap_with_normal(a, b)
+                    if hit is not None:
+                        surface_hit = triangle_mesh_intersection_contact(
+                            a.triangles,
+                            b.triangles,
+                        )
+                        if surface_hit is None:
+                            continue
+                        surface_contact, surface_normal = surface_hit
+                        center_offset = v_sub(
+                            component_center_from_bounds(a),
+                            component_center_from_bounds(b),
+                        )
+                        if (
+                            v_norm(center_offset) > 1e-12
+                            and v_dot(
+                                surface_normal,
+                                v_unit(center_offset),
+                            ) < 0.2
+                        ):
+                            surface_normal = hit[1]
+                        hit = hit[0], surface_normal, surface_contact
+                if hit is None:
+                    continue
+                depth, normal, contact = hit
+                normal = stable_collision_normal(
+                    a,
+                    b,
+                    normal,
+                    preserve_detected_orientation=(
+                        is_swept_pair or relative_swept_contact is not None
+                    ),
+                )
+                depth = max(
+                    depth - initial_overlap_depth,
+                    COLLISION_MIN_OVERLAP_M,
+                )
+                if not is_swept_pair:
+                    relative_velocity = v_sub(
                         contact_point_velocity(a, contact),
                         contact_point_velocity(b, contact),
                     )
-                    rel_normal = v_dot(rel_v, normal)
-                    impulse_mag = 0.0
-                    tangent_impulse = (0.0, 0.0, 0.0)
-                    friction = contact_friction_coefficient(a, b)
-                    persistent_contact, is_new_contact = persistent_contact_for_pair(
-                        a,
-                        b,
-                        step,
-                        normal,
-                        contact,
+                    normal_speed = max(
+                        0.0,
+                        -v_dot(relative_velocity, normal),
                     )
-                    normal_inverse_mass = (
-                        contact_inverse_mass(a, contact, normal)
-                        + contact_inverse_mass(b, contact, normal)
-                    )
-                    if normal_inverse_mass > 0.0 and rel_normal < 0.0:
-                        restitution = contact_restitution_coefficient(
-                            a,
-                            b,
-                            (
-                                COLLISION_PRESCRIBED_IMPACT_RESTITUTION
-                                if is_swept_pair
-                                else COLLISION_RESTITUTION
+                    if normal_speed <= 1e-9:
+                        continue
+                    if relative_swept_contact is None:
+                        depth = min(
+                            depth,
+                            max(
+                                impact_contact_indentation(
+                                    a,
+                                    b,
+                                    normal_speed,
+                                    contact,
+                                    contact,
+                                    normal,
+                                ),
+                                2.0 * COLLISION_MIN_OVERLAP_M,
                             ),
-                        ) if is_new_contact else 0.0
-                        impulse_mag = -(1.0 + restitution) * rel_normal / normal_inverse_mass
-                        impulse = v_mul(normal, impulse_mag)
-                        apply_collision_impulse(a, impulse, contact)
-                        apply_collision_impulse(b, v_mul(impulse, -1.0), contact)
-                        rel_v = v_sub(
-                            contact_point_velocity(a, contact),
-                            contact_point_velocity(b, contact),
                         )
-                        rel_normal_after = v_dot(rel_v, normal)
-                        tangent = v_sub(rel_v, v_mul(normal, rel_normal_after))
-                        tmag = v_norm(tangent)
-                        if tmag > 1e-12 and friction > 0.0:
-                            tdir = v_mul(tangent, 1.0 / tmag)
-                            tangent_inverse_mass = (
-                                contact_inverse_mass(a, contact, tdir)
-                                + contact_inverse_mass(b, contact, tdir)
-                            )
-                            jt = min(
-                                tmag / max(tangent_inverse_mass, 1e-12),
-                                impulse_mag * friction,
-                            )
-                            timpulse = v_mul(tdir, -jt)
-                            apply_collision_impulse(a, timpulse, contact)
-                            apply_collision_impulse(b, v_mul(timpulse, -1.0), contact)
-                            tangent_impulse = timpulse
-                        persistent_contact.accumulated_normal_impulse_ns += impulse_mag
-                        persistent_contact.accumulated_tangent_impulse = v_add(
-                            persistent_contact.accumulated_tangent_impulse,
-                            tangent_impulse,
-                        )
-                        impulse_resolved_pairs.add(pair_key)
-                    elif inv_sum <= 0.0:
-                        pseudo_force = v_mul(normal, max(depth, COLLISION_MIN_OVERLAP_M) * max(a.mass, b.mass, DEFAULT_PART_MASS_KG) / max(MOTION_DT, 1e-9))
-                        apply_collision_impulse(a, pseudo_force, contact)
-                        apply_collision_impulse(b, v_mul(pseudo_force, -1.0), contact)
-                    deform_a = deform_component_at_contact(a, contact_a, normal, indent_a, contact_radius)
-                    deform_b = deform_component_at_contact(b, contact_b, v_mul(normal, -1.0), indent_b, contact_radius)
-                    if is_swept_pair and swept_contact is not None:
-                        failure_mode = pending_swept_contact.failure_mode
-                        logged_manifold_points = pending_swept_contact.manifold_points
-                    elif relative_swept_contact is not None:
-                        failure_mode = "continuous_internal_contact"
-                        logged_manifold_points = relative_swept_contact.manifold_points
-                    else:
-                        failure_mode = "elastic_contact"
-                        logged_manifold_points = 1
-                    absorbed_energy = (
-                        pending_swept_contact.absorbed_energy_j
-                        if is_swept_pair and pending_swept_contact is not None
-                        else 0.0
-                    )
-                    secondary_energy = absorbed_energy
-                    if secondary_energy <= 1e-12 and impulse_mag > 0.0:
-                        secondary_energy = (
-                            0.5
-                            * impulse_mag
-                            * impulse_mag
-                            * normal_inverse_mass
-                        )
-                    register_collision_dent(
+                any_collision = True
+                outer_progress = True
+                # remainder of inner collision handling unchanged
+                a_can_translate = component_has_translation_freedom(a)
+                b_can_translate = component_has_translation_freedom(b)
+                inv_a = 0.0 if (a.is_assembly_anchor or not a_can_translate) else 1.0 / max(a.mass, 1e-9)
+                inv_b = 0.0 if (b.is_assembly_anchor or not b_can_translate) else 1.0 / max(b.mass, 1e-9)
+                inv_sum = inv_a + inv_b
+                time_of_impact_move_a = (0.0, 0.0, 0.0)
+                time_of_impact_move_b = (0.0, 0.0, 0.0)
+                if (
+                    relative_swept_contact is not None
+                    and relative_swept_contact.rotational
+                ):
+                    time_of_impact_move_a = rewind_component_rotational_sweep(
                         a,
-                        contact_a,
-                        normal,
-                        deform_a,
-                        contact_radius,
-                        step,
-                        failure_mode,
-                        0.5 * secondary_energy,
+                        relative_swept_contact.translation_a,
+                        relative_swept_contact.rotation_a,
+                        relative_swept_contact.time_fraction,
                     )
-                    register_collision_dent(
+                    time_of_impact_move_b = rewind_component_rotational_sweep(
                         b,
-                        contact_b,
-                        v_mul(normal, -1.0),
-                        deform_b,
+                        relative_swept_contact.translation_b,
+                        relative_swept_contact.rotation_b,
+                        relative_swept_contact.time_fraction,
+                    )
+                    handled_relative_sweeps.add(pair_key)
+                elif relative_swept_contact is not None and inv_sum > 0.0:
+                    overshoot = max(
+                        0.0,
+                        relative_swept_contact.sweep_distance_m
+                        - relative_swept_contact.travel_to_contact_m,
+                    )
+                    if overshoot > 0.0:
+                        correction = v_mul(
+                            relative_swept_contact.direction,
+                            overshoot / inv_sum,
+                        )
+                        time_of_impact_move_a = translate_component_for_collision(
+                            a,
+                            v_mul(correction, -inv_a),
+                        )
+                        time_of_impact_move_b = translate_component_for_collision(
+                            b,
+                            v_mul(correction, inv_b),
+                        )
+                        contact = v_add(contact, time_of_impact_move_b)
+                    handled_relative_sweeps.add(pair_key)
+                if not is_swept_pair and relative_swept_contact is not None:
+                    later_perforation = relative_swept_perforation_contact(
+                        a,
+                        b,
+                        relative_swept_contact,
+                        MOTION_DT,
+                    )
+                    if later_perforation is not None:
+                        pending_swept_contact = later_perforation
+                        is_swept_pair = True
+                if is_swept_pair and pending_swept_contact is not None and pending_swept_contact.perforated:
+                    impact_axis = pending_swept_contact.approach_axis
+                    moving_surface_point = v_add(
+                        pending_swept_contact.point,
+                        v_mul(impact_axis, pending_swept_contact.approach_penetration),
+                    )
+                    impact_depth = max(
+                        pending_swept_contact.approach_penetration,
+                        pending_swept_contact.depth,
+                        2.0 * COLLISION_MIN_OVERLAP_M,
+                    )
+                    contact_radius = hertz_contact_area_radius(
+                        pending_swept_contact.moving,
+                        pending_swept_contact.stationary,
+                        impact_depth,
+                        geometry=pending_swept_contact.contact_geometry,
+                    )
+                    indent_moving, indent_stationary = split_contact_indentation(
+                        pending_swept_contact.moving,
+                        pending_swept_contact.stationary,
+                        impact_depth,
+                    )
+                    deform_moving = deform_component_at_contact(
+                        pending_swept_contact.moving,
+                        moving_surface_point,
+                        v_mul(impact_axis, -1.0),
+                        indent_moving,
+                        contact_radius,
+                    )
+                    deform_stationary = deform_component_at_contact(
+                        pending_swept_contact.stationary,
+                        pending_swept_contact.point,
+                        impact_axis,
+                        indent_stationary,
+                        contact_radius,
+                    )
+                    deform_collision_reference(
+                        pending_swept_contact.moving,
+                        moving_surface_point,
+                        v_mul(impact_axis, -1.0),
+                        deform_moving,
+                        contact_radius,
+                    )
+                    deform_collision_reference(
+                        pending_swept_contact.stationary,
+                        pending_swept_contact.point,
+                        impact_axis,
+                        deform_stationary,
+                        contact_radius,
+                    )
+                    hole_damage = register_collision_hole(
+                        pending_swept_contact.stationary,
+                        pending_swept_contact.point,
+                        impact_axis,
+                        pending_swept_contact.hole_radius,
                         contact_radius,
                         step,
-                        failure_mode,
-                        0.5 * secondary_energy,
+                        pending_swept_contact.failure_mode,
+                        pending_swept_contact.absorbed_energy_j,
                     )
+                    removed_triangles = 0
+                    pending_swept_contact.moving.linear_velocity = v_mul(
+                        impact_axis,
+                        pending_swept_contact.residual_speed,
+                    )
+                    pending_swept_contact.moving.angular_velocity = (0.0, 0.0, 0.0)
+                    pending_swept_contact.moving.freedom.source = "post-perforation-ballistic"
+                    pending_swept_contact.moving.filtered_force = (0.0, 0.0, 0.0)
+                    pending_swept_contact.moving.filtered_moment = (0.0, 0.0, 0.0)
+                    pending_swept_contact.moving.aerodynamic_load_initialized = False
                     apply_nearby_collision_effects(
                         components,
-                        (a, b),
-                        contact,
-                        normal,
+                        (pending_swept_contact.moving, pending_swept_contact.stationary),
+                        pending_swept_contact.point,
+                        impact_axis,
                         contact_radius,
-                        secondary_energy,
+                        pending_swept_contact.absorbed_energy_j,
                         step,
-                        failure_mode,
+                        pending_swept_contact.failure_mode,
                     )
-                    if is_swept_pair:
-                        assert pending_swept_contact is not None
-                        unresolved_overlap = max(
-                            0.0,
-                            pending_swept_contact.depth
-                            - correction_mag
-                            - deform_a
-                            - deform_b,
-                        )
-                        if unresolved_overlap > COLLISION_MIN_OVERLAP_M:
-                            closure = translate_component_for_collision(
-                                pending_swept_contact.moving,
-                                v_mul(pending_swept_contact.normal, unresolved_overlap),
-                            )
-                            if a is pending_swept_contact.moving:
-                                applied_a = v_add(applied_a, closure)
-                            else:
-                                applied_b = v_add(applied_b, closure)
-                        pending_swept_contact.moving.filtered_force = (0.0, 0.0, 0.0)
-                        pending_swept_contact.moving.filtered_moment = (0.0, 0.0, 0.0)
-                        pending_swept_contact.moving.aerodynamic_load_initialized = False
+                    deform_a = deform_moving if a is pending_swept_contact.moving else deform_stationary
+                    deform_b = deform_moving if b is pending_swept_contact.moving else deform_stationary
                     line = (
                         f"{step}\t{collision_pass}\t{a.patch}\t{b.patch}\t"
                         f"{depth:.8g}\t{normal[0]:.8g}\t{normal[1]:.8g}\t{normal[2]:.8g}\t"
                         f"{contact[0]:.8g}\t{contact[1]:.8g}\t{contact[2]:.8g}\t"
-                        f"{impulse_mag:.8g}\t{v_norm(applied_a):.8g}\t{v_norm(applied_b):.8g}\t"
-                        f"{deform_a:.8g}\t{deform_b:.8g}\t{contact_radius:.8g}\t{indent_a:.8g}\t{indent_b:.8g}\t"
-                        f"{failure_mode}\t"
-                        f"0\t{pending_swept_contact.absorbed_energy_j if is_swept_pair and pending_swept_contact else 0.0:.8g}\t"
-                        f"{pending_swept_contact.residual_speed if is_swept_pair and pending_swept_contact else 0.0:.8g}\t0\t"
-                        f"{logged_manifold_points}\t{friction:.8g}"
+                        f"0\t0\t0\t{deform_a:.8g}\t{deform_b:.8g}\t"
+                        f"{hole_damage.current_hole_radius_m:.8g}\t0\t0\t"
+                        f"{pending_swept_contact.failure_mode}\t1\t{pending_swept_contact.absorbed_energy_j:.8g}\t"
+                        f"{pending_swept_contact.residual_speed:.8g}\t{removed_triangles}\t"
+                        f"{pending_swept_contact.manifold_points}\t0"
                     )
                     lines.append(line)
-                    if is_swept_pair:
-                        pending_swept_contact = None
+                    pending_swept_contact = None
+                    continue
+                contact_a = contact
+                contact_b = contact
+                contact_geometry = (
+                    pending_swept_contact.contact_geometry
+                    if is_swept_pair and pending_swept_contact is not None
+                    else None
+                )
+                if is_swept_pair:
+                    assert pending_swept_contact is not None
+                    moving_surface_point = v_add(
+                        pending_swept_contact.point,
+                        v_mul(
+                            pending_swept_contact.approach_axis,
+                            pending_swept_contact.approach_penetration,
+                        ),
+                    )
+                    if a is pending_swept_contact.moving:
+                        contact_a = moving_surface_point
+                    else:
+                        contact_b = moving_surface_point
+                if contact_geometry is None:
+                    contact_geometry = local_contact_geometry(
+                        a,
+                        b,
+                        contact_a,
+                        contact_b,
+                        normal,
+                    )
+                contact_radius = hertz_contact_area_radius(
+                    a,
+                    b,
+                    depth,
+                    geometry=contact_geometry,
+                )
+                indent_a, indent_b = split_contact_indentation(a, b, depth)
+                elastic_indentation = min(depth, indent_a + indent_b)
+                rigid_overlap = max(0.0, depth - elastic_indentation)
+                # The overlap returned by the broad phase is not a local
+                # penetration measurement.  A small projectile crossing a
+                # large plate can therefore report the plate's full span.
+                # Project only a contact-scale amount per pass and let the
+                # mesh contact loop recheck the pair.  This prevents large
+                # artificial bounce translations while retaining
+                # non-penetration for genuine surface intersections.
+                contact_scale = max(
+                    4.0 * COLLISION_MIN_OVERLAP_M,
+                    2.0 * contact_radius,
+                )
+                correction_depth = rigid_overlap
+                if (
+                    relative_swept_contact is None
+                    and not is_swept_pair
+                    and rigid_overlap > 4.0 * contact_scale
+                ):
+                    correction_depth = contact_scale
+                correction_mag = correction_depth * max(
+                    0.0,
+                    min(COLLISION_POSITION_CORRECTION, 1.0),
+                )
+                applied_a = time_of_impact_move_a
+                applied_b = time_of_impact_move_b
+                if inv_sum > 0.0 and correction_mag > 0.0:
+                    corr = v_mul(normal, correction_mag / inv_sum)
+                    applied_a = translate_component_for_collision(a, v_mul(corr, inv_a))
+                    applied_b = translate_component_for_collision(b, v_mul(corr, -inv_b))
+                if (
+                    not a_can_translate
+                    and v_norm(applied_a) <= 1e-14
+                    and component_has_rotation_freedom(a)
+                ):
+                    rotate_component_for_collision(a, normal, contact, depth)
+                if (
+                    not b_can_translate
+                    and v_norm(applied_b) <= 1e-14
+                    and component_has_rotation_freedom(b)
+                ):
+                    rotate_component_for_collision(b, v_mul(normal, -1.0), contact, depth)
+                rel_v = v_sub(
+                    contact_point_velocity(a, contact),
+                    contact_point_velocity(b, contact),
+                )
+                rel_normal = v_dot(rel_v, normal)
+                impulse_mag = 0.0
+                tangent_impulse = (0.0, 0.0, 0.0)
+                friction = contact_friction_coefficient(a, b)
+                persistent_contact, is_new_contact = persistent_contact_for_pair(
+                    a,
+                    b,
+                    step,
+                    normal,
+                    contact,
+                )
+                normal_inverse_mass = (
+                    contact_inverse_mass(a, contact, normal)
+                    + contact_inverse_mass(b, contact, normal)
+                )
+                if normal_inverse_mass > 0.0 and rel_normal < 0.0:
+                    restitution = contact_restitution_coefficient(
+                        a,
+                        b,
+                        (
+                            COLLISION_PRESCRIBED_IMPACT_RESTITUTION
+                            if is_swept_pair
+                            else COLLISION_RESTITUTION
+                        ),
+                    ) if is_new_contact else 0.0
+                    impulse_mag = -(1.0 + restitution) * rel_normal / normal_inverse_mass
+                    impulse = v_mul(normal, impulse_mag)
+                    apply_collision_impulse(a, impulse, contact)
+                    apply_collision_impulse(b, v_mul(impulse, -1.0), contact)
+                    rel_v = v_sub(
+                        contact_point_velocity(a, contact),
+                        contact_point_velocity(b, contact),
+                    )
+                    rel_normal_after = v_dot(rel_v, normal)
+                    tangent = v_sub(rel_v, v_mul(normal, rel_normal_after))
+                    tmag = v_norm(tangent)
+                    if tmag > 1e-12 and friction > 0.0:
+                        tdir = v_mul(tangent, 1.0 / tmag)
+                        tangent_inverse_mass = (
+                            contact_inverse_mass(a, contact, tdir)
+                            + contact_inverse_mass(b, contact, tdir)
+                        )
+                        jt = min(
+                            tmag / max(tangent_inverse_mass, 1e-12),
+                            impulse_mag * friction,
+                        )
+                        timpulse = v_mul(tdir, -jt)
+                        apply_collision_impulse(a, timpulse, contact)
+                        apply_collision_impulse(b, v_mul(timpulse, -1.0), contact)
+                        tangent_impulse = timpulse
+                    persistent_contact.accumulated_normal_impulse_ns += impulse_mag
+                    persistent_contact.accumulated_tangent_impulse = v_add(
+                        persistent_contact.accumulated_tangent_impulse,
+                        tangent_impulse,
+                    )
+                    impulse_resolved_pairs.add(pair_key)
+                elif inv_sum <= 0.0:
+                    pseudo_force = v_mul(normal, max(depth, COLLISION_MIN_OVERLAP_M) * max(a.mass, b.mass, DEFAULT_PART_MASS_KG) / max(MOTION_DT, 1e-9))
+                    apply_collision_impulse(a, pseudo_force, contact)
+                    apply_collision_impulse(b, v_mul(pseudo_force, -1.0), contact)
+                deform_a = deform_component_at_contact(a, contact_a, normal, indent_a, contact_radius)
+                deform_b = deform_component_at_contact(b, contact_b, v_mul(normal, -1.0), indent_b, contact_radius)
+                if is_swept_pair and swept_contact is not None:
+                    failure_mode = pending_swept_contact.failure_mode
+                    logged_manifold_points = pending_swept_contact.manifold_points
+                elif relative_swept_contact is not None:
+                    failure_mode = "continuous_internal_contact"
+                    logged_manifold_points = relative_swept_contact.manifold_points
+                else:
+                    failure_mode = "elastic_contact"
+                    logged_manifold_points = 1
+                absorbed_energy = (
+                    pending_swept_contact.absorbed_energy_j
+                    if is_swept_pair and pending_swept_contact is not None
+                    else 0.0
+                )
+                secondary_energy = absorbed_energy
+                if secondary_energy <= 1e-12 and impulse_mag > 0.0:
+                    secondary_energy = (
+                        0.5
+                        * impulse_mag
+                        * impulse_mag
+                        * normal_inverse_mass
+                    )
+                register_collision_dent(
+                    a,
+                    contact_a,
+                    normal,
+                    deform_a,
+                    contact_radius,
+                    step,
+                    failure_mode,
+                    0.5 * secondary_energy,
+                )
+                register_collision_dent(
+                    b,
+                    contact_b,
+                    v_mul(normal, -1.0),
+                    deform_b,
+                    contact_radius,
+                    step,
+                    failure_mode,
+                    0.5 * secondary_energy,
+                )
+                apply_nearby_collision_effects(
+                    components,
+                    (a, b),
+                    contact,
+                    normal,
+                    contact_radius,
+                    secondary_energy,
+                    step,
+                    failure_mode,
+                )
+                if is_swept_pair:
+                    assert pending_swept_contact is not None
+                    unresolved_overlap = max(
+                        0.0,
+                        pending_swept_contact.depth
+                        - correction_mag
+                        - deform_a
+                        - deform_b,
+                    )
+                    if unresolved_overlap > COLLISION_MIN_OVERLAP_M:
+                        closure = translate_component_for_collision(
+                            pending_swept_contact.moving,
+                            v_mul(pending_swept_contact.normal, unresolved_overlap),
+                        )
+                        if a is pending_swept_contact.moving:
+                            applied_a = v_add(applied_a, closure)
+                        else:
+                            applied_b = v_add(applied_b, closure)
+                    pending_swept_contact.moving.filtered_force = (0.0, 0.0, 0.0)
+                    pending_swept_contact.moving.filtered_moment = (0.0, 0.0, 0.0)
+                    pending_swept_contact.moving.aerodynamic_load_initialized = False
+                line = (
+                    f"{step}\t{collision_pass}\t{a.patch}\t{b.patch}\t"
+                    f"{depth:.8g}\t{normal[0]:.8g}\t{normal[1]:.8g}\t{normal[2]:.8g}\t"
+                    f"{contact[0]:.8g}\t{contact[1]:.8g}\t{contact[2]:.8g}\t"
+                    f"{impulse_mag:.8g}\t{v_norm(applied_a):.8g}\t{v_norm(applied_b):.8g}\t"
+                    f"{deform_a:.8g}\t{deform_b:.8g}\t{contact_radius:.8g}\t{indent_a:.8g}\t{indent_b:.8g}\t"
+                    f"{failure_mode}\t"
+                    f"0\t{pending_swept_contact.absorbed_energy_j if is_swept_pair and pending_swept_contact else 0.0:.8g}\t"
+                    f"{pending_swept_contact.residual_speed if is_swept_pair and pending_swept_contact else 0.0:.8g}\t0\t"
+                    f"{logged_manifold_points}\t{friction:.8g}"
+                )
+                lines.append(line)
+                if is_swept_pair:
+                    pending_swept_contact = None
             if not any_collision:
                 break
         enforce_attachment_constraints(components)
@@ -5327,6 +5530,19 @@ def resolve_part_collisions(
             break
         if not unresolved_overlap_remains(current_active_components()):
             break
+    collision_resolution_elapsed = time.monotonic() - collision_resolution_started
+    if brute_force_pair_checks:
+        reduction_percent = 100.0 * (
+            1.0 - broad_phase_candidates / brute_force_pair_checks
+        )
+        print(
+            "Collision broad phase: "
+            f"peak {peak_active_bodies} bodies, "
+            f"tested {broad_phase_candidates}/{brute_force_pair_checks} "
+            "conservative swept pairs "
+            f"({max(0.0, reduction_percent):.1f}% pruned), "
+            f"resolution {collision_resolution_elapsed:.2f}s."
+        )
     if lines:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a") as f:

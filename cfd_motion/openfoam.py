@@ -1258,8 +1258,9 @@ def make_case_from_components(components: Sequence[AeroComponent], case: Path, c
         shutil.rmtree(case)
     case.mkdir(parents=True, exist_ok=True)
 
+    cfd_components = [component for component in components if component.triangles]
     all_points: List[Vec3] = []
-    for c in components:
+    for c in cfd_components:
         all_points.extend(stl_points(c.triangles))
     if not all_points:
         raise ValueError("No geometry triangles were available for the CFD case")
@@ -1315,24 +1316,24 @@ def make_case_from_components(components: Sequence[AeroComponent], case: Path, c
     )
 
     near_body_distance = NEAR_BODY_REFINEMENT_LENGTHS * length
-    patch_names = [c.patch for c in components]
+    patch_names = [c.patch for c in cfd_components]
     base_cell_width = max(
         dom_dx / cells[0],
         dom_dy / cells[1],
         dom_dz / cells[2],
     )
     surface_refinement_levels = adaptive_surface_refinement_levels(
-        components,
+        cfd_components,
         base_cell_width,
     )
     region_refinement_settings = adaptive_region_refinement_settings(
-        components,
+        cfd_components,
         base_cell_width,
         near_body_distance,
         surface_refinement_levels,
     )
 
-    for c in components:
+    for c in cfd_components:
         write_ascii_stl_triangles(case / "constant/triSurface" / f"{c.patch}.stl", c.patch, c.triangles, SCALE)
 
     overall_aref = max(dy * dz, 1e-12)
@@ -1347,8 +1348,8 @@ def make_case_from_components(components: Sequence[AeroComponent], case: Path, c
     )
     write_constant(case)
     write_fields(case, VELOCITY, patch_names)
-    write_system(case, components, overall_aref, length, (cx, cy, cz))
-    write_unsteady_fsi_gap_report(case, components)
+    write_system(case, cfd_components, overall_aref, length, (cx, cy, cz))
+    write_unsteady_fsi_gap_report(case, cfd_components)
     mesh_resolution_lines = [
         "# Per-component surface-mesh resolution",
         f"base_cell_width_m={base_cell_width:.8g}",
@@ -1357,7 +1358,7 @@ def make_case_from_components(components: Sequence[AeroComponent], case: Path, c
         "",
         "patch\tcross_section_m\tsurface_level_min\tsurface_level_max\tregion_distance_m\tregion_level\testimated_finest_cell_m",
     ]
-    for component in components:
+    for component in cfd_components:
         level_min, level_max = surface_refinement_levels[component.patch]
         region_distance, region_level = region_refinement_settings[component.patch]
         mesh_resolution_lines.append(

@@ -15,6 +15,7 @@ from cfd_motion.motion import (
     apply_nearby_collision_effects,
     arrange_collision_convergence_initial_gap,
     closest_point_on_triangle,
+    collision_broad_phase_pairs,
     collision_convergence_approach_axis,
     collision_angular_speed_limit,
     component_has_decoded_assembly_mate,
@@ -67,7 +68,11 @@ from cfd_motion.structural import (
     _fragment_merge_span_limit_m,
     advance_hybrid_shell_collision,
     build_explicit_shell_state,
+    build_hybrid_fem_mpm_collision_state,
     build_hybrid_shell_collision_state,
+    commit_explicit_shell_topology,
+    commit_hybrid_fem_mpm_failure_topology,
+    emit_shell_fragments,
     shell_fragment_triangles,
     shell_fragment_velocity,
     shell_triangle_von_mises_stress_pa,
@@ -284,6 +289,345 @@ def sphere_component(
 
 
 class CollisionConvergenceTest(TestCase):
+    def test_new_fragment_has_no_precreation_swept_path(self) -> None:
+        fragment = rectangular_component(
+            "new_fragment", 1.0, 1.1, -0.05, 0.05, -0.05, 0.05
+        )
+        obstacle = rectangular_component(
+            "obstacle", 0.0, 0.1, -0.05, 0.05, -0.05, 0.05
+        )
+        fragment.linear_velocity = (100.0, 0.0, 0.0)
+        fragment.collision_fragment_parent_state = object()
+        fragment.collision_fragment_created_step = 4
+
+        with (
+            patch("cfd_motion.motion.MOTION_DT", 0.02),
+            TemporaryDirectory() as temp_dir,
+        ):
+            log_path = Path(temp_dir) / "collision.tsv"
+            fresh_lines = resolve_part_collisions(
+                [fragment, obstacle],
+                4,
+                log_path,
+            )
+            fragment.collision_fragment_created_step = 3
+            later_lines = resolve_part_collisions(
+                [fragment, obstacle],
+                4,
+                log_path,
+            )
+
+        self.assertEqual(fresh_lines, [])
+        self.assertTrue(later_lines)
+
+    def test_fem_fragment_proxy_cannot_spawn_a_nested_shell_solver(self) -> None:
+        impactor = box_component("impactor", -0.1, 0.0)
+        fragment = rectangular_component(
+            "fem_fragment",
+            0.0,
+            1e-6,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        fragment.collision_fragment_parent_state = object()
+        fragment.linear_velocity = (7.0, 2.0, 0.0)
+        triangles_before = list(fragment.triangles)
+
+        response = thin_shell_impact_response(
+            impactor,
+            fragment,
+            1000.0,
+            fragment.cofr,
+            (-1.0, 0.0, 0.0),
+        )
+
+        self.assertIsNone(response)
+        self.assertIsNone(fragment.collision_structural_state)
+        self.assertEqual(fragment.triangles, triangles_before)
+        self.assertEqual(fragment.linear_velocity, (7.0, 2.0, 0.0))
+
+    def test_registering_fem_holes_commits_topology_without_advancing_time(self) -> None:
+        target = rectangular_component(
+            "solid_target",
+            0.0,
+            1.0,
+            -0.5,
+            0.5,
+            -0.5,
+            0.5,
+        )
+        target.mass = 12.0
+        target.material = MaterialProperties(
+            material_name="steel",
+            density_kg_m3=7850.0,
+            young_modulus_pa=2.0e11,
+            poisson_ratio=0.3,
+            yield_strength_pa=2.5e8,
+            failure_strain=0.2,
+        )
+        state = build_hybrid_fem_mpm_collision_state(
+            target,
+            2.0e11,
+            0.3,
+            2.5e8,
+            0.2,
+            0.25,
+            64,
+        )
+        target.collision_structural_state = state
+        initial_mass = target.mass
+        positions_before = list(state.solid_state.positions)
+
+        with patch("cfd_motion.motion.advance_hybrid_fem_mpm_collision") as advance:
+            register_collision_hole(
+                target,
+                (1.0, 0.0, 0.0),
+                (-1.0, 0.0, 0.0),
+                0.4,
+                0.1,
+                0,
+                "plastic_membrane_perforation",
+                10.0,
+            )
+
+        advance.assert_not_called()
+        self.assertEqual(state.solid_state.positions, positions_before)
+        self.assertTrue(state.fragment_bodies)
+        self.assertAlmostEqual(
+            target.mass
+            + sum(fragment.mass_kg for fragment in state.fragment_bodies),
+            initial_mass,
+        )
+
+    def test_registering_shell_holes_refreshes_geometry_without_advancing_time(self) -> None:
+        target = rectangular_component(
+            "thin_target",
+            0.0,
+            0.0001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        target.material = MaterialProperties(
+            material_name="ABS",
+            density_kg_m3=1040.0,
+            young_modulus_pa=2.0e9,
+            poisson_ratio=0.35,
+            thickness_m=0.0001,
+            yield_strength_pa=4.0e7,
+            failure_strain=0.2,
+        )
+        initial_triangles = list(target.triangles)
+
+        with (
+            patch("cfd_motion.motion.advance_hybrid_shell_collision") as hybrid_advance,
+            patch("cfd_motion.motion.advance_explicit_shell") as shell_advance,
+        ):
+            register_collision_hole(
+                target,
+                (0.00005, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                0.01,
+                0.004,
+                0,
+                "plastic_membrane_perforation",
+                1.0,
+            )
+
+        hybrid_advance.assert_not_called()
+        shell_advance.assert_not_called()
+        self.assertNotEqual(target.triangles, initial_triangles)
+        self.assertTrue(shell_core_state(target).emitted_triangles)
+
+    def test_parent_motion_does_not_move_detached_fem_particles_twice(self) -> None:
+        parent = rectangular_component(
+            "solid_parent", 0.0, 1.0, -0.5, 0.5, -0.5, 0.5
+        )
+        parent.mass = 12.0
+        state = build_hybrid_fem_mpm_collision_state(
+            parent,
+            1.0e7,
+            0.3,
+            1.0e6,
+            0.2,
+            0.25,
+            64,
+        )
+        parent.collision_structural_state = state
+        state.solid_state.elements[0].failed = True
+        commit_hybrid_fem_mpm_failure_topology(parent, state)
+        fragment = state.fragment_bodies[0].component
+        particles = [
+            particle
+            for particle in state.solid_state.particles
+            if particle.source_element == 0
+        ]
+        before = [particle.position for particle in particles]
+
+        move_component_rigidly(
+            parent,
+            (0.5, 0.0, 0.0),
+            None,
+            0.0,
+            parent.cofr,
+        )
+        self.assertEqual([particle.position for particle in particles], before)
+
+        move_component_rigidly(
+            fragment,
+            (0.25, 0.0, 0.0),
+            None,
+            0.0,
+            fragment.cofr,
+        )
+        self.assertEqual(
+            [particle.position for particle in particles],
+            [(point[0] + 0.25, point[1], point[2]) for point in before],
+        )
+
+    def test_fem_topology_commit_is_idempotent_for_failure_burst(self) -> None:
+        parent = rectangular_component(
+            "burst_parent", 0.0, 1.0, -0.5, 0.5, -0.5, 0.5
+        )
+        parent.mass = 12.0
+        initial_mass = parent.mass
+        state = build_hybrid_fem_mpm_collision_state(
+            parent,
+            1.0e7,
+            0.3,
+            1.0e6,
+            0.2,
+            0.25,
+            64,
+        )
+        parent.collision_structural_state = state
+        state.solid_state.elements[0].failed = True
+        state.solid_state.elements[1].failed = True
+
+        first = commit_hybrid_fem_mpm_failure_topology(parent, state)
+        first_fragment_count = len(state.fragment_bodies)
+        second = commit_hybrid_fem_mpm_failure_topology(parent, state)
+
+        self.assertEqual(first[1], 2)
+        self.assertGreater(first[2], 0.0)
+        self.assertEqual(second[1:], (0, 0.0))
+        self.assertEqual(len(state.fragment_bodies), first_fragment_count)
+        self.assertAlmostEqual(
+            parent.mass
+            + sum(fragment.component.mass for fragment in state.fragment_bodies),
+            initial_mass,
+            delta=1e-12,
+        )
+
+    def test_swept_broad_phase_keeps_linear_and_rotational_contacts(self) -> None:
+        translating = rectangular_component(
+            "translating", 1.0, 1.1, -0.05, 0.05, -0.05, 0.05
+        )
+        translation_target = rectangular_component(
+            "translation_target", 0.05, 0.15, -0.05, 0.05, -0.05, 0.05
+        )
+        translating.linear_velocity = (1.0, 0.0, 0.0)
+
+        rotating = rectangular_component(
+            "rotating", -0.05, 0.05, 0.9, 1.1, -0.05, 0.05
+        )
+        rotation_target = rectangular_component(
+            "rotation_target", 0.9, 1.1, -0.05, 0.05, -0.05, 0.05
+        )
+        rotating.motion_origin = (0.0, 0.0, 0.0)
+        rotating.angular_velocity = (0.0, 0.0, math.pi / 2.0)
+
+        components = [
+            translating,
+            translation_target,
+            rotating,
+            rotation_target,
+        ]
+        candidates = set(collision_broad_phase_pairs(components, 1.0))
+
+        self.assertIn((0, 1), candidates)
+        self.assertIn((2, 3), candidates)
+
+    def test_broad_phase_contains_exact_contacts_and_preserves_indices(self) -> None:
+        dt = 0.02
+        scenarios = []
+        positive = rectangular_component(
+            "positive", 1.0, 1.1, -0.05, 0.05, -0.05, 0.05
+        )
+        positive.linear_velocity = (100.0, 0.0, 0.0)
+        positive_target = rectangular_component(
+            "positive_target", 0.0, 0.1, -0.05, 0.05, -0.05, 0.05
+        )
+        scenarios.append((positive, positive_target))
+
+        negative = rectangular_component(
+            "negative", -1.1, -1.0, -0.05, 0.05, -0.05, 0.05
+        )
+        negative.linear_velocity = (-100.0, 0.0, 0.0)
+        negative_target = rectangular_component(
+            "negative_target", -0.1, 0.0, -0.05, 0.05, -0.05, 0.05
+        )
+        scenarios.append((negative, negative_target))
+
+        separating_a = rectangular_component(
+            "separating_a", 1.0, 1.1, -0.05, 0.05, -0.05, 0.05
+        )
+        separating_b = rectangular_component(
+            "separating_b", -1.1, -1.0, -0.05, 0.05, -0.05, 0.05
+        )
+        separating_a.linear_velocity = (60.0, 0.0, 0.0)
+        separating_b.linear_velocity = (-60.0, 0.0, 0.0)
+        scenarios.append((separating_a, separating_b))
+
+        for first, second in scenarios:
+            self.assertIsNotNone(
+                swept_relative_component_contact(first, second, dt)
+            )
+            self.assertIn(
+                (0, 1),
+                collision_broad_phase_pairs([first, second], dt),
+            )
+
+        empty = AeroComponent(
+            name="empty",
+            patch="empty",
+            triangles=[],
+            cofr=(0.0, 0.0, 0.0),
+            lref=1.0,
+            aref=1.0,
+        )
+        current_a = rectangular_component(
+            "current_a", 0.0, 0.2, -0.1, 0.1, -0.1, 0.1
+        )
+        current_b = rectangular_component(
+            "current_b", 0.1, 0.3, -0.1, 0.1, -0.1, 0.1
+        )
+        self.assertEqual(
+            collision_broad_phase_pairs([empty, current_a, current_b], 0.0),
+            [(1, 2)],
+        )
+
+    def test_sweep_and_prune_rejects_quadratic_far_body_pairs(self) -> None:
+        components = [
+            rectangular_component(
+                f"fragment_{index}",
+                2.0 * index,
+                2.0 * index + 0.01,
+                0.0,
+                0.01,
+                0.0,
+                0.01,
+            )
+            for index in range(250)
+        ]
+
+        candidates = collision_broad_phase_pairs(components, 0.01)
+
+        self.assertEqual(candidates, [])
+
     def test_internal_collision_does_not_stop_prescribed_target_approach(self) -> None:
         moving = rectangular_component(
             "part1_main", -0.2, -0.1, -0.2, -0.05, -0.05, 0.05
@@ -2267,6 +2611,71 @@ class CollisionConvergenceTest(TestCase):
         )
         return target, state
 
+    def test_complete_shell_failure_keeps_one_mass_conserving_carrier(self) -> None:
+        target, state = self._fragment_test_state()
+        shell = state.shell_state
+        initial_mass = target.mass
+        all_indices = set(range(len(shell.triangle_nodes)))
+        shell.plug_triangles.update(all_indices)
+
+        emitted_count, emitted_mass = sync_hybrid_shell_fragments(target, state)
+        target.mass -= emitted_mass
+        commit_explicit_shell_topology(target, shell)
+
+        owned = set().union(
+            *(fragment.triangle_indices for fragment in state.fragment_bodies)
+        )
+        attached = all_indices - shell.emitted_triangles
+        self.assertEqual(emitted_count, len(all_indices) - 1)
+        self.assertEqual(len(attached), 1)
+        self.assertTrue(attached.isdisjoint(owned))
+        self.assertEqual(attached | owned, all_indices)
+        self.assertAlmostEqual(
+            target.mass
+            + sum(fragment.component.mass for fragment in state.fragment_bodies),
+            initial_mass,
+            delta=1e-12,
+        )
+
+    def test_explicit_shell_complete_failure_reserves_mass_carrier_before_emit(self) -> None:
+        target, hybrid = self._fragment_test_state()
+        shell = hybrid.shell_state
+        all_indices = set(range(len(shell.triangle_nodes)))
+        shell.plug_triangles.update(all_indices)
+
+        emitted_count, emitted_mass = emit_shell_fragments(shell)
+        commit_explicit_shell_topology(target, shell)
+
+        attached = all_indices - shell.emitted_triangles
+        self.assertEqual(emitted_count, len(all_indices) - 1)
+        self.assertEqual(len(attached), 1)
+        self.assertAlmostEqual(
+            emitted_mass
+            + sum(shell.triangle_masses_kg[index] for index in attached),
+            sum(shell.triangle_masses_kg),
+            delta=1e-12,
+        )
+
+    def test_real_hybrid_shell_fragment_cannot_spawn_nested_solver(self) -> None:
+        target, state = self._fragment_test_state()
+        shell = state.shell_state
+        shell.plug_triangles.add(0)
+        sync_hybrid_shell_fragments(target, state)
+        fragment = state.fragment_bodies[0].component
+        impactor = box_component("fragment_impactor", -0.1, 0.0)
+
+        response = thin_shell_impact_response(
+            impactor,
+            fragment,
+            1000.0,
+            fragment.cofr,
+            (-1.0, 0.0, 0.0),
+        )
+
+        self.assertIs(fragment.collision_fragment_parent_state, state)
+        self.assertIsNone(response)
+        self.assertIsNone(fragment.collision_structural_state)
+
     def test_ductile_plug_radius_is_not_inflated_by_contact_or_thickness(self) -> None:
         _target, state = self._fragment_test_state()
         radius = _fragment_detachment_radius_m(state.shell_state, 0.046)
@@ -2367,6 +2776,39 @@ class CollisionConvergenceTest(TestCase):
             sum(fragment.component.mass for fragment in state.fragment_bodies),
             expected_mass,
             delta=1e-12,
+        )
+
+    def test_incremental_fragment_merge_applies_parent_reaction_once(self) -> None:
+        target, state = self._fragment_test_state()
+        target.freedom.translate_axes = [
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        ]
+        shell = state.shell_state
+        shell.velocities = [(50.0, 30.0, 0.0) for _ in shell.velocities]
+        first, second = 0, 1
+
+        shell.plug_triangles.add(first)
+        _count, first_mass = sync_hybrid_shell_fragments(target, state)
+        target.mass -= first_mass
+
+        velocity_before_second = target.linear_velocity[1]
+        mass_before_second = target.mass
+        shell.plug_triangles.add(second)
+        _count, second_mass = sync_hybrid_shell_fragments(target, state)
+        target.mass -= second_mass
+
+        # Ductile fragment scatter is clamped from 30 m/s transverse to
+        # 5 m/s (10% of its 50 m/s axial speed). The removed 25 m/s momentum
+        # is applied to the remaining parent exactly once for the new mass.
+        expected_increment = (
+            25.0 * second_mass / (mass_before_second - second_mass)
+        )
+        self.assertAlmostEqual(
+            target.linear_velocity[1] - velocity_before_second,
+            expected_increment,
+            delta=1e-10,
         )
 
     def test_normal_ductile_plug_speed_is_bounded_by_source_node_speeds(self) -> None:

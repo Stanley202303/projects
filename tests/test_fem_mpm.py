@@ -1,13 +1,17 @@
+import copy
 import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 import xml.etree.ElementTree as ElementTree
 
+import cfd_motion.fem_mpm as fem_mpm_module
+import pytest
 from cfd_motion.fem_mpm import (
     HybridFEMMPMState,
     MPMParticle,
     advance_fem,
+    advance_mpm,
     element_force_and_energy,
     make_tetra_element,
 )
@@ -40,11 +44,77 @@ def _state():
     return HybridFEMMPMState(positions, [(2.0, 0.0, 0.0)] * 4, [1.0] * 4, [element])
 
 
+def _two_tetra_state(failure_strain=0.25):
+    reference_positions = [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, -1.0),
+    ]
+    elements = [
+        make_tetra_element(
+            reference_positions,
+            (0, 1, 2, 3),
+            2.5e6,
+            0.27,
+            5.0e3,
+            failure_strain,
+            0.8,
+        ),
+        make_tetra_element(
+            reference_positions,
+            (0, 2, 1, 4),
+            3.1e6,
+            0.31,
+            7.0e3,
+            failure_strain,
+            0.7,
+        ),
+    ]
+    positions = list(reference_positions)
+    positions[1] = (1.006, 0.002, -0.001)
+    positions[2] = (-0.002, 0.996, 0.003)
+    return HybridFEMMPMState(
+        positions=positions,
+        velocities=[
+            (0.03, -0.02, 0.01),
+            (-0.01, 0.04, 0.0),
+            (0.02, 0.01, -0.03),
+            (0.0, -0.02, 0.04),
+            (-0.03, 0.0, -0.01),
+        ],
+        masses_kg=[0.7, 0.8, 0.9, 0.6, 0.5],
+        elements=elements,
+        cfl=0.35,
+        max_substeps=256,
+    )
+
+
+def _assert_vectors_close(left, right, *, rel_tol=1e-11, abs_tol=1e-11):
+    assert len(left) == len(right)
+    for left_vector, right_vector in zip(left, right):
+        for left_value, right_value in zip(left_vector, right_vector):
+            assert math.isclose(
+                left_value,
+                right_value,
+                rel_tol=rel_tol,
+                abs_tol=abs_tol,
+            )
+
+
 def test_fem_translation_preserves_mass_and_momentum():
     state = _state()
     audit = advance_fem(state, 1.0e-4)
     assert math.isclose(audit.mass_before_kg, audit.mass_after_kg, abs_tol=1.0e-12)
     assert all(abs(value) < 1.0e-8 for value in audit.momentum_error)
+
+
+def test_fem_refuses_to_exceed_the_configured_cfl_substep_cap():
+    state = _state()
+    state.max_substeps = 1
+    with pytest.raises(RuntimeError, match="FEM CFL limit requires"):
+        advance_fem(state, 1.0e-2)
 
 
 def test_failed_element_transfers_mass_to_mpm_particles_without_loss():
@@ -142,6 +212,106 @@ def test_two_failed_tetrahedra_transfer_their_exact_mass_once():
     assert math.isclose(sum(p.mass_kg for p in state.particles), 2.0, abs_tol=1e-12)
     advance_fem(state, 1e-5)
     assert len(state.particles) == 8
+
+
+def test_vectorized_fem_matches_scalar_constitutive_and_motion_results():
+    scalar_state = _two_tetra_state()
+    vectorized_state = copy.deepcopy(scalar_state)
+    external_forces = [
+        (0.3, -0.2, 0.1),
+        (-0.1, 0.05, 0.0),
+        (0.0, 0.2, -0.1),
+        (0.04, 0.0, 0.03),
+        (-0.02, -0.04, 0.01),
+    ]
+
+    with patch.object(fem_mpm_module, "np", None):
+        scalar_audit = advance_fem(scalar_state, 1.5e-3, external_forces)
+    vectorized_audit = advance_fem(
+        vectorized_state,
+        1.5e-3,
+        external_forces,
+    )
+
+    _assert_vectors_close(scalar_state.positions, vectorized_state.positions)
+    _assert_vectors_close(scalar_state.velocities, vectorized_state.velocities)
+    for scalar_element, vectorized_element in zip(
+        scalar_state.elements, vectorized_state.elements
+    ):
+        assert scalar_element.failed == vectorized_element.failed
+        assert math.isclose(
+            scalar_element.equivalent_plastic_strain,
+            vectorized_element.equivalent_plastic_strain,
+            rel_tol=1e-11,
+            abs_tol=1e-12,
+        )
+        assert math.isclose(
+            scalar_element.strain_energy_j,
+            vectorized_element.strain_energy_j,
+            rel_tol=1e-11,
+            abs_tol=1e-11,
+        )
+        _assert_vectors_close(
+            scalar_element.stress,
+            vectorized_element.stress,
+            rel_tol=1e-11,
+            abs_tol=1e-9,
+        )
+    assert math.isclose(
+        scalar_audit.external_work_j,
+        vectorized_audit.external_work_j,
+        rel_tol=1e-12,
+        abs_tol=1e-15,
+    )
+    assert math.isclose(
+        scalar_audit.plastic_dissipation_j,
+        vectorized_audit.plastic_dissipation_j,
+        rel_tol=1e-11,
+        abs_tol=1e-15,
+    )
+    assert math.isclose(vectorized_audit.mass_error_kg, 0.0, abs_tol=1e-12)
+
+
+def test_vectorized_failure_transfer_matches_scalar_and_conserves_mass():
+    scalar_state = _two_tetra_state(failure_strain=1e-4)
+    vectorized_state = copy.deepcopy(scalar_state)
+    zero_forces = [(0.0, 0.0, 0.0)] * len(scalar_state.positions)
+
+    with patch.object(fem_mpm_module, "np", None):
+        scalar_audit = advance_fem(scalar_state, 1e-5, zero_forces)
+    vectorized_audit = advance_fem(vectorized_state, 1e-5, zero_forces)
+
+    assert all(element.failed for element in vectorized_state.elements)
+    assert all(element.transferred for element in vectorized_state.elements)
+    assert len(scalar_state.particles) == len(vectorized_state.particles) == 8
+    assert scalar_state.masses_kg == vectorized_state.masses_kg
+    for scalar_particle, vectorized_particle in zip(
+        scalar_state.particles, vectorized_state.particles
+    ):
+        assert scalar_particle.source_element == vectorized_particle.source_element
+        assert scalar_particle.source_node == vectorized_particle.source_node
+        assert math.isclose(
+            scalar_particle.mass_kg,
+            vectorized_particle.mass_kg,
+            rel_tol=0.0,
+            abs_tol=1e-15,
+        )
+        _assert_vectors_close(
+            [scalar_particle.position],
+            [vectorized_particle.position],
+        )
+        _assert_vectors_close(
+            [scalar_particle.velocity],
+            [vectorized_particle.velocity],
+        )
+    assert math.isclose(scalar_audit.mass_error_kg, 0.0, abs_tol=1e-12)
+    assert math.isclose(vectorized_audit.mass_error_kg, 0.0, abs_tol=1e-12)
+    assert math.isclose(
+        scalar_audit.mass_after_kg,
+        vectorized_audit.mass_after_kg,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
 
 
 def _cube_component() -> AeroComponent:
@@ -427,3 +597,77 @@ def test_mpm_grid_transfer_projects_small_angular_drift_conservatively():
     assert math.sqrt(sum(value * value for value in audit.momentum_error)) < 1e-12
     assert math.sqrt(sum(value * value for value in audit.angular_momentum_error)) < 1e-12
     assert audit.angular_momentum_projection_nms > 0.0
+
+
+def test_vectorized_mpm_matches_scalar_and_conserves_mass_and_momentum():
+    particles = []
+    particle_data = [
+        ((0.13, 0.21, 0.07), (-0.21, 0.13, 0.02), 0.4, 0.0),
+        ((-0.17, -0.09, 0.11), (0.09, -0.17, 0.02), 0.6, 0.25),
+        ((0.04, -0.15, -0.18), (0.15, 0.04, -0.01), 0.3, 1.0),
+    ]
+    for index, (position, velocity, mass, damage) in enumerate(particle_data):
+        particles.append(
+            MPMParticle(
+                position=position,
+                velocity=velocity,
+                mass_kg=mass,
+                volume_m3=1e-3,
+                source_element=index,
+                young_modulus_pa=1e7,
+                poisson_ratio=0.3,
+                yield_stress_pa=1e6,
+                damage=damage,
+                deformation_gradient=(
+                    (1.01, 0.002, 0.0),
+                    (0.0, 0.995, 0.001),
+                    (0.0, 0.0, 1.003),
+                ),
+                stress=(
+                    (1000.0, 20.0, 0.0),
+                    (20.0, -500.0, 0.0),
+                    (0.0, 0.0, 100.0),
+                ),
+            )
+        )
+    scalar_state = HybridFEMMPMState(
+        positions=[],
+        velocities=[],
+        masses_kg=[],
+        elements=[],
+        particles=particles,
+        mpm_cell_size_m=0.25,
+        pic_fraction=0.2,
+    )
+    vectorized_state = copy.deepcopy(scalar_state)
+    before_mass = vectorized_state.total_mass_kg
+    before_momentum = vectorized_state.total_momentum()
+
+    with patch.object(fem_mpm_module, "np", None):
+        for _step in range(10):
+            advance_mpm(scalar_state, 1e-4)
+    for _step in range(10):
+        advance_mpm(vectorized_state, 1e-4)
+
+    for scalar_particle, vectorized_particle in zip(
+        scalar_state.particles, vectorized_state.particles
+    ):
+        assert scalar_particle.position == vectorized_particle.position
+        assert scalar_particle.velocity == vectorized_particle.velocity
+        assert (
+            scalar_particle.deformation_gradient
+            == vectorized_particle.deformation_gradient
+        )
+        assert scalar_particle.stress == vectorized_particle.stress
+    assert math.isclose(
+        vectorized_state.total_mass_kg,
+        before_mass,
+        rel_tol=0.0,
+        abs_tol=1e-15,
+    )
+    _assert_vectors_close(
+        [vectorized_state.total_momentum()],
+        [before_momentum],
+        rel_tol=0.0,
+        abs_tol=1e-14,
+    )

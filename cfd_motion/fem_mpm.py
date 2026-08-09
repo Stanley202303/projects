@@ -1,16 +1,23 @@
 """Classical explicit solid FEM with conservative FEM-to-MPM failure transfer.
 
-This module intentionally stays small and dependency-free.  Intact material is
-advanced with lumped-mass, corotational constant-strain tetrahedra.  Failed
-tetrahedra transfer their own nodal mass contributions to material points and
-are subsequently advanced on a trilinear USL MPM grid.  The transfer is exact
-for mass and linear momentum.
+Intact material is advanced with lumped-mass, corotational constant-strain
+tetrahedra.  Failed tetrahedra transfer their own nodal mass contributions to
+material points and are subsequently advanced on a trilinear USL MPM grid.  The
+transfer is exact for mass and linear momentum.  NumPy batches the independent
+tetrahedron calculations when available; the scalar implementation remains the
+reference fallback.
 """
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - exercised only on minimal installations.
+    np = None  # type: ignore[assignment]
 
 from .math_utils import v_add, v_cross, v_dot, v_mul, v_norm, v_sub
 from .models import Vec3
@@ -406,6 +413,348 @@ def element_force_and_energy(
     return forces, element.strain_energy_j, equivalent_increment
 
 
+@dataclass
+class _VectorizedFEMElements:
+    """Contiguous element data used by the optional NumPy execution path."""
+
+    nodes: Any
+    dm_inverse: Any
+    shape_gradients: Any
+    rest_volume_m3: Any
+    young_modulus_pa: Any
+    poisson_ratio: Any
+    yield_stress_pa: Any
+    failure_strain: Any
+    failed: Any
+    equivalent_plastic_strain: Any
+    strain_energy_j: Any
+    stress: Any
+
+    @classmethod
+    def from_state(cls, state: HybridFEMMPMState) -> "_VectorizedFEMElements":
+        if np is None:  # pragma: no cover - guarded by the caller.
+            raise RuntimeError("NumPy is unavailable")
+        elements = state.elements
+        return cls(
+            nodes=np.asarray([element.nodes for element in elements], dtype=np.intp),
+            dm_inverse=np.asarray(
+                [element.dm_inverse for element in elements], dtype=np.float64
+            ),
+            shape_gradients=np.asarray(
+                [element.shape_gradients for element in elements], dtype=np.float64
+            ),
+            rest_volume_m3=np.asarray(
+                [element.rest_volume_m3 for element in elements], dtype=np.float64
+            ),
+            young_modulus_pa=np.asarray(
+                [element.young_modulus_pa for element in elements], dtype=np.float64
+            ),
+            poisson_ratio=np.asarray(
+                [element.poisson_ratio for element in elements], dtype=np.float64
+            ),
+            yield_stress_pa=np.asarray(
+                [element.yield_stress_pa for element in elements], dtype=np.float64
+            ),
+            failure_strain=np.asarray(
+                [element.failure_strain for element in elements], dtype=np.float64
+            ),
+            failed=np.asarray(
+                [element.failed for element in elements], dtype=np.bool_
+            ),
+            equivalent_plastic_strain=np.asarray(
+                [element.equivalent_plastic_strain for element in elements],
+                dtype=np.float64,
+            ),
+            strain_energy_j=np.asarray(
+                [element.strain_energy_j for element in elements], dtype=np.float64
+            ),
+            stress=np.asarray(
+                [element.stress for element in elements], dtype=np.float64
+            ),
+        )
+
+    def sync_to_state(self, state: HybridFEMMPMState) -> None:
+        for index, element in enumerate(state.elements):
+            element.failed = bool(self.failed[index])
+            element.equivalent_plastic_strain = float(
+                self.equivalent_plastic_strain[index]
+            )
+            element.strain_energy_j = float(self.strain_energy_j[index])
+            element.stress = tuple(
+                tuple(float(self.stress[index, row, column]) for column in range(3))
+                for row in range(3)
+            )  # type: ignore[assignment]
+
+
+def _batch_determinants(matrices: Any) -> Any:
+    """Return explicit 3x3 determinants with scalar-operation ordering."""
+    return (
+        matrices[:, 0, 0]
+        * (
+            matrices[:, 1, 1] * matrices[:, 2, 2]
+            - matrices[:, 1, 2] * matrices[:, 2, 1]
+        )
+        - matrices[:, 0, 1]
+        * (
+            matrices[:, 1, 0] * matrices[:, 2, 2]
+            - matrices[:, 1, 2] * matrices[:, 2, 0]
+        )
+        + matrices[:, 0, 2]
+        * (
+            matrices[:, 1, 0] * matrices[:, 2, 1]
+            - matrices[:, 1, 1] * matrices[:, 2, 0]
+        )
+    )
+
+
+def _batch_inverse_transposes(matrices: Any, determinants: Any) -> Any:
+    """Return inverse transposes for nonsingular batches of 3x3 matrices."""
+    inverse_transposes = np.empty_like(matrices)
+    inverse_transposes[:, 0, 0] = (
+        matrices[:, 1, 1] * matrices[:, 2, 2]
+        - matrices[:, 1, 2] * matrices[:, 2, 1]
+    )
+    inverse_transposes[:, 0, 1] = (
+        matrices[:, 1, 2] * matrices[:, 2, 0]
+        - matrices[:, 1, 0] * matrices[:, 2, 2]
+    )
+    inverse_transposes[:, 0, 2] = (
+        matrices[:, 1, 0] * matrices[:, 2, 1]
+        - matrices[:, 1, 1] * matrices[:, 2, 0]
+    )
+    inverse_transposes[:, 1, 0] = (
+        matrices[:, 0, 2] * matrices[:, 2, 1]
+        - matrices[:, 0, 1] * matrices[:, 2, 2]
+    )
+    inverse_transposes[:, 1, 1] = (
+        matrices[:, 0, 0] * matrices[:, 2, 2]
+        - matrices[:, 0, 2] * matrices[:, 2, 0]
+    )
+    inverse_transposes[:, 1, 2] = (
+        matrices[:, 0, 1] * matrices[:, 2, 0]
+        - matrices[:, 0, 0] * matrices[:, 2, 1]
+    )
+    inverse_transposes[:, 2, 0] = (
+        matrices[:, 0, 1] * matrices[:, 1, 2]
+        - matrices[:, 0, 2] * matrices[:, 1, 1]
+    )
+    inverse_transposes[:, 2, 1] = (
+        matrices[:, 0, 2] * matrices[:, 1, 0]
+        - matrices[:, 0, 0] * matrices[:, 1, 2]
+    )
+    inverse_transposes[:, 2, 2] = (
+        matrices[:, 0, 0] * matrices[:, 1, 1]
+        - matrices[:, 0, 1] * matrices[:, 1, 0]
+    )
+    inverse_transposes *= (1.0 / determinants)[:, None, None]
+    return inverse_transposes
+
+
+def _batch_matrix_multiply(left: Any, right: Any) -> Any:
+    """Multiply batches of 3x3 matrices in scalar summation order."""
+    product = np.empty_like(left)
+    for row in range(3):
+        for column in range(3):
+            product[:, row, column] = _batch_float_sum(
+                (
+                    left[:, row, 0] * right[:, 0, column],
+                    left[:, row, 1] * right[:, 1, column],
+                    left[:, row, 2] * right[:, 2, column],
+                )
+            )
+    return product
+
+
+def _batch_float_sum(terms: Sequence[Any]) -> Any:
+    """Vector form of the interpreter's finite-float ``sum`` algorithm."""
+    total = terms[0].copy()
+    if sys.version_info < (3, 12):
+        for term in terms[1:]:
+            total += term
+        return total
+    compensation = np.zeros_like(total)
+    for term in terms[1:]:
+        updated = total + term
+        compensation += np.where(
+            np.abs(total) >= np.abs(term),
+            (total - updated) + term,
+            (term - updated) + total,
+        )
+        total = updated
+    return total + compensation
+
+
+def _batch_sum_squares(matrices: Any) -> Any:
+    return _batch_float_sum(
+        tuple(
+            matrices[:, row, column] * matrices[:, row, column]
+            for row in range(3)
+            for column in range(3)
+        )
+    )
+
+
+def _batch_inner_product(left: Any, right: Any) -> Any:
+    return _batch_float_sum(
+        tuple(
+            left[:, row, column] * right[:, row, column]
+            for row in range(3)
+            for column in range(3)
+        )
+    )
+
+
+def _batch_polar_rotations(deformation_gradients: Any) -> Any:
+    """Apply the scalar Newton polar iteration independently to each matrix."""
+    rotations = deformation_gradients.copy()
+    identity = np.eye(3, dtype=np.float64)
+    active = _batch_determinants(rotations) > 1e-12
+    rotations[~active] = identity
+    for _iteration in range(8):
+        active_indices = np.flatnonzero(active)
+        if active_indices.size == 0:
+            break
+        current = rotations[active_indices]
+        determinants = _batch_determinants(current)
+        singular = np.abs(determinants) <= 1e-18
+        if np.any(singular):
+            singular_indices = active_indices[singular]
+            rotations[singular_indices] = identity
+            active[singular_indices] = False
+        usable_indices = active_indices[~singular]
+        if usable_indices.size == 0:
+            continue
+        current = rotations[usable_indices]
+        determinants = determinants[~singular]
+        inverse_transposes = _batch_inverse_transposes(current, determinants)
+        updated = 0.5 * (current + inverse_transposes)
+        differences = np.max(np.abs(updated - current), axis=(1, 2))
+        rotations[usable_indices] = updated
+        active[usable_indices[differences < 1e-10]] = False
+    return rotations
+
+
+def _batched_element_forces(
+    state: HybridFEMMPMState,
+    elements: _VectorizedFEMElements,
+    positions: Any,
+) -> Tuple[Any, float, bool]:
+    """Evaluate all intact tetrahedra while preserving scalar state semantics."""
+    nodal_forces = np.zeros((len(state.positions), 3), dtype=np.float64)
+    active_indices = np.flatnonzero(~elements.failed)
+    if active_indices.size == 0:
+        return nodal_forces, 0.0, False
+
+    nodes = elements.nodes[active_indices]
+    node_positions = positions[nodes]
+    ds = np.empty((active_indices.size, 3, 3), dtype=np.float64)
+    ds[:, :, 0] = node_positions[:, 1] - node_positions[:, 0]
+    ds[:, :, 1] = node_positions[:, 2] - node_positions[:, 0]
+    ds[:, :, 2] = node_positions[:, 3] - node_positions[:, 0]
+    deformation_gradient = _batch_matrix_multiply(
+        ds, elements.dm_inverse[active_indices]
+    )
+    rotation = _batch_polar_rotations(deformation_gradient)
+    local_stretch = _batch_matrix_multiply(
+        np.swapaxes(rotation, 1, 2), deformation_gradient
+    )
+    strain = 0.5 * (local_stretch + np.swapaxes(local_stretch, 1, 2))
+    strain[:, 0, 0] -= 1.0
+    strain[:, 1, 1] -= 1.0
+    strain[:, 2, 2] -= 1.0
+
+    young = elements.young_modulus_pa[active_indices]
+    poisson = elements.poisson_ratio[active_indices]
+    lame_lambda = young * poisson / ((1.0 + poisson) * (1.0 - 2.0 * poisson))
+    shear = young / (2.0 * (1.0 + poisson))
+    strain_trace = strain[:, 0, 0] + strain[:, 1, 1] + strain[:, 2, 2]
+    stress = 2.0 * shear[:, None, None] * strain
+    volumetric_stress = lame_lambda * strain_trace
+    stress[:, 0, 0] += volumetric_stress
+    stress[:, 1, 1] += volumetric_stress
+    stress[:, 2, 2] += volumetric_stress
+
+    pressure = (stress[:, 0, 0] + stress[:, 1, 1] + stress[:, 2, 2]) / 3.0
+    deviator = stress.copy()
+    deviator[:, 0, 0] -= pressure
+    deviator[:, 1, 1] -= pressure
+    deviator[:, 2, 2] -= pressure
+    equivalent_stress = np.sqrt(1.5 * _batch_sum_squares(deviator))
+    yield_stress = elements.yield_stress_pa[active_indices]
+    yielded = (yield_stress > 0.0) & (equivalent_stress > yield_stress)
+    excess_stress = np.zeros(active_indices.size, dtype=np.float64)
+    if np.any(yielded):
+        scale = yield_stress[yielded] / np.maximum(
+            equivalent_stress[yielded], 1e-18
+        )
+        limited_stress = deviator[yielded] * scale[:, None, None]
+        limited_stress[:, 0, 0] += pressure[yielded]
+        limited_stress[:, 1, 1] += pressure[yielded]
+        limited_stress[:, 2, 2] += pressure[yielded]
+        stress[yielded] = limited_stress
+        excess_stress[yielded] = (
+            equivalent_stress[yielded] - yield_stress[yielded]
+        )
+
+    plastic_increment = excess_stress / np.maximum(young, 1.0)
+    elements.equivalent_plastic_strain[active_indices] += plastic_increment
+    elements.stress[active_indices] = stress
+    strain_norm = np.sqrt(_batch_sum_squares(strain))
+    failure_strain = elements.failure_strain[active_indices]
+    newly_failed = (failure_strain > 0.0) & (
+        np.maximum(
+            strain_norm,
+            elements.equivalent_plastic_strain[active_indices],
+        )
+        >= failure_strain
+    )
+    if np.any(newly_failed):
+        failed_indices = active_indices[newly_failed]
+        elements.failed[failed_indices] = True
+        for element_index in failed_indices:
+            state.elements[int(element_index)].failed = True
+
+    surviving = ~newly_failed
+    element_forces = np.zeros(
+        (active_indices.size, 4, 3), dtype=np.float64
+    )
+    if np.any(surviving):
+        surviving_indices = active_indices[surviving]
+        first_piola = _batch_matrix_multiply(rotation[surviving], stress[surviving])
+        gradients = elements.shape_gradients[surviving_indices]
+        volume = elements.rest_volume_m3[surviving_indices]
+        for local_node in range(4):
+            for row in range(3):
+                force_component = _batch_float_sum(
+                    (
+                        first_piola[:, row, 0] * gradients[:, local_node, 0],
+                        first_piola[:, row, 1] * gradients[:, local_node, 1],
+                        first_piola[:, row, 2] * gradients[:, local_node, 2],
+                    )
+                )
+                element_forces[surviving, local_node, row] = -volume * force_component
+        energy_density = 0.5 * _batch_inner_product(
+            stress[surviving], strain[surviving]
+        )
+        elements.strain_energy_j[surviving_indices] = np.fmax(
+            0.0, energy_density * volume
+        )
+
+    np.add.at(
+        nodal_forces,
+        nodes.reshape(-1),
+        element_forces.reshape(-1, 3),
+    )
+    plastic_dissipation = float(
+        np.sum(
+            plastic_increment
+            * yield_stress
+            * elements.rest_volume_m3[active_indices]
+        )
+    )
+    return nodal_forces, plastic_dissipation, bool(np.any(newly_failed))
+
+
 def stable_fem_timestep(state: HybridFEMMPMState) -> float:
     stable = math.inf
     total_volume = sum(
@@ -430,18 +779,34 @@ def stable_fem_timestep(state: HybridFEMMPMState) -> float:
     return stable if math.isfinite(stable) else math.inf
 
 
-def _transfer_failed_elements(state: HybridFEMMPMState) -> None:
-    for element_index, element in enumerate(state.elements):
-        if not element.failed or element.transferred:
+def transfer_failed_elements(state: HybridFEMMPMState) -> None:
+    """Move newly failed FEM mass to MPM particles in linear time.
+
+    The nodal incidence count changes only when an element is transferred. The
+    previous implementation rebuilt that count by scanning every element for
+    every individual failure, which made a large fracture burst quadratic.
+    Updating the count incrementally preserves the same deterministic mass
+    shares and transfer order.
+    """
+    pending = [
+        (element_index, element)
+        for element_index, element in enumerate(state.elements)
+        if element.failed and not element.transferred
+    ]
+    if not pending:
+        return
+
+    active_incidence = [0] * len(state.positions)
+    for element in state.elements:
+        if element.transferred:
             continue
+        for node in element.nodes:
+            active_incidence[node] += 1
+
+    for element_index, element in pending:
         if element.mass_kg > 0.0:
             shares = [0.25 * element.mass_kg] * 4
         else:
-            active_incidence = [0] * len(state.positions)
-            for candidate in state.elements:
-                if not candidate.transferred:
-                    for node in candidate.nodes:
-                        active_incidence[node] += 1
             shares = [
                 state.masses_kg[node] / max(active_incidence[node], 1)
                 for node in element.nodes
@@ -465,6 +830,8 @@ def _transfer_failed_elements(state: HybridFEMMPMState) -> None:
                 )
             )
         element.transferred = True
+        for node in element.nodes:
+            active_incidence[node] = max(0, active_incidence[node] - 1)
 
 
 def _particle_weights(
@@ -503,7 +870,7 @@ def _particle_weights(
                 )
 
 
-def advance_mpm(state: HybridFEMMPMState, dt_s: float) -> None:
+def _advance_mpm_scalar(state: HybridFEMMPMState, dt_s: float) -> None:
     if not state.particles or dt_s <= 0.0:
         return
     cell_size = state.mpm_cell_size_m
@@ -584,6 +951,267 @@ def advance_mpm(state: HybridFEMMPMState, dt_s: float) -> None:
             stress,
             particle.yield_stress_pa * max(0.0, 1.0 - particle.damage),
         )
+
+
+@dataclass
+class _VectorizedMPMParticles:
+    positions: Any
+    velocities: Any
+    masses_kg: Any
+    volumes_m3: Any
+    young_modulus_pa: Any
+    poisson_ratio: Any
+    yield_stress_pa: Any
+    damage: Any
+    deformation_gradient: Any
+    stress: Any
+
+    @classmethod
+    def from_state(cls, state: HybridFEMMPMState) -> "_VectorizedMPMParticles":
+        particles = state.particles
+        return cls(
+            positions=np.asarray(
+                [particle.position for particle in particles], dtype=np.float64
+            ),
+            velocities=np.asarray(
+                [particle.velocity for particle in particles], dtype=np.float64
+            ),
+            masses_kg=np.asarray(
+                [particle.mass_kg for particle in particles], dtype=np.float64
+            ),
+            volumes_m3=np.asarray(
+                [particle.volume_m3 for particle in particles], dtype=np.float64
+            ),
+            young_modulus_pa=np.asarray(
+                [particle.young_modulus_pa for particle in particles],
+                dtype=np.float64,
+            ),
+            poisson_ratio=np.asarray(
+                [particle.poisson_ratio for particle in particles], dtype=np.float64
+            ),
+            yield_stress_pa=np.asarray(
+                [particle.yield_stress_pa for particle in particles],
+                dtype=np.float64,
+            ),
+            damage=np.asarray(
+                [particle.damage for particle in particles], dtype=np.float64
+            ),
+            deformation_gradient=np.asarray(
+                [particle.deformation_gradient for particle in particles],
+                dtype=np.float64,
+            ),
+            stress=np.asarray(
+                [particle.stress for particle in particles], dtype=np.float64
+            ),
+        )
+
+    def sync_to_state(self, state: HybridFEMMPMState) -> None:
+        for index, particle in enumerate(state.particles):
+            particle.position = tuple(
+                float(self.positions[index, axis]) for axis in range(3)
+            )  # type: ignore[assignment]
+            particle.velocity = tuple(
+                float(self.velocities[index, axis]) for axis in range(3)
+            )  # type: ignore[assignment]
+            particle.deformation_gradient = tuple(
+                tuple(
+                    float(self.deformation_gradient[index, row, column])
+                    for column in range(3)
+                )
+                for row in range(3)
+            )  # type: ignore[assignment]
+            particle.stress = tuple(
+                tuple(float(self.stress[index, row, column]) for column in range(3))
+                for row in range(3)
+            )  # type: ignore[assignment]
+
+
+def _batch_particle_weights(
+    positions: Any,
+    cell_size: float,
+) -> Tuple[Any, Any, Any]:
+    """Return grid indices, trilinear weights and gradients in scalar order."""
+    offsets = np.asarray(
+        [
+            (0, 0, 0),
+            (0, 0, 1),
+            (0, 1, 0),
+            (0, 1, 1),
+            (1, 0, 0),
+            (1, 0, 1),
+            (1, 1, 0),
+            (1, 1, 1),
+        ],
+        dtype=np.int64,
+    )
+    scaled = positions / cell_size
+    base = np.floor(scaled).astype(np.int64)
+    fraction = scaled - base
+    grid_indices = base[:, None, :] + offsets[None, :, :]
+    coordinate_weights = np.where(
+        offsets[None, :, :] == 1,
+        fraction[:, None, :],
+        1.0 - fraction[:, None, :],
+    )
+    weights = coordinate_weights[:, :, 0] * coordinate_weights[:, :, 1]
+    weights *= coordinate_weights[:, :, 2]
+    gradients = np.empty_like(coordinate_weights)
+    for axis in range(3):
+        gradients[:, :, axis] = np.where(
+            offsets[None, :, axis] == 1,
+            1.0 / cell_size,
+            -1.0 / cell_size,
+        )
+        for other_axis in range(3):
+            if other_axis != axis:
+                gradients[:, :, axis] *= coordinate_weights[:, :, other_axis]
+    return grid_indices, weights, gradients
+
+
+def _advance_mpm_vectorized(state: HybridFEMMPMState, dt_s: float) -> None:
+    particles = _VectorizedMPMParticles.from_state(state)
+    particle_count = len(state.particles)
+    cell_size = state.mpm_cell_size_m
+    if cell_size <= 0.0:
+        mean_volume = sum(p.volume_m3 for p in state.particles) / particle_count
+        cell_size = max(mean_volume ** (1.0 / 3.0), 1e-6)
+
+    grid_indices, weights, gradients = _batch_particle_weights(
+        particles.positions, cell_size
+    )
+    flat_grid_indices = grid_indices.reshape(-1, 3)
+    _unique_grid_indices, inverse = np.unique(
+        flat_grid_indices,
+        axis=0,
+        return_inverse=True,
+    )
+    grid_node_count = int(np.max(inverse)) + 1
+    flat_inverse = inverse.reshape(-1)
+    grid_mass = np.zeros(grid_node_count, dtype=np.float64)
+    grid_momentum = np.zeros((grid_node_count, 3), dtype=np.float64)
+    grid_force = np.zeros((grid_node_count, 3), dtype=np.float64)
+
+    weighted_mass = weights * particles.masses_kg[:, None]
+    np.add.at(grid_mass, flat_inverse, weighted_mass.reshape(-1))
+    momentum_contribution = particles.velocities[:, None, :] * weighted_mass[:, :, None]
+    np.add.at(
+        grid_momentum,
+        flat_inverse,
+        momentum_contribution.reshape(-1, 3),
+    )
+    stress_gradient = np.empty((particle_count, 8, 3), dtype=np.float64)
+    for row in range(3):
+        stress_gradient[:, :, row] = _batch_float_sum(
+            tuple(
+                particles.stress[:, None, row, column]
+                * gradients[:, :, column]
+                for column in range(3)
+            )
+        )
+    force_contribution = stress_gradient * (-particles.volumes_m3[:, None, None])
+    np.add.at(
+        grid_force,
+        flat_inverse,
+        force_contribution.reshape(-1, 3),
+    )
+
+    old_grid_velocity = np.zeros_like(grid_momentum)
+    new_grid_velocity = np.zeros_like(grid_momentum)
+    populated = grid_mass > 1e-18
+    inverse_mass = 1.0 / grid_mass[populated]
+    old_grid_velocity[populated] = (
+        grid_momentum[populated] * inverse_mass[:, None]
+    )
+    new_grid_velocity[populated] = old_grid_velocity[populated] + (
+        grid_force[populated]
+        * (dt_s / grid_mass[populated])[:, None]
+    )
+
+    corner_new_velocity = new_grid_velocity[inverse].reshape(particle_count, 8, 3)
+    corner_old_velocity = old_grid_velocity[inverse].reshape(particle_count, 8, 3)
+    pic_velocity = np.zeros((particle_count, 3), dtype=np.float64)
+    flip_delta = np.zeros((particle_count, 3), dtype=np.float64)
+    velocity_gradient = np.zeros((particle_count, 3, 3), dtype=np.float64)
+    for corner in range(8):
+        weight = weights[:, corner, None]
+        new_velocity = corner_new_velocity[:, corner]
+        old_velocity = corner_old_velocity[:, corner]
+        pic_velocity += new_velocity * weight
+        flip_delta += (new_velocity - old_velocity) * weight
+        velocity_gradient += (
+            new_velocity[:, :, None] * gradients[:, corner, None, :]
+        )
+
+    flip_velocity = particles.velocities + flip_delta
+    particles.velocities = (
+        pic_velocity * state.pic_fraction
+        + flip_velocity * (1.0 - state.pic_fraction)
+    )
+    particles.positions += particles.velocities * dt_s
+    deformation_increment = np.eye(3, dtype=np.float64)[None, :, :] + (
+        dt_s * velocity_gradient
+    )
+    particles.deformation_gradient = _batch_matrix_multiply(
+        deformation_increment,
+        particles.deformation_gradient,
+    )
+
+    particles.stress[particles.damage >= 1.0] = 0.0
+    active = particles.damage < 1.0
+    if np.any(active):
+        deformation_delta = particles.deformation_gradient[active] - np.eye(
+            3, dtype=np.float64
+        )
+        strain = 0.5 * (
+            deformation_delta + np.swapaxes(deformation_delta, 1, 2)
+        )
+        damage_factor = np.fmax(0.0, 1.0 - particles.damage[active])
+        young = particles.young_modulus_pa[active] * damage_factor
+        poisson = particles.poisson_ratio[active]
+        lame_lambda = (
+            young
+            * poisson
+            / ((1.0 + poisson) * (1.0 - 2.0 * poisson))
+        )
+        shear = young / (2.0 * (1.0 + poisson))
+        strain_trace = strain[:, 0, 0] + strain[:, 1, 1] + strain[:, 2, 2]
+        stress = 2.0 * shear[:, None, None] * strain
+        volumetric_stress = lame_lambda * strain_trace
+        stress[:, 0, 0] += volumetric_stress
+        stress[:, 1, 1] += volumetric_stress
+        stress[:, 2, 2] += volumetric_stress
+
+        pressure = (
+            stress[:, 0, 0] + stress[:, 1, 1] + stress[:, 2, 2]
+        ) / 3.0
+        deviator = stress.copy()
+        deviator[:, 0, 0] -= pressure
+        deviator[:, 1, 1] -= pressure
+        deviator[:, 2, 2] -= pressure
+        equivalent_stress = np.sqrt(1.5 * _batch_sum_squares(deviator))
+        yield_stress = particles.yield_stress_pa[active] * damage_factor
+        yielded = (yield_stress > 0.0) & (equivalent_stress > yield_stress)
+        if np.any(yielded):
+            scale = yield_stress[yielded] / np.maximum(
+                equivalent_stress[yielded], 1e-18
+            )
+            limited_stress = deviator[yielded] * scale[:, None, None]
+            limited_stress[:, 0, 0] += pressure[yielded]
+            limited_stress[:, 1, 1] += pressure[yielded]
+            limited_stress[:, 2, 2] += pressure[yielded]
+            stress[yielded] = limited_stress
+        particles.stress[active] = stress
+    particles.sync_to_state(state)
+
+
+def advance_mpm(state: HybridFEMMPMState, dt_s: float) -> None:
+    """Advance failed material points, using NumPy when it is available."""
+    if not state.particles or dt_s <= 0.0:
+        return
+    if np is None:
+        _advance_mpm_scalar(state, dt_s)
+    else:
+        _advance_mpm_vectorized(state, dt_s)
 
 
 def project_free_body_momentum(
@@ -667,6 +1295,127 @@ def project_free_body_momentum(
     return v_norm(momentum_correction), v_norm(angular_correction)
 
 
+def _advance_fem_substeps_scalar(
+    state: HybridFEMMPMState,
+    substeps: int,
+    substep_dt: float,
+    external_forces: Optional[Sequence[Vec3]],
+) -> Tuple[float, float]:
+    """Dependency-free reference implementation for explicit FEM substeps."""
+    external_work = 0.0
+    plastic_dissipation = 0.0
+    for _substep in range(substeps):
+        forces = [(0.0, 0.0, 0.0) for _position in state.positions]
+        for element in state.elements:
+            if element.failed:
+                continue
+            element_forces, _energy, plastic_increment = element_force_and_energy(
+                state, element
+            )
+            plastic_dissipation += (
+                plastic_increment * element.yield_stress_pa * element.rest_volume_m3
+            )
+            for local_index, node in enumerate(element.nodes):
+                forces[node] = v_add(forces[node], element_forces[local_index])
+        if external_forces is not None:
+            if len(external_forces) != len(forces):
+                raise ValueError("external force count must match FEM node count")
+            for node, external_force in enumerate(external_forces):
+                forces[node] = v_add(forces[node], external_force)
+                external_work += (
+                    v_dot(external_force, state.velocities[node]) * substep_dt
+                )
+        for node, mass in enumerate(state.masses_kg):
+            if mass <= 1e-18 or node in state.fixed_nodes:
+                if node in state.fixed_nodes:
+                    state.velocities[node] = (0.0, 0.0, 0.0)
+                continue
+            state.velocities[node] = v_add(
+                state.velocities[node],
+                v_mul(forces[node], substep_dt / mass),
+            )
+            state.positions[node] = v_add(
+                state.positions[node],
+                v_mul(state.velocities[node], substep_dt),
+            )
+        transfer_failed_elements(state)
+        advance_mpm(state, substep_dt)
+    return external_work, plastic_dissipation
+
+
+def _sync_vectorized_nodes(
+    state: HybridFEMMPMState,
+    positions: Any,
+    velocities: Any,
+) -> None:
+    state.positions = [
+        (float(position[0]), float(position[1]), float(position[2]))
+        for position in positions
+    ]
+    state.velocities = [
+        (float(velocity[0]), float(velocity[1]), float(velocity[2]))
+        for velocity in velocities
+    ]
+
+
+def _advance_fem_substeps_vectorized(
+    state: HybridFEMMPMState,
+    substeps: int,
+    substep_dt: float,
+    external_forces: Optional[Sequence[Vec3]],
+) -> Tuple[float, float]:
+    """NumPy execution path for the same explicit FEM integration scheme."""
+    elements = _VectorizedFEMElements.from_state(state)
+    positions = np.asarray(state.positions, dtype=np.float64).copy()
+    velocities = np.asarray(state.velocities, dtype=np.float64).copy()
+    masses = np.asarray(state.masses_kg, dtype=np.float64)
+    external = (
+        None
+        if external_forces is None
+        else np.asarray(external_forces, dtype=np.float64)
+    )
+    fixed = np.zeros(len(state.positions), dtype=np.bool_)
+    if state.fixed_nodes:
+        fixed[list(state.fixed_nodes)] = True
+    pending_transfer = any(
+        element.failed and not element.transferred for element in state.elements
+    )
+    external_work = 0.0
+    plastic_dissipation = 0.0
+
+    for _substep in range(substeps):
+        forces, plastic_increment, newly_failed = _batched_element_forces(
+            state, elements, positions
+        )
+        plastic_dissipation += plastic_increment
+        if external is not None:
+            if len(external) != len(forces):
+                elements.sync_to_state(state)
+                raise ValueError("external force count must match FEM node count")
+            forces += external
+            external_work += float(np.sum(external * velocities)) * substep_dt
+
+        movable = (masses > 1e-18) & ~fixed
+        velocities[movable] += (
+            forces[movable] * (substep_dt / masses[movable])[:, None]
+        )
+        positions[movable] += velocities[movable] * substep_dt
+        velocities[fixed] = 0.0
+
+        pending_transfer = pending_transfer or newly_failed
+        if pending_transfer:
+            _sync_vectorized_nodes(state, positions, velocities)
+            elements.sync_to_state(state)
+            transfer_failed_elements(state)
+            masses = np.asarray(state.masses_kg, dtype=np.float64)
+            pending_transfer = False
+        advance_mpm(state, substep_dt)
+
+    _sync_vectorized_nodes(state, positions, velocities)
+    elements.sync_to_state(state)
+    return external_work, plastic_dissipation
+
+
 def advance_fem(
     state: HybridFEMMPMState,
     dt_s: float,
@@ -699,49 +1448,23 @@ def advance_fem(
             "FEM CFL limit requires "
             f"{required_substeps} substeps but COLLISION_FEM_MAX_SUBSTEPS="
             f"{state.max_substeps}; reduce MOTION_DT or raise the limit"
-        )
+    )
     substeps = required_substeps
     substep_dt = dt_s / substeps
-    external_work = 0.0
-    plastic_dissipation = 0.0
-    for _substep in range(substeps):
-        forces = [(0.0, 0.0, 0.0) for _position in state.positions]
-        strain_energy = 0.0
-        for element in state.elements:
-            if element.failed:
-                continue
-            element_forces, energy, plastic_increment = element_force_and_energy(
-                state, element
-            )
-            strain_energy += energy
-            plastic_dissipation += (
-                plastic_increment * element.yield_stress_pa * element.rest_volume_m3
-            )
-            for local_index, node in enumerate(element.nodes):
-                forces[node] = v_add(forces[node], element_forces[local_index])
-        if external_forces is not None:
-            if len(external_forces) != len(forces):
-                raise ValueError("external force count must match FEM node count")
-            for node, external_force in enumerate(external_forces):
-                forces[node] = v_add(forces[node], external_force)
-                external_work += (
-                    v_dot(external_force, state.velocities[node]) * substep_dt
-                )
-        for node, mass in enumerate(state.masses_kg):
-            if mass <= 1e-18 or node in state.fixed_nodes:
-                if node in state.fixed_nodes:
-                    state.velocities[node] = (0.0, 0.0, 0.0)
-                continue
-            state.velocities[node] = v_add(
-                state.velocities[node],
-                v_mul(forces[node], substep_dt / mass),
-            )
-            state.positions[node] = v_add(
-                state.positions[node],
-                v_mul(state.velocities[node], substep_dt),
-            )
-        _transfer_failed_elements(state)
-        advance_mpm(state, substep_dt)
+    if np is not None and state.elements:
+        external_work, plastic_dissipation = _advance_fem_substeps_vectorized(
+            state,
+            substeps,
+            substep_dt,
+            external_forces,
+        )
+    else:
+        external_work, plastic_dissipation = _advance_fem_substeps_scalar(
+            state,
+            substeps,
+            substep_dt,
+            external_forces,
+        )
     momentum_projection = 0.0
     angular_projection = 0.0
     if external_forces is None and not state.fixed_nodes:
