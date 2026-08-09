@@ -1881,6 +1881,94 @@ class CollisionConvergenceTest(TestCase):
             update_component_deformation(component, 0.02)
         self.assertNotEqual(component.triangles, original_triangles)
 
+    def test_elastic_dent_does_not_start_damage_fem(self) -> None:
+        component = box_component("tungsten_body", 0.0, 1.0)
+        component.material = MaterialProperties(
+            material_name="Tungsten",
+            density_kg_m3=19600.0,
+            young_modulus_pa=4.0e11,
+            poisson_ratio=0.28,
+            yield_strength_pa=7.5e8,
+            failure_strain=0.01,
+        )
+
+        with patch(
+            "cfd_motion.motion.build_hybrid_fem_mpm_collision_state"
+        ) as build_state:
+            damage = register_collision_dent(
+                component,
+                (1.0, 0.0, 0.0),
+                (-1.0, 0.0, 0.0),
+                4.3e-7,
+                0.011,
+                0,
+                "elastic_contact",
+                7.1e-4,
+            )
+
+        self.assertIsNotNone(damage)
+        assert damage is not None
+        self.assertEqual(damage.permanent_depth_m, 0.0)
+        self.assertIsNone(component.collision_structural_state)
+        build_state.assert_not_called()
+
+    def test_plastic_dent_starts_damage_fem(self) -> None:
+        component = box_component("soft_body", 0.0, 1.0)
+        component.material = MaterialProperties(
+            material_name="soft polymer",
+            density_kg_m3=1000.0,
+            young_modulus_pa=1.0e7,
+            poisson_ratio=0.35,
+            yield_strength_pa=1.0e4,
+            failure_strain=0.10,
+        )
+
+        with patch(
+            "cfd_motion.motion.build_hybrid_fem_mpm_collision_state"
+        ) as build_state:
+            register_collision_dent(
+                component,
+                (1.0, 0.0, 0.0),
+                (-1.0, 0.0, 0.0),
+                0.01,
+                0.6,
+                0,
+                "plastic_contact",
+                1.0,
+            )
+
+        build_state.assert_called_once()
+
+    def test_brittle_failure_starts_damage_fem_before_yield(self) -> None:
+        component = box_component("glass_body", 0.0, 1.0)
+        component.material = MaterialProperties(
+            material_name="glass",
+            density_kg_m3=2500.0,
+            young_modulus_pa=7.0e10,
+            poisson_ratio=0.22,
+            yield_strength_pa=3.0e9,
+            failure_strain=0.001,
+        )
+
+        with patch(
+            "cfd_motion.motion.build_hybrid_fem_mpm_collision_state"
+        ) as build_state:
+            damage = register_collision_dent(
+                component,
+                (1.0, 0.0, 0.0),
+                (-1.0, 0.0, 0.0),
+                0.002,
+                1.0,
+                0,
+                "brittle_contact",
+                1.0,
+            )
+
+        self.assertIsNotNone(damage)
+        assert damage is not None
+        self.assertEqual(damage.permanent_depth_m, 0.0)
+        build_state.assert_called_once()
+
     def test_perforation_hole_grows_over_multiple_time_intervals(self) -> None:
         target = rectangular_component(
             "thin_target",

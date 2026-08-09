@@ -3010,6 +3010,22 @@ def collision_plastic_fraction(
     )
 
 
+def collision_requires_structural_damage_solver(
+    component: AeroComponent,
+    indentation: float,
+    contact_radius: float,
+) -> bool:
+    """Return whether a local contact reached yield or brittle failure."""
+    if indentation <= 0.0:
+        return False
+    young = max(inferred_deformation_young_modulus(component), 1.0)
+    yield_strain = material_yield_strength_pa(component) / young
+    failure_strain = material_failure_strain(component)
+    damage_onset_strain = min(yield_strain, failure_strain)
+    contact_strain = indentation / max(contact_radius, 1e-9)
+    return contact_strain >= damage_onset_strain
+
+
 def collision_damage_response_time(
     component: AeroComponent,
     contact_radius: float,
@@ -3153,7 +3169,19 @@ def register_collision_dent(
         COLLISION_STRUCTURAL_SOLVER == "hybrid_fem_mpm"
         and component.collision_structural_state is None
         and not component_is_thin_for_solid_fem(component)
+        and collision_requires_structural_damage_solver(
+            component,
+            indentation,
+            radius,
+        )
     ):
+        # Hertz/contact deformation already models a fully elastic impact.
+        # Starting the explicit damage solver for such a contact is both
+        # physically wrong and needlessly expensive: tiny CAD surface facets
+        # can impose an extreme FEM CFL step even though the material never
+        # reached yield.  Allocate FEM/MPM only once this contact reaches
+        # material yield or brittle failure.  Perforation has its own
+        # structural-state path in register_collision_hole().
         try:
             component.collision_structural_state = build_hybrid_fem_mpm_collision_state(
                 component,
