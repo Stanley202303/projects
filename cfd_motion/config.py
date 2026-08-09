@@ -550,6 +550,9 @@ COLLISION_SHELL_MAX_SUBSTEPS = max(
     1,
     int(os.environ.get("COLLISION_SHELL_MAX_SUBSTEPS", "256")),
 )
+# Backward-compatible environment name.  This bounds one FEM work batch; the
+# solver automatically starts further batches when the CFL condition requires
+# more substeps for a motion interval.
 COLLISION_FEM_MAX_SUBSTEPS = max(
     1,
     int(os.environ.get("COLLISION_FEM_MAX_SUBSTEPS", "4096")),

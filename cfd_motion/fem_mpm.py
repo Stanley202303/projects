@@ -1421,7 +1421,7 @@ def advance_fem(
     dt_s: float,
     external_forces: Optional[Sequence[Vec3]] = None,
 ) -> ConservationAudit:
-    """Advance the coupled state with CFL-limited explicit substeps."""
+    """Advance the coupled state with automatically batched CFL substeps."""
     before_mass = state.total_mass_kg
     before_momentum = state.total_momentum()
     before_angular = state.total_angular_momentum()
@@ -1443,28 +1443,32 @@ def advance_fem(
     required_substeps = 1 if not math.isfinite(stable_dt) else max(
         1, math.ceil(dt_s / max(stable_dt, 1e-12))
     )
-    if required_substeps > state.max_substeps:
-        raise RuntimeError(
-            "FEM CFL limit requires "
-            f"{required_substeps} substeps but COLLISION_FEM_MAX_SUBSTEPS="
-            f"{state.max_substeps}; reduce MOTION_DT or raise the limit"
+    # max_substeps is a work-batch size, not a reason to reject a physically
+    # valid timestep.  Keep the exact CFL-required substep size and process as
+    # many bounded batches as necessary.  This is numerically equivalent to a
+    # single explicit loop and avoids either destabilising the solve or asking
+    # the caller to tune an implementation limit for every CAD mesh.
+    substep_dt = dt_s / required_substeps
+    batch_limit = max(state.max_substeps, 1)
+    remaining_substeps = required_substeps
+    external_work = 0.0
+    plastic_dissipation = 0.0
+    advance_batch = (
+        _advance_fem_substeps_vectorized
+        if np is not None and state.elements
+        else _advance_fem_substeps_scalar
     )
-    substeps = required_substeps
-    substep_dt = dt_s / substeps
-    if np is not None and state.elements:
-        external_work, plastic_dissipation = _advance_fem_substeps_vectorized(
+    while remaining_substeps > 0:
+        batch_substeps = min(remaining_substeps, batch_limit)
+        batch_work, batch_dissipation = advance_batch(
             state,
-            substeps,
+            batch_substeps,
             substep_dt,
             external_forces,
         )
-    else:
-        external_work, plastic_dissipation = _advance_fem_substeps_scalar(
-            state,
-            substeps,
-            substep_dt,
-            external_forces,
-        )
+        external_work += batch_work
+        plastic_dissipation += batch_dissipation
+        remaining_substeps -= batch_substeps
     momentum_projection = 0.0
     angular_projection = 0.0
     if external_forces is None and not state.fixed_nodes:

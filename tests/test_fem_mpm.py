@@ -110,11 +110,51 @@ def test_fem_translation_preserves_mass_and_momentum():
     assert all(abs(value) < 1.0e-8 for value in audit.momentum_error)
 
 
-def test_fem_refuses_to_exceed_the_configured_cfl_substep_cap():
+def test_fem_automatically_batches_beyond_configured_substep_batch_size():
+    batched_state = _state()
+    unbatched_state = copy.deepcopy(batched_state)
+    batched_state.max_substeps = 1
+    unbatched_state.max_substeps = 4096
+
+    batched_audit = advance_fem(batched_state, 1.0e-2)
+    unbatched_audit = advance_fem(unbatched_state, 1.0e-2)
+
+    _assert_vectors_close(batched_state.positions, unbatched_state.positions)
+    _assert_vectors_close(batched_state.velocities, unbatched_state.velocities)
+    assert math.isclose(
+        batched_audit.mass_after_kg,
+        unbatched_audit.mass_after_kg,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+
+
+def test_fem_processes_4345_required_substeps_as_two_safe_batches():
     state = _state()
-    state.max_substeps = 1
-    with pytest.raises(RuntimeError, match="FEM CFL limit requires"):
-        advance_fem(state, 1.0e-2)
+    state.max_substeps = 4096
+    motion_dt = 0.0012
+    with (
+        patch(
+            "cfd_motion.fem_mpm.stable_fem_timestep",
+            return_value=motion_dt / 4344.5,
+        ),
+        patch(
+            "cfd_motion.fem_mpm._advance_fem_substeps_vectorized",
+            return_value=(0.0, 0.0),
+        ) as advance_batch,
+    ):
+        advance_fem(state, motion_dt)
+
+    assert [call.args[1] for call in advance_batch.call_args_list] == [4096, 249]
+    assert all(
+        math.isclose(
+            call.args[2],
+            motion_dt / 4345,
+            rel_tol=0.0,
+            abs_tol=1e-18,
+        )
+        for call in advance_batch.call_args_list
+    )
 
 
 def test_failed_element_transfers_mass_to_mpm_particles_without_loss():
