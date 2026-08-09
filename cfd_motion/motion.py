@@ -3370,10 +3370,26 @@ def register_collision_hole(
     return damage
 
 
+def _record_structural_deformation_for_damage_sites(
+    component: AeroComponent,
+    deformation_m: float,
+) -> None:
+    """Apply one shared structural solve result to every perforation site."""
+    for damage in component.collision_damage:
+        if damage.target_hole_radius_m <= 0.0:
+            continue
+        damage.current_depth_m = max(damage.current_depth_m, deformation_m)
+        damage.permanent_depth_m = max(
+            damage.permanent_depth_m,
+            deformation_m,
+        )
+
+
 def advance_collision_damage_state(
     component: AeroComponent,
     damage: CollisionDamageState,
     dt: float,
+    advance_structural: bool = True,
 ) -> Tuple[float, int]:
     if dt <= 0.0:
         return 0.0, 0
@@ -3539,20 +3555,24 @@ def advance_collision_damage_state(
                 drive_work,
                 1.0,
             )
-        structural_dt = min(
-            dt,
-            max(MOTION_DT, response_time),
-        )
-        deformation, emitted_count, _emitted_mass = advance_hybrid_fem_mpm_collision(
-            component,
-            fem_state,
-            structural_dt,
-        )
-        removed_triangles += emitted_count
-        geometry_changed = max(geometry_changed, deformation)
-        if damage.target_hole_radius_m > 0.0:
-            damage.current_depth_m = max(damage.current_depth_m, deformation)
-            damage.permanent_depth_m = max(damage.permanent_depth_m, deformation)
+        if advance_structural:
+            structural_dt = min(
+                dt,
+                max(MOTION_DT, response_time),
+            )
+            deformation, emitted_count, _emitted_mass = (
+                advance_hybrid_fem_mpm_collision(
+                    component,
+                    fem_state,
+                    structural_dt,
+                )
+            )
+            removed_triangles += emitted_count
+            geometry_changed = max(geometry_changed, deformation)
+            _record_structural_deformation_for_damage_sites(
+                component,
+                deformation,
+            )
     elif shell_state is not None:
         if damage.ongoing_contact_energy_j > 1e-12:
             drive_duration = max(
@@ -3586,23 +3606,22 @@ def advance_collision_damage_state(
                 inertia_scale = remaining_mass / max(component.mass, 1e-18)
                 component.mass = remaining_mass
                 component.inertia *= inertia_scale
-        original_cofr = component.cofr
-        shell_deformation = (
-            advance_hybrid_shell_collision(component, hybrid_state, dt)
-            if hybrid_state is not None
-            else advance_explicit_shell(component, shell_state, dt)
-        )
-        component.aref, component.lref, _geometry_centroid = component_references(
-            component.triangles
-        )
-        component.cofr = original_cofr
-        if damage.target_hole_radius_m > 0.0:
-            damage.current_depth_m = max(damage.current_depth_m, shell_deformation)
-            damage.permanent_depth_m = max(
-                damage.permanent_depth_m,
+        if advance_structural:
+            original_cofr = component.cofr
+            shell_deformation = (
+                advance_hybrid_shell_collision(component, hybrid_state, dt)
+                if hybrid_state is not None
+                else advance_explicit_shell(component, shell_state, dt)
+            )
+            component.aref, component.lref, _geometry_centroid = component_references(
+                component.triangles
+            )
+            component.cofr = original_cofr
+            _record_structural_deformation_for_damage_sites(
+                component,
                 shell_deformation,
             )
-        geometry_changed = max(geometry_changed, shell_deformation)
+            geometry_changed = max(geometry_changed, shell_deformation)
 
     damage.elapsed_s += dt
     # The second value is a transfer count: faces remain in the shell state
@@ -3675,23 +3694,41 @@ def evolve_collision_damage(
     log_path: Path,
 ) -> int:
     changed_sites = 0
-    for component in components:
-        for site_index, damage in enumerate(component.collision_damage):
-            geometry_change = 0.0
-            removed_triangles = 0
-            if step > damage.created_step:
-                geometry_change, removed_triangles = advance_collision_damage_state(
-                    component,
-                    damage,
-                    dt,
-                )
-            active = (
-                damage.current_depth_m
-                > damage.permanent_depth_m + 1e-9
-                or damage.current_hole_radius_m
-                < damage.target_hole_radius_m - 1e-9
-                or damage.ongoing_contact_energy_j > 1e-12
+    if not any(component.collision_damage for component in components):
+        return changed_sites
+    with log_path.open("a") as stream:
+        for component in components:
+            eligible_site_indices = [
+                site_index
+                for site_index, damage in enumerate(component.collision_damage)
+                if step > damage.created_step
+            ]
+            final_eligible_site = (
+                eligible_site_indices[-1] if eligible_site_indices else None
             )
+            component_rows: List[
+                Tuple[int, CollisionDamageState, float, int]
+            ] = []
+            for site_index, damage in enumerate(component.collision_damage):
+                geometry_change = 0.0
+                removed_triangles = 0
+                if step > damage.created_step:
+                    geometry_change, removed_triangles = (
+                        advance_collision_damage_state(
+                            component,
+                            damage,
+                            dt,
+                            advance_structural=(
+                                site_index == final_eligible_site
+                            ),
+                        )
+                    )
+                if geometry_change > 1e-12 or removed_triangles:
+                    changed_sites += 1
+                component_rows.append(
+                    (site_index, damage, geometry_change, removed_triangles)
+                )
+
             structural_state = component.collision_structural_state
             shell_state = (
                 structural_state.shell_state
@@ -3705,9 +3742,14 @@ def evolve_collision_damage(
                 if isinstance(structural_state, HybridFEMMPMCollisionState)
                 else None
             )
-            if geometry_change > 1e-12 or removed_triangles:
-                changed_sites += 1
-            with log_path.open("a") as stream:
+            for site_index, damage, geometry_change, removed_triangles in component_rows:
+                active = (
+                    damage.current_depth_m
+                    > damage.permanent_depth_m + 1e-9
+                    or damage.current_hole_radius_m
+                    < damage.target_hole_radius_m - 1e-9
+                    or damage.ongoing_contact_energy_j > 1e-12
+                )
                 stream.write(
                     f"{step}\t{component.patch}\t{site_index}\t{damage.failure_mode}\t"
                     f"{damage.elapsed_s:.8g}\t{damage.response_time_s:.8g}\t"

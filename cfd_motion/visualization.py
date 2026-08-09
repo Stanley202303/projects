@@ -1226,12 +1226,21 @@ def write_cfd_sampled_surface_preview_for_step(step_case: Path, step: int) -> Op
     return out
 
 
-def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[AeroComponent], step: int) -> None:
+def write_panel_aero_preview_for_step(
+    step_case: Path,
+    components: Sequence[AeroComponent],
+    step: int,
+    write_component_files: bool = True,
+) -> None:
     """Write crash-resistant surface VTK previews.
 
-    v17 writes BOTH:
+    By default this writes both:
       1) one per-part VTK, useful for inspecting a single component;
       2) one combined VTK for the whole moving assembly.
+
+    Streaming runs retain only the combined frame, so they can disable the
+    per-part files and avoid formatting, validating, and then deleting a
+    duplicate copy of the same geometry and fields.
 
     The combined file is deliberately simple ASCII POLYDATA with stable scalar
     arrays.  ParaView is much less likely to crash on this than on a PVD that
@@ -1556,50 +1565,53 @@ def write_panel_aero_preview_for_step(step_case: Path, components: Sequence[Aero
             combined_vectors["velocity"].append(triangle_velocity)
             combined_vectors["worldVelocity"].append(triangle_world_motion)
 
-        _write_ascii_polydata_vtk(
-            out_dir / f"{safe_patch_name(comp.patch)}_panel_step_{step:03d}.vtp",
-            pts,
-            polys,
-            {
-                "CpAbsPanel": cp_abs_vals,
-                "Cp": cp_alias_vals,
-                "p": p_vals,
-                "pPa": ppa_alias_vals,
-                "pPaPanel": ppa_vals,
-                "pPaAbsPanel": ppa_abs_vals,
-                "pressureCoeff": pressure_coeff_vals,
-                "pressureCoeffAbs": pressure_coeff_abs_vals,
-                "pressurePa": pressure_pa_vals,
-                "pressurePaAbs": pressure_pa_abs_vals,
-                "pressureVisible01": _normalise_for_display(pressure_coeff_vals),
-                "windExposure": exposed_vals,
-                "skinFrictionPreview": skin_vals,
-                "normalX": normal_x_vals,
-                "normalY": normal_y_vals,
-                "normalZ": normal_z_vals,
-                "triangleArea": area_vals,
-                "structuralDisplacementM": structural_displacement_vals,
-                "vonMisesStressPa": von_mises_stress_pa_vals,
-                "vonMisesStressMPa": von_mises_stress_mpa_vals,
-                "stressToYieldRatio": stress_to_yield_ratio_vals,
-                "materialYielded": material_yielded_vals,
-                "perforationPlug": perforation_plug_vals,
-                "structuralFailedEdges": structural_failed_edge_vals,
-                "velocityX": velocity_x_vals,
-                "velocityY": velocity_y_vals,
-                "velocityZ": velocity_z_vals,
-                "velocityMagnitude": velocity_magnitude_vals,
-                "speed": velocity_magnitude_vals,
-                "worldVelocityX": world_velocity_x_vals,
-                "worldVelocityY": world_velocity_y_vals,
-                "worldVelocityZ": world_velocity_z_vals,
-                "worldSpeed": world_speed_vals,
-            },
-            {
-                "velocity": velocity_vectors,
-                "worldVelocity": world_velocity_vectors,
-            },
-        )
+        if write_component_files:
+            _write_ascii_polydata_vtk(
+                out_dir / f"{safe_patch_name(comp.patch)}_panel_step_{step:03d}.vtp",
+                pts,
+                polys,
+                {
+                    "CpAbsPanel": cp_abs_vals,
+                    "Cp": cp_alias_vals,
+                    "p": p_vals,
+                    "pPa": ppa_alias_vals,
+                    "pPaPanel": ppa_vals,
+                    "pPaAbsPanel": ppa_abs_vals,
+                    "pressureCoeff": pressure_coeff_vals,
+                    "pressureCoeffAbs": pressure_coeff_abs_vals,
+                    "pressurePa": pressure_pa_vals,
+                    "pressurePaAbs": pressure_pa_abs_vals,
+                    "pressureVisible01": _normalise_for_display(
+                        pressure_coeff_vals
+                    ),
+                    "windExposure": exposed_vals,
+                    "skinFrictionPreview": skin_vals,
+                    "normalX": normal_x_vals,
+                    "normalY": normal_y_vals,
+                    "normalZ": normal_z_vals,
+                    "triangleArea": area_vals,
+                    "structuralDisplacementM": structural_displacement_vals,
+                    "vonMisesStressPa": von_mises_stress_pa_vals,
+                    "vonMisesStressMPa": von_mises_stress_mpa_vals,
+                    "stressToYieldRatio": stress_to_yield_ratio_vals,
+                    "materialYielded": material_yielded_vals,
+                    "perforationPlug": perforation_plug_vals,
+                    "structuralFailedEdges": structural_failed_edge_vals,
+                    "velocityX": velocity_x_vals,
+                    "velocityY": velocity_y_vals,
+                    "velocityZ": velocity_z_vals,
+                    "velocityMagnitude": velocity_magnitude_vals,
+                    "speed": velocity_magnitude_vals,
+                    "worldVelocityX": world_velocity_x_vals,
+                    "worldVelocityY": world_velocity_y_vals,
+                    "worldVelocityZ": world_velocity_z_vals,
+                    "worldSpeed": world_speed_vals,
+                },
+                {
+                    "velocity": velocity_vectors,
+                    "worldVelocity": world_velocity_vectors,
+                },
+            )
         next_patch_id += surface_body_count
 
     if combined_polys:
@@ -2023,7 +2035,12 @@ def copy_step_to_root_timeseries(root_case: Path, step_case: Path, step: int) ->
     return True
 
 
-def copy_minimal_stream_tracer_case_to_root(root_case: Path, step_case: Path, step: int) -> Optional[Path]:
+def copy_minimal_stream_tracer_case_to_root(
+    root_case: Path,
+    step_case: Path,
+    step: int,
+    move_large_files: bool = False,
+) -> Optional[Path]:
     """Keep one storage-light volume case for ParaView Stream Tracer.
 
     The compact .pvd/.vtp animation is surface-only.  ParaView's Stream Tracer is
@@ -2052,35 +2069,50 @@ def copy_minimal_stream_tracer_case_to_root(root_case: Path, step_case: Path, st
         return None
 
     out_case = root_case / STREAM_TRACER_CASE_DIR_NAME
-    if out_case.exists():
-        shutil.rmtree(out_case)
-    out_case.mkdir(parents=True, exist_ok=True)
+    staging_case = root_case / f".{STREAM_TRACER_CASE_DIR_NAME}.next"
+    previous_case = root_case / f".{STREAM_TRACER_CASE_DIR_NAME}.previous"
+    if staging_case.exists():
+        shutil.rmtree(staging_case)
+    staging_case.mkdir(parents=True, exist_ok=True)
 
     system_src = step_case / "system"
     if system_src.exists():
-        shutil.copytree(system_src, out_case / "system", ignore=shutil.ignore_patterns("*.log"))
+        shutil.copytree(
+            system_src,
+            staging_case / "system",
+            ignore=shutil.ignore_patterns("*.log"),
+        )
 
-    constant_out = out_case / "constant"
+    constant_out = staging_case / "constant"
     constant_out.mkdir(parents=True, exist_ok=True)
     constant_src = step_case / "constant"
     if constant_src.exists():
         for child in constant_src.iterdir():
             if child.is_file():
                 shutil.copy2(child, constant_out / child.name)
-    shutil.copytree(mesh_src, constant_out / "polyMesh")
+    mesh_destination = constant_out / "polyMesh"
+    if move_large_files:
+        shutil.move(str(mesh_src), str(mesh_destination))
+    else:
+        shutil.copytree(mesh_src, mesh_destination)
 
-    time_out = out_case / latest.name
+    time_out = staging_case / latest.name
     time_out.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(field_src, time_out / STREAM_TRACER_FIELD_NAME)
+    field_destination = time_out / STREAM_TRACER_FIELD_NAME
+    if move_large_files:
+        shutil.move(str(field_src), str(field_destination))
+    else:
+        shutil.copy2(field_src, field_destination)
 
-    foam_path = out_case / "case.foam"
-    foam_path.write_text("")
+    staging_foam_path = staging_case / "case.foam"
+    staging_foam_path.write_text("")
+    final_foam_path = out_case / "case.foam"
 
     manifest = [
         "Minimal ParaView Stream Tracer volume case",
         "",
         "Open this file in ParaView for real 3D streamlines:",
-        f"  {foam_path}",
+        f"  {final_foam_path}",
         "",
         f"source_step=step_{step:03d}",
         f"source_solver_time={latest.name}",
@@ -2090,21 +2122,47 @@ def copy_minimal_stream_tracer_case_to_root(root_case: Path, step_case: Path, st
         "Use ParaView Stream Tracer with vector field U.",
         "This is intentionally a single latest-frame volume export, not a full time series.",
     ]
-    (out_case / "OPEN_THIS_FOR_STREAM_TRACER.txt").write_text("\n".join(manifest) + "\n")
+    (staging_case / "OPEN_THIS_FOR_STREAM_TRACER.txt").write_text(
+        "\n".join(manifest) + "\n"
+    )
+    if previous_case.exists():
+        shutil.rmtree(previous_case)
+    if out_case.exists():
+        os.replace(out_case, previous_case)
+    os.replace(staging_case, out_case)
+    if previous_case.exists():
+        shutil.rmtree(previous_case)
     (root_case / "paraview_stream_tracer_manifest.txt").write_text("\n".join(manifest) + "\n")
-    return foam_path
+    return final_foam_path
 
 
-def _copy_file_atomically(source: Path, destination: Path) -> None:
+def _copy_file_atomically(
+    source: Path,
+    destination: Path,
+    *,
+    move_source: bool = False,
+    validate_source: bool = True,
+) -> None:
     """Copy a complete frame before exposing it at a PVD-referenced path."""
-    validate_preview_polydata(source)
+    if validate_source:
+        validate_preview_polydata(source)
     temporary_path = destination.with_name(f".{destination.name}.tmp")
-    shutil.copy2(source, temporary_path)
-    validate_preview_polydata(temporary_path)
+    if move_source:
+        shutil.move(str(source), str(temporary_path))
+    else:
+        shutil.copy2(source, temporary_path)
+    if validate_source:
+        validate_preview_polydata(temporary_path)
     os.replace(temporary_path, destination)
 
 
-def copy_step_panel_preview_to_root(root_case: Path, step_case: Path, step: int) -> Optional[Path]:
+def copy_step_panel_preview_to_root(
+    root_case: Path,
+    step_case: Path,
+    step: int,
+    move_source: bool = False,
+    validate_source: bool = True,
+) -> Optional[Path]:
     """Copy the compact combined moving-surface VTK into root_case only."""
     src = step_case / "panel_preview" / COMBINED_SURFACE_VTK_NAME
     if not src.exists():
@@ -2112,7 +2170,12 @@ def copy_step_panel_preview_to_root(root_case: Path, step_case: Path, step: int)
     out_dir = root_case / ROOT_PANEL_PREVIEW_DIR_NAME
     out_dir.mkdir(parents=True, exist_ok=True)
     dst = out_dir / f"frame_{step:03d}_{COMBINED_SURFACE_VTK_NAME}"
-    _copy_file_atomically(src, dst)
+    _copy_file_atomically(
+        src,
+        dst,
+        move_source=move_source,
+        validate_source=validate_source,
+    )
 
     # Keep the small pressure-range report even when SAVE_MOTION_STEPS=0, so the
     # user can immediately tell whether ParaView should have visible colour range.
@@ -2123,7 +2186,13 @@ def copy_step_panel_preview_to_root(root_case: Path, step_case: Path, step: int)
 
 
 
-def copy_step_cfd_sampled_preview_to_root(root_case: Path, step_case: Path, step: int) -> Optional[Path]:
+def copy_step_cfd_sampled_preview_to_root(
+    root_case: Path,
+    step_case: Path,
+    step: int,
+    move_source: bool = False,
+    validate_source: bool = True,
+) -> Optional[Path]:
     """Copy high-definition CFD sampled surface .vtp into root_case only."""
     src = step_case / CFD_SAMPLED_PREVIEW_DIR_NAME / CFD_SAMPLED_SURFACE_VTP_NAME
     if not src.exists():
@@ -2131,7 +2200,12 @@ def copy_step_cfd_sampled_preview_to_root(root_case: Path, step_case: Path, step
     out_dir = root_case / ROOT_CFD_SAMPLED_DIR_NAME
     out_dir.mkdir(parents=True, exist_ok=True)
     dst = out_dir / f"frame_{step:03d}_{CFD_SAMPLED_SURFACE_VTP_NAME}"
-    _copy_file_atomically(src, dst)
+    _copy_file_atomically(
+        src,
+        dst,
+        move_source=move_source,
+        validate_source=validate_source,
+    )
     for rep_name in ("cfd_sampled_pressure_report.txt", "source_sampled_vtk_files.txt"):
         rep = step_case / CFD_SAMPLED_PREVIEW_DIR_NAME / rep_name
         if rep.exists():
@@ -2173,7 +2247,11 @@ def copy_step_debug_reports_to_root(
         )
 
 
-def create_root_safe_pvd_from_copied_previews(root_case: Path, total_steps: int) -> Optional[Path]:
+def create_root_safe_pvd_from_copied_previews(
+    root_case: Path,
+    total_steps: int,
+    validate_frames: bool = True,
+) -> Optional[Path]:
     """Create main PVD from root-level compact frames.
 
     The main motion PVD uses the combined panel preview generated from the
@@ -2200,13 +2278,17 @@ def create_root_safe_pvd_from_copied_previews(root_case: Path, total_steps: int)
         panel_vf = root_case / ROOT_PANEL_PREVIEW_DIR_NAME / f"frame_{step:03d}_{COMBINED_SURFACE_VTK_NAME}"
         panel_valid = False
         cfd_valid = False
-        if panel_vf.exists():
+        if panel_vf.exists() and not validate_frames:
+            panel_valid = True
+        elif panel_vf.exists():
             try:
                 validate_preview_polydata(panel_vf)
                 panel_valid = True
             except (OSError, ValueError, ElementTree.ParseError) as exc:
                 manifest.append(f"# step_{step:03d}: invalid panel preview: {exc}")
-        if cfd_vf.exists():
+        if cfd_vf.exists() and not validate_frames:
+            cfd_valid = True
+        elif cfd_vf.exists():
             try:
                 validate_preview_polydata(cfd_vf)
                 cfd_valid = True

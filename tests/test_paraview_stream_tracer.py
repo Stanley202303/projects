@@ -10,6 +10,7 @@ from cfd_motion.visualization import (
     _write_ascii_polydata_vtk,
     connected_surface_body_ids,
     copy_minimal_stream_tracer_case_to_root,
+    copy_step_panel_preview_to_root,
     create_root_safe_pvd_from_copied_previews,
     validate_preview_polydata,
     write_cfd_sampled_surface_preview_for_step,
@@ -177,6 +178,37 @@ def test_panel_preview_initializes_structural_cell_fields(tmp_path: Path) -> Non
     assert speed_values == [3.0, 3.0, 3.0]
 
 
+def test_streaming_panel_preview_skips_disposable_per_component_files(
+    tmp_path: Path,
+) -> None:
+    component = AeroComponent(
+        name="target",
+        patch="target",
+        triangles=[
+            (
+                (0.0, 0.0, 1.0),
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+            )
+        ],
+        cofr=(0.0, 0.0, 0.0),
+        lref=1.0,
+        aref=0.5,
+    )
+
+    write_panel_aero_preview_for_step(
+        tmp_path,
+        [component],
+        0,
+        write_component_files=False,
+    )
+
+    panel_dir = tmp_path / "panel_preview"
+    assert (panel_dir / COMBINED_SURFACE_VTK_NAME).exists()
+    assert not (panel_dir / "target_panel_step_000.vtp").exists()
+
+
 def test_patch_id_distinguishes_disconnected_bodies_in_one_component(tmp_path: Path) -> None:
     component = AeroComponent(
         name="multi-body",
@@ -286,3 +318,59 @@ def test_minimal_stream_tracer_case_keeps_only_latest_mesh_and_u(tmp_path: Path)
     assert "retained_data=constant/polyMesh, system, latest U only" in (
         root_case / "paraview_stream_tracer_manifest.txt"
     ).read_text()
+
+
+def test_disposable_stream_tracer_publish_moves_large_mesh_and_field(tmp_path: Path) -> None:
+    step_case = tmp_path / "step_work"
+    root_case = tmp_path / "actual_model_case"
+    root_case.mkdir()
+    poly_mesh = step_case / "constant" / "polyMesh"
+    poly_mesh.mkdir(parents=True)
+    (poly_mesh / "points").write_text("large mesh payload\n")
+    latest = step_case / "2"
+    latest.mkdir(parents=True)
+    (latest / "U").write_text("internalField uniform (1 0 0);\n")
+
+    result = copy_minimal_stream_tracer_case_to_root(
+        root_case,
+        step_case,
+        2,
+        move_large_files=True,
+    )
+
+    assert result is not None and result.exists()
+    assert not poly_mesh.exists()
+    assert not (latest / "U").exists()
+    assert (
+        root_case
+        / "stream_tracer_volume_case"
+        / "constant"
+        / "polyMesh"
+        / "points"
+    ).read_text() == "large mesh payload\n"
+
+
+def test_disposable_preview_publish_moves_already_validated_frame(tmp_path: Path) -> None:
+    step_case = tmp_path / "step_work"
+    root_case = tmp_path / "actual_model_case"
+    root_case.mkdir()
+    source = step_case / "panel_preview" / COMBINED_SURFACE_VTK_NAME
+    source.parent.mkdir(parents=True)
+    _write_ascii_polydata_vtk(
+        source,
+        [],
+        [],
+        {"pressureCoeff": []},
+    )
+
+    destination = copy_step_panel_preview_to_root(
+        root_case,
+        step_case,
+        0,
+        move_source=True,
+        validate_source=False,
+    )
+
+    assert destination is not None and destination.exists()
+    assert not source.exists()
+    validate_preview_polydata(destination)

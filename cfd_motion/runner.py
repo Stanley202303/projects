@@ -286,6 +286,7 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
         for step in range(ASSEMBLY_DYNAMIC_STEPS):
             step_started = time.monotonic()
             print(f"\nAssembly motion step {step + 1}/{ASSEMBLY_DYNAMIC_STEPS}")
+            damage_started = time.monotonic()
             if step > 0:
                 changed_damage_sites = evolve_collision_damage(
                     components,
@@ -298,7 +299,9 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                         "Collision damage evolution: "
                         f"{changed_damage_sites} site(s) changed."
                     )
+            damage_elapsed = time.monotonic() - damage_started
 
+            case_setup_started = time.monotonic()
             if SAVE_MOTION_STEPS:
                 step_case = steps_dir / f"step_{step:03d}"
             else:
@@ -308,6 +311,8 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     shutil.rmtree(step_case)
 
             make_case_from_components(components, step_case, clear_case=True)
+            case_setup_elapsed = time.monotonic() - case_setup_started
+            solver_started = time.monotonic()
             try:
                 run_docker(step_case)
             except subprocess.CalledProcessError:
@@ -321,16 +326,26 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                     force=True,
                 )
                 raise
+            solver_elapsed = time.monotonic() - solver_started
             # High-definition visualisation: convert real OpenFOAM sampled-surface
             # VTKs to one XML .vtp frame before any rigid-body update is applied.
             # This makes frame N show the pressure field for the geometry actually
             # solved in CFD at step N.
+            cfd_preview_started = time.monotonic()
             write_cfd_sampled_surface_preview_for_step(step_case, step)
+            cfd_preview_elapsed = time.monotonic() - cfd_preview_started
             cfd_elapsed = time.monotonic() - step_started
             motion_started = time.monotonic()
             print(
                 f"CFD phase completed in {format_eta(cfd_elapsed)}; "
                 "processing motion and collisions."
+            )
+            print(
+                "CFD phase breakdown: "
+                f"damage evolution {damage_elapsed:.2f}s, "
+                f"case setup {case_setup_elapsed:.2f}s, "
+                f"OpenFOAM {solver_elapsed:.2f}s, "
+                f"sampled preview {cfd_preview_elapsed:.2f}s."
             )
 
             export_force_coefficients(step_case)
@@ -591,21 +606,47 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
 
             # Write compact visualisation AFTER the motion and collision update so the frame
             # shows moved, non-interpenetrating geometry.
+            preview_started = time.monotonic()
             write_panel_aero_preview_for_step(
                 step_case,
                 visualization_components_with_fragments(components),
                 step,
+                write_component_files=SAVE_MOTION_STEPS,
             )
+            preview_elapsed = time.monotonic() - preview_started
 
             # Retain only compact root-level outputs needed for the .pvd animation.
             # The heavy OpenFOAM root time-series is optional and disabled by default
             # to keep actual_model_case below the storage budget.
             if ROOT_OPENFOAM_TIMESERIES:
                 copy_step_to_root_timeseries(root_case, step_case, step)
-            copy_minimal_stream_tracer_case_to_root(root_case, step_case, step)
-            copy_step_cfd_sampled_preview_to_root(root_case, step_case, step)
-            copy_step_panel_preview_to_root(root_case, step_case, step)
+            disposable_step_case = not SAVE_MOTION_STEPS
+            stream_export_started = time.monotonic()
+            copy_minimal_stream_tracer_case_to_root(
+                root_case,
+                step_case,
+                step,
+                move_large_files=disposable_step_case,
+            )
+            stream_export_elapsed = time.monotonic() - stream_export_started
+            compact_copy_started = time.monotonic()
+            copy_step_cfd_sampled_preview_to_root(
+                root_case,
+                step_case,
+                step,
+                move_source=disposable_step_case,
+                validate_source=False,
+            )
+            copy_step_panel_preview_to_root(
+                root_case,
+                step_case,
+                step,
+                move_source=disposable_step_case,
+                validate_source=False,
+            )
+            compact_copy_elapsed = time.monotonic() - compact_copy_started
             copy_step_debug_reports_to_root(root_case, step_case, step)
+            pvd_started = time.monotonic()
             if SAVE_MOTION_STEPS:
                 create_paraview_pvd_timeseries(
                     root_case,
@@ -621,15 +662,21 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                 create_root_safe_pvd_from_copied_previews(
                     root_case,
                     step + 1,
+                    validate_frames=False,
                 )
                 create_root_panel_preview_pvd(
                     root_case,
                     step + 1,
                 )
+            pvd_elapsed = time.monotonic() - pvd_started
+            storage_check_started = time.monotonic()
             enforce_case_storage_budget(root_case, f"after copying compact frame {step}")
+            storage_check_elapsed = time.monotonic() - storage_check_started
 
+            cleanup_started = time.monotonic()
             if not SAVE_MOTION_STEPS and step_case.exists():
                 shutil.rmtree(step_case)
+            cleanup_elapsed = time.monotonic() - cleanup_started
 
             output_elapsed = time.monotonic() - output_started
             complete_step_elapsed = time.monotonic() - step_started
@@ -649,6 +696,15 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
                 f"collision {format_eta(collision_elapsed)}, "
                 f"output {format_eta(output_elapsed)}, "
                 f"complete {format_eta(complete_step_elapsed)}."
+            )
+            print(
+                "Post-step I/O: "
+                f"preview {preview_elapsed:.2f}s, "
+                f"stream-volume publish {stream_export_elapsed:.2f}s, "
+                f"compact-frame publish {compact_copy_elapsed:.2f}s, "
+                f"PVD update {pvd_elapsed:.2f}s, "
+                f"storage check {storage_check_elapsed:.2f}s, "
+                f"temporary cleanup {cleanup_elapsed:.2f}s."
             )
             print(
                 f"ETA update: step {steps_done_for_eta}/{ASSEMBLY_DYNAMIC_STEPS} took "
@@ -678,7 +734,11 @@ def run_assembly_motion_simulation(components: List[AeroComponent], root_case: P
             create_paraview_pvd_timeseries(root_case, steps_dir, ASSEMBLY_DYNAMIC_STEPS)
             create_panel_preview_pvd(root_case, steps_dir, ASSEMBLY_DYNAMIC_STEPS)
         else:
-            create_root_safe_pvd_from_copied_previews(root_case, ASSEMBLY_DYNAMIC_STEPS)
+            create_root_safe_pvd_from_copied_previews(
+                root_case,
+                ASSEMBLY_DYNAMIC_STEPS,
+                validate_frames=False,
+            )
             create_root_panel_preview_pvd(root_case, ASSEMBLY_DYNAMIC_STEPS)
 
         (root_case / "OPEN_THIS_IN_PARAVIEW.txt").write_text(

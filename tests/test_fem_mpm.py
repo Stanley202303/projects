@@ -1,6 +1,7 @@
 import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 import xml.etree.ElementTree as ElementTree
 
 from cfd_motion.fem_mpm import (
@@ -10,11 +11,16 @@ from cfd_motion.fem_mpm import (
     element_force_and_energy,
     make_tetra_element,
 )
-from cfd_motion.models import AeroComponent, MaterialProperties
+from cfd_motion.models import (
+    AeroComponent,
+    CollisionDamageState,
+    MaterialProperties,
+)
 from cfd_motion.motion import (
     append_collision_conservation_audits,
     apply_collision_impulse,
     deform_component_at_contact,
+    evolve_collision_damage,
     persistent_contact_for_pair,
     write_collision_conservation_log_header,
 )
@@ -316,6 +322,60 @@ def test_conservation_audit_is_written_for_each_structural_step():
         rows = [line for line in path.read_text().splitlines() if not line.startswith("#")]
         assert len(rows) == 2
         assert rows[1].split("\t")[0:2] == ["4", "cube"]
+
+
+def test_multiple_damage_sites_advance_fem_once_per_global_step():
+    component = _cube_component()
+    component.collision_structural_state = build_hybrid_fem_mpm_collision_state(
+        component, 2e11, 0.3, 2.5e8, 0.2, 0.3, 32
+    )
+    component.collision_damage = [
+        CollisionDamageState(
+            contact_point=(1.0, 0.25, 0.25),
+            inward_direction=(-1.0, 0.0, 0.0),
+            contact_radius_m=0.1,
+            current_depth_m=0.0,
+            permanent_depth_m=0.0,
+            current_hole_radius_m=0.05,
+            target_hole_radius_m=0.05,
+            created_step=0,
+        ),
+        CollisionDamageState(
+            contact_point=(1.0, 0.75, 0.75),
+            inward_direction=(-1.0, 0.0, 0.0),
+            contact_radius_m=0.1,
+            current_depth_m=0.0,
+            permanent_depth_m=0.0,
+            current_hole_radius_m=0.05,
+            target_hole_radius_m=0.05,
+            created_step=0,
+        ),
+        # A newly-created site is deliberately last. It must not prevent the
+        # already-active sites from advancing the shared structural body.
+        CollisionDamageState(
+            contact_point=(1.0, 0.5, 0.5),
+            inward_direction=(-1.0, 0.0, 0.0),
+            contact_radius_m=0.1,
+            current_depth_m=0.0,
+            permanent_depth_m=0.0,
+            created_step=1,
+        ),
+    ]
+
+    with TemporaryDirectory() as temp_dir:
+        log_path = Path(temp_dir) / "damage.tsv"
+        with patch(
+            "cfd_motion.motion.advance_hybrid_fem_mpm_collision",
+            return_value=(0.004, 0, 0.0),
+        ) as advance:
+            evolve_collision_damage([component], 1, 1e-4, log_path)
+
+    advance.assert_called_once()
+    assert component.collision_damage[0].elapsed_s == 1e-4
+    assert component.collision_damage[1].elapsed_s == 1e-4
+    assert component.collision_damage[2].elapsed_s == 0.0
+    assert component.collision_damage[0].permanent_depth_m == 0.004
+    assert component.collision_damage[1].permanent_depth_m == 0.004
 
 
 def test_mpm_grid_transfer_projects_small_angular_drift_conservatively():
