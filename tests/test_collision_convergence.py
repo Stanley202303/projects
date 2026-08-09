@@ -10,6 +10,7 @@ from cfd_motion.models import AeroComponent, MaterialProperties, MotionFreedom
 from cfd_motion.motion import (
     advance_collision_damage_state,
     aabb_gap_along_axis,
+    apply_collision_impulse,
     apply_collision_convergence_step,
     apply_nearby_collision_effects,
     arrange_collision_convergence_initial_gap,
@@ -2814,7 +2815,7 @@ class CollisionConvergenceTest(TestCase):
         self.assertAlmostEqual(axis[1], 1.0)
         self.assertAlmostEqual(axis[2], 0.0)
 
-    def test_single_swept_impact_does_not_reverse_the_driver(self) -> None:
+    def test_single_swept_impact_rebounds_by_material_restitution(self) -> None:
         moving = box_component("moving", 0.0, 1.0)
         stationary = box_component("stationary", 1.1, 2.1)
 
@@ -2864,7 +2865,14 @@ class CollisionConvergenceTest(TestCase):
                 pair,
             )
             self.assertTrue(contacts)
-            self.assertAlmostEqual(moving.linear_velocity[0], 0.0)
+            self.assertNotAlmostEqual(moving.linear_velocity[0], 0.0)
+            self.assertGreaterEqual(
+                v_dot(
+                    contact_point_velocity(moving, swept_contact.point),
+                    swept_contact.normal,
+                ),
+                -1e-9,
+            )
             self.assertEqual(stationary.linear_velocity, (0.0, 0.0, 0.0))
 
             previous_x = moving.cofr[0]
@@ -2875,8 +2883,8 @@ class CollisionConvergenceTest(TestCase):
                     0.02,
                     load_override=((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
                 )
-                self.assertAlmostEqual(moving.cofr[0], previous_x)
-                self.assertAlmostEqual(moving.linear_velocity[0], 0.0)
+                self.assertNotEqual(moving.cofr[0], previous_x)
+                self.assertNotAlmostEqual(moving.linear_velocity[0], 0.0)
                 previous_x = moving.cofr[0]
 
     def test_nonperforating_thin_plate_impact_remains_on_entrance_surface(self) -> None:
@@ -2964,6 +2972,13 @@ class CollisionConvergenceTest(TestCase):
         self.assertIsNotNone(post_contact)
         assert post_contact is not None
         self.assertLessEqual(post_contact[0], 1e-4)
+        self.assertGreaterEqual(
+            v_dot(
+                contact_point_velocity(moving, contact.point),
+                contact.normal,
+            ),
+            -1e-9,
+        )
         moving_bounds = component_bounds(moving.triangles)
         stationary_bounds = component_bounds(stationary.triangles)
         self.assertGreaterEqual(
@@ -3083,7 +3098,33 @@ class CollisionConvergenceTest(TestCase):
             post_contact = swept_mesh_contact(moving, stationary, axis, 0.005)
             self.assertIsNotNone(post_contact)
             assert post_contact is not None
-            self.assertLessEqual(post_contact[0], 1e-4)
+            self.assertLessEqual(post_contact[0], 1e-3)
+
+    def test_off_center_impact_preserves_glancing_motion_and_adds_rotation(self) -> None:
+        moving = box_component("glancing_body", 0.0, 1.0)
+        moving.freedom = MotionFreedom(
+            translate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+            rotate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+        )
+        moving.linear_velocity = (5.0, 2.0, 0.0)
+
+        apply_collision_impulse(
+            moving,
+            (-3.0, 0.0, 0.0),
+            (1.0, 0.5, 0.0),
+        )
+
+        self.assertAlmostEqual(moving.linear_velocity[1], 2.0)
+        self.assertNotEqual(moving.angular_velocity, (0.0, 0.0, 0.0))
+        self.assertGreater(moving.angular_velocity[2], 0.0)
 
     def test_collision_shock_affects_nearby_non_contact_part(self) -> None:
         moving = box_component("moving", 0.0, 1.0)

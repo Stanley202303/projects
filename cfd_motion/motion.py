@@ -4201,6 +4201,7 @@ def resolve_part_collisions(
 
     lines: List[str] = []
     handled_relative_sweeps: Set[Tuple[int, int]] = set()
+    impulse_resolved_pairs: Set[Tuple[int, int]] = set()
     pending_swept_contact = swept_contact
     max_outer_passes = max(1, COLLISION_MAX_PASSES)
     for _outer_pass in range(max_outer_passes):
@@ -4213,6 +4214,14 @@ def resolve_part_collisions(
                 for j in range(i + 1, len(active_components)):
                     b = active_components[j]
                     pair_key = collision_pair_key(a, b)
+                    if pair_key in impulse_resolved_pairs:
+                        # One contact pair receives at most one impact impulse
+                        # during a physical time step.  Geometry may remain
+                        # overlapped while the elastic/plastic deformation is
+                        # applied; the later Signorini projection removes that
+                        # overlap without a second impulse whose independently
+                        # estimated normal can flip and cancel the rebound.
+                        continue
                     initial_overlap_depth = 0.0
                     relative_swept_contact: Optional[RelativeSweptContact] = None
                     is_swept_pair = (
@@ -4607,14 +4616,14 @@ def resolve_part_collisions(
                         + contact_inverse_mass(b, contact, normal)
                     )
                     if normal_inverse_mass > 0.0 and rel_normal < 0.0:
-                        restitution = (
-                            COLLISION_PRESCRIBED_IMPACT_RESTITUTION
-                            if is_swept_pair
-                            else contact_restitution_coefficient(
-                                a,
-                                b,
-                                COLLISION_RESTITUTION,
-                            )
+                        restitution = contact_restitution_coefficient(
+                            a,
+                            b,
+                            (
+                                COLLISION_PRESCRIBED_IMPACT_RESTITUTION
+                                if is_swept_pair
+                                else COLLISION_RESTITUTION
+                            ),
                         )
                         impulse_mag = -(1.0 + restitution) * rel_normal / normal_inverse_mass
                         impulse = v_mul(normal, impulse_mag)
@@ -4640,6 +4649,7 @@ def resolve_part_collisions(
                             timpulse = v_mul(tdir, -jt)
                             apply_collision_impulse(a, timpulse, contact)
                             apply_collision_impulse(b, v_mul(timpulse, -1.0), contact)
+                        impulse_resolved_pairs.add(pair_key)
                     elif inv_sum <= 0.0:
                         pseudo_force = v_mul(normal, max(depth, COLLISION_MIN_OVERLAP_M) * max(a.mass, b.mass, DEFAULT_PART_MASS_KG) / max(MOTION_DT, 1e-9))
                         apply_collision_impulse(a, pseudo_force, contact)

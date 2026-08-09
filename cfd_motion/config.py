@@ -449,9 +449,14 @@ COLLISION_RESTITUTION = max(
     -1.0,
     min(1.0, float(os.environ.get("COLLISION_RESTITUTION", "-1"))),
 )
+# Use the BOM-derived material pair by default.  A value in [0, 1] remains an
+# explicit override for controlled experiments.
 COLLISION_PRESCRIBED_IMPACT_RESTITUTION = max(
-    0.0,
-    float(os.environ.get("COLLISION_PRESCRIBED_IMPACT_RESTITUTION", "0")),
+    -1.0,
+    min(
+        1.0,
+        float(os.environ.get("COLLISION_PRESCRIBED_IMPACT_RESTITUTION", "-1")),
+    ),
 )
 COLLISION_TANGENTIAL_DAMPING = float(os.environ.get("COLLISION_TANGENTIAL_DAMPING", "0.25"))
 COLLISION_FRICTION_COEFFICIENT = float(os.environ.get("COLLISION_FRICTION_COEFFICIENT", "-1"))
