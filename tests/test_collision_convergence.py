@@ -1,4 +1,5 @@
 import math
+import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -53,14 +54,22 @@ from cfd_motion.runner import (
 from cfd_motion.visualization import (
     connected_surface_body_ids,
     visualization_components_with_fragments,
+    write_panel_aero_preview_for_step,
 )
 from cfd_motion.structural import (
     ExplicitShellState,
     HybridShellCollisionState,
     _add_membrane_element_forces,
+    _fragment_component_from_triangles,
+    _fragment_detachment_radius_m,
+    _fragment_merge_span_limit_m,
+    advance_hybrid_shell_collision,
     build_explicit_shell_state,
+    build_hybrid_shell_collision_state,
     shell_fragment_triangles,
     shell_fragment_velocity,
+    shell_triangle_von_mises_stress_pa,
+    sync_hybrid_shell_fragments,
     update_shell_perforation,
 )
 
@@ -1120,6 +1129,57 @@ class CollisionConvergenceTest(TestCase):
         target_bounds = component_bounds(target.triangles)
         self.assertLessEqual(projectile_bounds[1], target_bounds[0])
 
+    def test_environment_projection_creates_damage_against_constrained_non_anchor_target(self) -> None:
+        projectile = rectangular_component(
+            "late_projectile",
+            0.092,
+            0.097,
+            -0.0025,
+            0.0025,
+            -0.0025,
+            0.0025,
+        )
+        projectile.mass = 0.028
+        projectile.linear_velocity = (30.0, 0.0, 0.0)
+        projectile.material = MaterialProperties(
+            material_name="Iridium",
+            density_kg_m3=22650.0,
+            young_modulus_pa=5.0e7,
+            yield_strength_pa=1.0e8,
+            failure_strain=0.20,
+        )
+        target = rectangular_component(
+            "constrained_abs_plate",
+            0.09,
+            0.095,
+            -0.1,
+            0.1,
+            -0.1,
+            0.1,
+        )
+        target.freedom = MotionFreedom([], [], "COLLISION_TARGET")
+        target.material = MaterialProperties(
+            material_name="ABS",
+            density_kg_m3=1052.0,
+            young_modulus_pa=2.31e9,
+            poisson_ratio=0.364,
+            thickness_m=0.005,
+            yield_strength_pa=4.48e7,
+            failure_strain=0.20,
+        )
+
+        with patch("cfd_motion.motion.MOTION_DT", 0.0012):
+            lines = enforce_environment_contact_constraints(
+                [projectile, target],
+                4,
+            )
+
+        self.assertTrue(lines)
+        self.assertTrue(any("plastic_membrane_dent" in line for line in lines))
+        self.assertFalse(any("nonpenetration_constraint" in line for line in lines))
+        self.assertTrue(target.collision_damage)
+        self.assertGreater(target.collision_damage[0].current_depth_m, 0.0)
+
     def test_nearby_shock_impulse_has_equal_opposite_reaction(self) -> None:
         donor = box_component("shock_donor", -0.02, -0.01)
         neighbour = box_component("shock_neighbour", 0.0, 0.01)
@@ -1650,11 +1710,7 @@ class CollisionConvergenceTest(TestCase):
         hybrid_state = target.collision_structural_state
         if isinstance(hybrid_state, HybridShellCollisionState):
             self.assertTrue(hybrid_state.shell_state.render_as_midsurface)
-            self.assertLessEqual(
-                len(target.triangles),
-                len(hybrid_state.shell_state.triangle_nodes)
-                - len(hybrid_state.shell_state.emitted_triangles),
-            )
+            self.assertGreater(len(target.triangles), 0)
             largest_transverse_span = 0.0
             for fragment in hybrid_state.fragment_bodies:
                 _xmin, _xmax, ymin, ymax, zmin, zmax = component_bounds(
@@ -2097,6 +2153,352 @@ class CollisionConvergenceTest(TestCase):
         self.assertGreater(displaced_fragments, 0)
         self.assertGreater(len(target.triangles), initial_triangle_count)
 
+    def test_brittle_porcelain_fractures_wider_and_into_more_fragments_than_plastic(self) -> None:
+        porcelain = rectangular_component(
+            "porcelain_sheet",
+            0.0,
+            0.0001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        porcelain.material = MaterialProperties(
+            material_name="porcelain",
+            density_kg_m3=2400.0,
+            young_modulus_pa=6.0e10,
+            poisson_ratio=0.22,
+            thickness_m=0.0001,
+            yield_strength_pa=8.0e7,
+            failure_strain=0.0015,
+        )
+        plastic = rectangular_component(
+            "plastic_sheet",
+            0.0,
+            0.0001,
+            -0.05,
+            0.05,
+            -0.05,
+            0.05,
+        )
+        plastic.material = MaterialProperties(
+            material_name="ABS plastic",
+            density_kg_m3=1052.0,
+            young_modulus_pa=2.3e9,
+            poisson_ratio=0.36,
+            thickness_m=0.0001,
+            yield_strength_pa=4.48e7,
+            failure_strain=0.20,
+        )
+
+        _porcelain_deflection, porcelain_fragments = fracture_thin_shell(
+            porcelain,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.01,
+            rim_displacement_m=0.004,
+        )
+        _plastic_deflection, plastic_fragments = fracture_thin_shell(
+            plastic,
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.01,
+            rim_displacement_m=0.004,
+        )
+
+        porcelain_outer_radius = max(
+            math.hypot(centroid[1], centroid[2])
+            for triangle in porcelain.triangles
+            for area, centroid, normal in [triangle_area_centroid_normal(triangle)]
+            if area > 1e-18 and abs(normal[0]) >= 0.5
+        )
+        plastic_outer_radius = max(
+            math.hypot(centroid[1], centroid[2])
+            for triangle in plastic.triangles
+            for area, centroid, normal in [triangle_area_centroid_normal(triangle)]
+            if area > 1e-18 and abs(normal[0]) >= 0.5
+        )
+
+        self.assertGreater(porcelain_fragments, plastic_fragments)
+        self.assertGreater(porcelain_outer_radius, plastic_outer_radius)
+
+    def _fragment_test_state(
+        self,
+        material_name: str = "ABS",
+        failure_strain: float = 0.20,
+        yield_strength_pa: float = 4.48e7,
+    ) -> tuple[AeroComponent, HybridShellCollisionState]:
+        target = rectangular_component(
+            f"{material_name}_fragment_target",
+            0.0,
+            0.032,
+            -0.20,
+            0.20,
+            -0.20,
+            0.20,
+        )
+        target.mass = 2.8
+        target.material = MaterialProperties(
+            material_name=material_name,
+            density_kg_m3=1052.0,
+            young_modulus_pa=2.31e9,
+            poisson_ratio=0.364,
+            thickness_m=0.032,
+            yield_strength_pa=yield_strength_pa,
+            failure_strain=failure_strain,
+        )
+        state = build_hybrid_shell_collision_state(
+            target,
+            (0.016, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.064,
+            2.31e9,
+            0.032,
+            0.364,
+            yield_strength_pa,
+            failure_strain,
+            0.02,
+            0.4,
+            32,
+            0.096,
+            0.046,
+        )
+        return target, state
+
+    def test_ductile_plug_radius_is_not_inflated_by_contact_or_thickness(self) -> None:
+        _target, state = self._fragment_test_state()
+        radius = _fragment_detachment_radius_m(state.shell_state, 0.046)
+        self.assertAlmostEqual(radius, 0.046, delta=1e-12)
+        self.assertLess(radius, state.shell_state.contact_radius_m)
+        self.assertLess(radius, 4.0 * state.shell_state.thickness_m)
+
+    def test_brittle_crack_radius_is_larger_but_strictly_bounded(self) -> None:
+        _target, state = self._fragment_test_state(
+            "porcelain",
+            failure_strain=0.0015,
+            yield_strength_pa=8.0e7,
+        )
+        radius = _fragment_detachment_radius_m(state.shell_state, 0.046)
+        self.assertGreater(radius, 0.046)
+        self.assertLessEqual(radius, 2.5 * 0.046)
+
+    def test_ductile_plug_merge_limit_covers_resolved_hole_without_large_panes(self) -> None:
+        _target, state = self._fragment_test_state()
+        state.shell_state.current_hole_radius_m = 0.046
+        limit = _fragment_merge_span_limit_m(state.shell_state)
+        self.assertGreaterEqual(limit, 3.5 * 0.046 - 1e-12)
+        self.assertLessEqual(limit, 0.162)
+
+    def test_detached_ductile_plug_preserves_reference_size_under_extreme_nodal_strain(self) -> None:
+        target, state = self._fragment_test_state()
+        shell = state.shell_state
+        chosen = {
+            index
+            for index, centroid in enumerate(shell.triangle_reference_centroids)
+            if math.hypot(centroid[1], centroid[2]) <= 0.046
+        }
+        self.assertTrue(chosen)
+        nodes = {node for index in chosen for node in shell.triangle_nodes[index]}
+        for node in nodes:
+            reference = shell.reference_positions[node]
+            shell.positions[node] = (
+                reference[0] + 0.15 * (1.0 + abs(reference[1])),
+                1.8 * reference[1],
+                1.8 * reference[2],
+            )
+            shell.velocities[node] = (50.0, 20.0, -10.0)
+        fragment = _fragment_component_from_triangles(target, state, chosen).component
+        _xmin, _xmax, ymin, ymax, zmin, zmax = component_bounds(fragment.triangles)
+        self.assertLessEqual(ymax - ymin, 0.12)
+        self.assertLessEqual(zmax - zmin, 0.12)
+        self.assertLessEqual(
+            math.hypot(fragment.linear_velocity[1], fragment.linear_velocity[2]),
+            0.10 * abs(fragment.linear_velocity[0]) + 1e-12,
+        )
+        self.assertGreater(fragment.linear_velocity[0], 0.0)
+
+    def test_disconnected_ductile_hole_elements_emit_one_coherent_plug(self) -> None:
+        target, state = self._fragment_test_state()
+        shell = state.shell_state
+        first = min(
+            range(len(shell.triangle_nodes)),
+            key=lambda i: shell.triangle_reference_centroids[i][1],
+        )
+        second = max(
+            range(len(shell.triangle_nodes)),
+            key=lambda i: shell.triangle_reference_centroids[i][1],
+        )
+        shell.plug_triangles.update({first, second})
+        emitted_count, emitted_mass = sync_hybrid_shell_fragments(target, state)
+        self.assertEqual(emitted_count, 2)
+        self.assertEqual(len(state.fragment_bodies), 1)
+        self.assertEqual(state.fragment_bodies[0].triangle_indices, {first, second})
+        self.assertAlmostEqual(
+            state.fragment_bodies[0].component.mass,
+            emitted_mass,
+            delta=1e-12,
+        )
+
+    def test_fragment_triangle_ownership_and_mass_are_exact_after_incremental_growth(self) -> None:
+        target, state = self._fragment_test_state()
+        shell = state.shell_state
+        indices = sorted(
+            range(len(shell.triangle_nodes)),
+            key=lambda i: math.hypot(
+                shell.triangle_reference_centroids[i][1],
+                shell.triangle_reference_centroids[i][2],
+            ),
+        )[:6]
+        shell.plug_triangles.update(indices[:3])
+        sync_hybrid_shell_fragments(target, state)
+        shell.plug_triangles.update(indices[3:])
+        sync_hybrid_shell_fragments(target, state)
+        owned = [
+            index
+            for fragment in state.fragment_bodies
+            for index in fragment.triangle_indices
+        ]
+        self.assertEqual(sorted(owned), sorted(indices))
+        self.assertEqual(len(owned), len(set(owned)))
+        expected_mass = sum(shell.triangle_masses_kg[index] for index in indices)
+        self.assertAlmostEqual(
+            sum(fragment.component.mass for fragment in state.fragment_bodies),
+            expected_mass,
+            delta=1e-12,
+        )
+
+    def test_normal_ductile_plug_speed_is_bounded_by_source_node_speeds(self) -> None:
+        target, state = self._fragment_test_state()
+        shell = state.shell_state
+        chosen = set(range(min(8, len(shell.triangle_nodes))))
+        nodes = {node for index in chosen for node in shell.triangle_nodes[index]}
+        for offset, node in enumerate(sorted(nodes)):
+            shell.velocities[node] = (20.0 + offset, 4.0, -2.0)
+        source_speeds = [
+            math.sqrt(sum(value * value for value in shell.velocities[node]))
+            for node in nodes
+        ]
+        fragment = _fragment_component_from_triangles(target, state, chosen).component
+        fragment_speed = math.sqrt(sum(value * value for value in fragment.linear_velocity))
+        self.assertLessEqual(fragment_speed, max(source_speeds) + 1e-12)
+        self.assertGreaterEqual(fragment_speed, 0.90 * min(source_speeds))
+
+    def test_oblique_ductile_plug_follows_impact_axis_with_bounded_scatter(self) -> None:
+        target, state = self._fragment_test_state()
+        shell = state.shell_state
+        shell.inward_direction = v_unit((1.0, 0.30, -0.10))
+        chosen = set(range(min(8, len(shell.triangle_nodes))))
+        nodes = {node for index in chosen for node in shell.triangle_nodes[index]}
+        for node in nodes:
+            shell.velocities[node] = (60.0, 40.0, 20.0)
+        fragment = _fragment_component_from_triangles(target, state, chosen).component
+        axial_speed = v_dot(fragment.linear_velocity, shell.inward_direction)
+        transverse = v_sub(
+            fragment.linear_velocity,
+            tuple(value * axial_speed for value in shell.inward_direction),
+        )
+        self.assertGreater(axial_speed, 0.0)
+        self.assertLessEqual(
+            math.sqrt(sum(value * value for value in transverse)),
+            0.10 * axial_speed + 1e-12,
+        )
+
+    def test_free_parent_receives_reaction_for_removed_fragment_scatter_momentum(self) -> None:
+        target, state = self._fragment_test_state()
+        target.freedom.translate_axes = [
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        ]
+        shell = state.shell_state
+        chosen = set(range(min(8, len(shell.triangle_nodes))))
+        nodes = {node for index in chosen for node in shell.triangle_nodes[index]}
+        for node in nodes:
+            shell.velocities[node] = (50.0, 30.0, 0.0)
+        fragment_mass = sum(shell.triangle_masses_kg[index] for index in chosen)
+        initial_momentum_y = fragment_mass * 30.0
+        fragment = _fragment_component_from_triangles(target, state, chosen).component
+        remaining_mass = target.mass - fragment.mass
+        final_momentum_y = (
+            fragment.mass * fragment.linear_velocity[1]
+            + remaining_mass * target.linear_velocity[1]
+        )
+        self.assertAlmostEqual(final_momentum_y, initial_momentum_y, delta=1e-10)
+
+    def test_undeformed_shell_has_exactly_zero_von_mises_stress(self) -> None:
+        _target, state = self._fragment_test_state()
+        stresses = [
+            shell_triangle_von_mises_stress_pa(state.shell_state, index)
+            for index in range(len(state.shell_state.triangle_nodes))
+        ]
+        self.assertTrue(stresses)
+        self.assertTrue(all(stress == 0.0 for stress in stresses))
+
+    def test_constant_strain_triangle_von_mises_matches_plane_stress_solution(self) -> None:
+        _target, state = self._fragment_test_state()
+        shell = state.shell_state
+        element = shell.membrane_elements[0]
+        origin = shell.reference_positions[element.nodes[0]]
+        strain = 1.0e-4
+        for node in element.nodes:
+            reference = shell.reference_positions[node]
+            local_x = v_dot(v_sub(reference, origin), element.basis_x)
+            shell.positions[node] = tuple(
+                reference[axis] + strain * local_x * element.basis_x[axis]
+                for axis in range(3)
+            )
+        calculated = shell_triangle_von_mises_stress_pa(shell, 0)
+        poisson = shell.poisson_ratio
+        stress_x = shell.young_modulus_pa * strain / (1.0 - poisson * poisson)
+        expected = stress_x * math.sqrt(1.0 - poisson + poisson * poisson)
+        self.assertAlmostEqual(calculated, expected, delta=1e-9 * expected)
+
+    def test_panel_preview_exports_complete_von_mises_and_yield_arrays(self) -> None:
+        target, state = self._fragment_test_state()
+        target.collision_structural_state = state
+        shell = state.shell_state
+        element = shell.membrane_elements[0]
+        shell.positions[element.nodes[1]] = tuple(
+            shell.positions[element.nodes[1]][axis]
+            + 1.0e-4 * element.basis_x[axis]
+            for axis in range(3)
+        )
+        # Refresh the component so the output-to-element index map is current.
+        advance_hybrid_shell_collision(target, state, 0.0)
+        with TemporaryDirectory() as temp_dir:
+            case = Path(temp_dir)
+            write_panel_aero_preview_for_step(case, [target], 0)
+            output = case / "panel_preview" / "combined_moving_surfaces.vtp"
+            root = ElementTree.parse(output).getroot()
+            piece = root.find(".//Piece")
+            self.assertIsNotNone(piece)
+            expected_triangles = int(piece.attrib["NumberOfPolys"])
+            for field_name in (
+                "vonMisesStressPa",
+                "vonMisesStressMPa",
+                "stressToYieldRatio",
+                "materialYielded",
+            ):
+                array = piece.find(f"./CellData/DataArray[@Name='{field_name}']")
+                self.assertIsNotNone(array)
+                self.assertEqual(len(array.text.split()), expected_triangles)
+
+    def test_step_after_complete_coarse_fragmentation_retains_parent_carrier_geometry(self) -> None:
+        target, state = self._fragment_test_state()
+        shell = state.shell_state
+        shell.plug_triangles.update(range(len(shell.triangle_nodes)))
+        sync_hybrid_shell_fragments(target, state)
+        advance_hybrid_shell_collision(target, state, 0.0005)
+        self.assertTrue(target.triangles)
+        bounds = component_bounds(target.triangles)
+        self.assertTrue(all(math.isfinite(value) for value in bounds))
+        self.assertTrue(
+            any(
+                index not in shell.emitted_triangles
+                for index in range(len(shell.triangle_nodes))
+            )
+        )
+
     def test_fracture_keeps_target_reference_and_does_not_refine_fragments_again(self) -> None:
         target = rectangular_component(
             "stable_sheet",
@@ -2192,6 +2594,45 @@ class CollisionConvergenceTest(TestCase):
         self.assertTrue(all(body.rigid_body_group is None for body in bodies))
         self.assertTrue(
             all(not component_has_decoded_assembly_mate(body) for body in bodies)
+        )
+
+    def test_disconnected_assembly_occurrence_solids_keep_world_positions_but_not_shared_mates(self) -> None:
+        first = rectangular_component("first", 10.0, 10.1, -0.1, 0.1, -0.1, 0.1)
+        second = rectangular_component("second", 10.4, 10.6, -0.1, 0.1, -0.1, 0.1)
+        combined = rectangular_component("occurrence", 10.0, 10.6, -0.1, 0.1, -0.1, 0.1)
+        combined.triangles = first.triangles + second.triangles
+        combined.mass = 6.0
+        combined.source_occurrence = "part1_occurrence"
+        combined.freedom = MotionFreedom(
+            translate_axes=[],
+            rotate_axes=[],
+            mate_type="FASTENED",
+            source="mate:FASTENED",
+            mate_origin=(10.0, 0.0, 0.0),
+            mate_reference_origin=(0.0, 0.0, 0.0),
+            mate_reference_occurrence="root_occurrence",
+        )
+
+        bodies = _split_unmated_component_bodies(combined)
+
+        self.assertEqual(len(bodies), 2)
+        x_centers = sorted(body.cofr[0] for body in bodies)
+        self.assertEqual(x_centers, [10.05, 10.5])
+        self.assertTrue(
+            all(len(body.freedom.translate_axes) == 3 for body in bodies)
+        )
+        self.assertTrue(
+            all(len(body.freedom.rotate_axes) == 3 for body in bodies)
+        )
+        self.assertTrue(
+            all(body.freedom.source == "split-disconnected-body" for body in bodies)
+        )
+        self.assertTrue(
+            all(not component_has_decoded_assembly_mate(body) for body in bodies)
+        )
+        self.assertEqual(
+            {body.source_occurrence for body in bodies},
+            {"part1_occurrence/body_1", "part1_occurrence/body_2"},
         )
 
     def test_unmated_source_bodies_share_launch_but_not_post_impact_state(self) -> None:
@@ -2569,6 +3010,44 @@ class CollisionConvergenceTest(TestCase):
         self.assertGreater(moving.linear_velocity[2], 0.0)
         self.assertNotEqual(drot, (0.0, 0.0, 0.0))
         self.assertNotEqual(moving.angular_velocity, (0.0, 0.0, 0.0))
+
+    def test_free_rotation_step_is_bounded_by_global_limit(self) -> None:
+        component = rectangular_component(
+            "spinning_body",
+            -0.1,
+            0.1,
+            -0.1,
+            0.1,
+            -0.1,
+            0.1,
+        )
+        component.freedom = MotionFreedom(
+            translate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+            rotate_axes=[
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ],
+        )
+        component.material.linear_damping_per_kg = 0.0
+        component.material.angular_damping_per_kg = 0.0
+        component.angular_velocity = (0.0, 200.0, 0.0)
+
+        _force, _moment, _dpos, drot = update_component_motion(
+            component,
+            {},
+            0.01,
+            load_override=((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+        )
+
+        self.assertLessEqual(
+            math.sqrt(sum(value * value for value in drot)),
+            math.radians(10.0) + 1e-12,
+        )
 
     def test_deformed_surfaces_close_to_mesh_contact(self) -> None:
         moving = box_component("moving", 0.0, 1.0)
