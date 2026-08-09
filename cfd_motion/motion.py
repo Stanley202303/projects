@@ -3631,7 +3631,8 @@ def write_collision_conservation_log_header(path: Path) -> None:
         "momentum_error_x_ns\tmomentum_error_y_ns\tmomentum_error_z_ns\t"
         "angular_error_x_nms\tangular_error_y_nms\tangular_error_z_nms\t"
         "kinetic_before_j\tkinetic_after_j\tstrain_energy_j\t"
-        "plastic_dissipation_j\texternal_work_j\n"
+        "plastic_dissipation_j\texternal_work_j\t"
+        "momentum_projection_ns\tangular_momentum_projection_nms\n"
     )
 
 
@@ -3659,7 +3660,9 @@ def append_collision_conservation_audits(
                 f"{angular_error[1]:.12g}\t{angular_error[2]:.12g}\t"
                 f"{audit.kinetic_before_j:.12g}\t{audit.kinetic_after_j:.12g}\t"
                 f"{audit.strain_energy_j:.12g}\t{audit.plastic_dissipation_j:.12g}\t"
-                f"{audit.external_work_j:.12g}\n"
+                f"{audit.external_work_j:.12g}\t"
+                f"{audit.momentum_projection_ns:.12g}\t"
+                f"{audit.angular_momentum_projection_nms:.12g}\n"
             )
             written += 1
     return written

@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ElementTree
 
 from cfd_motion.fem_mpm import (
     HybridFEMMPMState,
+    MPMParticle,
     advance_fem,
     element_force_and_energy,
     make_tetra_element,
@@ -315,3 +316,54 @@ def test_conservation_audit_is_written_for_each_structural_step():
         rows = [line for line in path.read_text().splitlines() if not line.startswith("#")]
         assert len(rows) == 2
         assert rows[1].split("\t")[0:2] == ["4", "cube"]
+
+
+def test_mpm_grid_transfer_projects_small_angular_drift_conservatively():
+    particles = [
+        MPMParticle(
+            position=(0.13, 0.21, 0.07),
+            velocity=(-0.21, 0.13, 0.0),
+            mass_kg=0.4,
+            volume_m3=1e-3,
+            source_element=0,
+            young_modulus_pa=1e7,
+            poisson_ratio=0.3,
+            yield_stress_pa=1e6,
+            damage=1.0,
+        ),
+        MPMParticle(
+            position=(-0.17, -0.09, 0.11),
+            velocity=(0.09, -0.17, 0.02),
+            mass_kg=0.6,
+            volume_m3=1e-3,
+            source_element=1,
+            young_modulus_pa=1e7,
+            poisson_ratio=0.3,
+            yield_stress_pa=1e6,
+            damage=1.0,
+        ),
+        MPMParticle(
+            position=(0.04, -0.15, -0.18),
+            velocity=(0.15, 0.04, -0.01),
+            mass_kg=0.3,
+            volume_m3=1e-3,
+            source_element=2,
+            young_modulus_pa=1e7,
+            poisson_ratio=0.3,
+            yield_stress_pa=1e6,
+            damage=1.0,
+        ),
+    ]
+    state = HybridFEMMPMState(
+        positions=[],
+        velocities=[],
+        masses_kg=[],
+        elements=[],
+        particles=particles,
+        mpm_cell_size_m=0.25,
+        pic_fraction=0.2,
+    )
+    audit = advance_fem(state, 0.01)
+    assert math.sqrt(sum(value * value for value in audit.momentum_error)) < 1e-12
+    assert math.sqrt(sum(value * value for value in audit.angular_momentum_error)) < 1e-12
+    assert audit.angular_momentum_projection_nms > 0.0

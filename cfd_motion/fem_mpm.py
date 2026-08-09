@@ -191,6 +191,8 @@ class ConservationAudit:
     strain_energy_j: float = 0.0
     plastic_dissipation_j: float = 0.0
     external_work_j: float = 0.0
+    momentum_projection_ns: float = 0.0
+    angular_momentum_projection_nms: float = 0.0
 
     @property
     def mass_error_kg(self) -> float:
@@ -584,6 +586,87 @@ def advance_mpm(state: HybridFEMMPMState, dt_s: float) -> None:
         )
 
 
+def project_free_body_momentum(
+    state: HybridFEMMPMState,
+    target_momentum: Vec3,
+    target_angular_momentum: Vec3,
+) -> Tuple[float, float]:
+    """Remove grid-transfer drift without changing deformational velocity.
+
+    The correction is the minimum rigid translation and rotation needed to
+    recover the pre-step free-body momentum.  Internal FEM/MPM forces cannot
+    change either invariant, so this projection removes numerical transfer
+    error rather than altering the physical deformation mode.
+    """
+    total_mass = state.total_mass_kg
+    if total_mass <= 1e-18:
+        return 0.0, 0.0
+    momentum_correction = v_sub(target_momentum, state.total_momentum())
+    delta_velocity = v_mul(momentum_correction, 1.0 / total_mass)
+    state.velocities = [
+        v_add(velocity, delta_velocity) if mass > 1e-18 else velocity
+        for mass, velocity in zip(state.masses_kg, state.velocities)
+    ]
+    for particle in state.particles:
+        particle.velocity = v_add(particle.velocity, delta_velocity)
+
+    centre = state.center_of_mass()
+    inertia_rows = [[0.0, 0.0, 0.0] for _axis in range(3)]
+
+    def accumulate_inertia(mass: float, position: Vec3) -> None:
+        if mass <= 1e-18:
+            return
+        radius = v_sub(position, centre)
+        radius_sq = v_dot(radius, radius)
+        for row in range(3):
+            for column in range(3):
+                inertia_rows[row][column] += mass * (
+                    (radius_sq if row == column else 0.0)
+                    - radius[row] * radius[column]
+                )
+
+    for mass, position in zip(state.masses_kg, state.positions):
+        accumulate_inertia(mass, position)
+    for particle in state.particles:
+        accumulate_inertia(particle.mass_kg, particle.position)
+    inertia: Mat3 = tuple(tuple(row) for row in inertia_rows)  # type: ignore[assignment]
+    inertia_scale = max(inertia[0][0], inertia[1][1], inertia[2][2], 0.0)
+    angular_correction = v_sub(
+        target_angular_momentum,
+        state.total_angular_momentum(),
+    )
+    delta_omega = (0.0, 0.0, 0.0)
+    if inertia_scale > 1e-18 and v_norm(angular_correction) > 0.0:
+        normalized_inertia = mat_scale(inertia, 1.0 / inertia_scale)
+        try:
+            delta_omega = v_mul(
+                mat_vec(mat_inverse(normalized_inertia), angular_correction),
+                1.0 / inertia_scale,
+            )
+        except ValueError:
+            delta_omega = (0.0, 0.0, 0.0)
+    if v_norm(delta_omega) > 0.0:
+        state.velocities = [
+            v_add(
+                velocity,
+                v_cross(delta_omega, v_sub(position, centre)),
+            )
+            if mass > 1e-18
+            else velocity
+            for mass, position, velocity in zip(
+                state.masses_kg,
+                state.positions,
+                state.velocities,
+            )
+        ]
+        for particle in state.particles:
+            particle.velocity = v_add(
+                particle.velocity,
+                v_cross(delta_omega, v_sub(particle.position, centre)),
+            )
+    return v_norm(momentum_correction), v_norm(angular_correction)
+
+
 def advance_fem(
     state: HybridFEMMPMState,
     dt_s: float,
@@ -659,6 +742,14 @@ def advance_fem(
             )
         _transfer_failed_elements(state)
         advance_mpm(state, substep_dt)
+    momentum_projection = 0.0
+    angular_projection = 0.0
+    if external_forces is None and not state.fixed_nodes:
+        momentum_projection, angular_projection = project_free_body_momentum(
+            state,
+            before_momentum,
+            before_angular,
+        )
     after_mass = state.total_mass_kg
     after_momentum = state.total_momentum()
     after_angular = state.total_angular_momentum()
@@ -674,6 +765,8 @@ def advance_fem(
         strain_energy_j=sum(element.strain_energy_j for element in state.elements),
         plastic_dissipation_j=plastic_dissipation,
         external_work_j=external_work,
+        momentum_projection_ns=momentum_projection,
+        angular_momentum_projection_nms=angular_projection,
     )
     state.last_audit = audit
     mass_tolerance = 1e-10 * max(before_mass, 1.0)
