@@ -147,6 +147,12 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use the interactive runner even when a source argument is provided.",
     )
+    parser.add_argument(
+        "--structural-solver",
+        choices=("current", "openradioss"),
+        default="current",
+        help="Use the current coupled CFD motion path (default) or the standalone OpenRadioss explicit structural backend.",
+    )
     return parser.parse_args()
 
 
@@ -171,7 +177,10 @@ def main() -> int:
             raise SystemExit("--frame-interval must be greater than zero")
         os.environ["MOTION_DT"] = str(args.frame_interval)
 
-    from .runner import run_source, run_sources
+    from .runner import run_openradioss_sources, run_source, run_sources
+
+    if args.structural_solver == "openradioss":
+        return run_openradioss_sources(sources)
 
     if len(sources) == 1:
         return run_source(sources[0])

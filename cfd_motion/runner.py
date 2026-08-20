@@ -31,6 +31,7 @@ from .openfoam import *
 from .onshape import *
 from .motion import *
 from .visualization import *
+from .openradioss import OpenRadiossError, run_openradioss, write_openradioss_deck
 from .visualization import (
     _clear_root_view_outputs_for_streaming,
     _latest_solver_time_dir,
@@ -1152,6 +1153,61 @@ def run_sources(sources: Sequence[str]) -> int:
         print(f"  open -a ParaView {case / PARAVIEW_PVD_NAME}")
         return 0
 
+    except Exception as exc:
+        print(f"\nERROR: {exc}", file=sys.stderr)
+        return 1
+
+
+def run_openradioss_sources(sources: Sequence[str]) -> int:
+    """Run the explicit structural backend for one assembly or two colliding sources.
+
+    This is intentionally independent of the OpenFOAM time loop.  It provides
+    a validated structural baseline before any preCICE fluid-structure coupling
+    is attempted.
+    """
+    if not 1 <= len(sources) <= 2:
+        raise ValueError("OpenRadioss accepts one source or two collision sources")
+    case = Path.cwd() / CASE_NAME / "openradioss"
+    duration_s = float(os.environ.get("OPENRADIOSS_DURATION_S", str(MOTION_DT * ASSEMBLY_DYNAMIC_STEPS)))
+    animation_interval_s = float(os.environ.get("OPENRADIOSS_ANIMATION_INTERVAL_S", str(MOTION_DT)))
+    threads = int(float(os.environ.get("OPENRADIOSS_THREADS", "2")))
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            client = get_onshape_client() if any(is_onshape_url(source) for source in sources) else None
+            components = [
+                component
+                for index, source in enumerate(sources, start=1)
+                for component in build_collision_source_components(source, index, tmp, client)
+            ]
+            for component, patch in zip(components, unique_patch_names([item.patch for item in components])):
+                component.patch = patch
+            if len(sources) == 2:
+                if COLLISION_CONVERGENCE_SPEED_MPS <= 0.0:
+                    raise ValueError("Two-source OpenRadioss runs need COLLISION_CONVERGENCE_SPEED_MPS > 0")
+                pair = configure_collision_convergence_components(components)
+                if pair is None:
+                    raise OpenRadiossError("Could not select the moving and stationary collision bodies.")
+                arrange_collision_convergence_initial_gap(pair, components)
+            starter_deck, engine_deck = write_openradioss_deck(
+                components,
+                case,
+                duration_s=duration_s,
+                animation_interval_s=animation_interval_s,
+                contact_friction=max(COLLISION_FRICTION_COEFFICIENT, 0.0),
+            )
+            result = run_openradioss(case, starter_deck, engine_deck, threads=threads)
+            for source_index in range(1, len(sources) + 1):
+                source_dir = tmp / f"source_{source_index:02d}"
+                for report_name in (MATERIAL_REPORT_NAME, ASSEMBLY_BOM_NAME, OCCURRENCE_EXPORT_REPORT_NAME, MATE_REPORT_NAME):
+                    copy_if_exists(source_dir / report_name, case / f"source_{source_index:02d}_{report_name}")
+        print("\nOpenRadioss completed.")
+        print(f"Structural case: {case}")
+        print(f"Starter log: {result.starter_log}")
+        print(f"Engine log: {result.engine_log}")
+        print(f"Animation files retained: {len(result.animation_files)}")
+        print("Animation conversion to VTK/PVD is not enabled yet; the native A-files are retained.")
+        return 0
     except Exception as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
         return 1
