@@ -311,6 +311,37 @@ def _animation_interval_from_deck(engine_deck: Path) -> float:
     raise OpenRadiossError(f"Could not read /ANIM/DT from {engine_deck}.")
 
 
+def _validate_engine_output(case_dir: Path, root_name: str) -> None:
+    """Reject physics terminations that OpenRadioss reports with exit code zero."""
+    output_path = case_dir / f"{root_name}_0001.out"
+    if not output_path.is_file():
+        raise OpenRadiossError(
+            f"OpenRadioss did not create its engine summary: {output_path}"
+        )
+    output_text = output_path.read_text(errors="replace")
+    failure_markers = (
+        "RUN KILLED:",
+        "ABNORMAL TERMINATION",
+        "ERROR TERMINATION",
+    )
+    for marker in failure_markers:
+        if marker not in output_text:
+            continue
+        matching_line = next(
+            (line.strip() for line in output_text.splitlines() if marker in line),
+            marker,
+        )
+        raise OpenRadiossError(
+            f"OpenRadioss stopped before the requested end time: {matching_line} "
+            f"See {output_path}. Completed partial frames were retained."
+        )
+    if "USER BREAK" in output_text:
+        raise OpenRadiossError(
+            "OpenRadioss reported USER BREAK before the requested end time. "
+            f"See {output_path}. Completed partial frames were retained."
+        )
+
+
 def _point_key(point: Vec3, tolerance_m: float = 1e-9) -> Tuple[int, int, int]:
     return tuple(round(value / tolerance_m) for value in point)  # type: ignore[return-value]
 
@@ -589,6 +620,7 @@ def run_openradioss(
         partial_vtk_files,
         animation_interval_s,
     )
+    _validate_engine_output(case_dir, root_name)
     return OpenRadiossRun(
         case_dir=case_dir,
         starter_deck=starter_deck,

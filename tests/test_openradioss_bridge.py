@@ -9,6 +9,7 @@ from cfd_motion.openradioss import (
     OpenRadiossError,
     _animation_interval_from_deck,
     _ensure_runtime_image,
+    _validate_engine_output,
     exclusive_case_lock,
     partial_result_updater,
     write_openradioss_deck,
@@ -147,3 +148,21 @@ def test_animation_interval_is_read_from_engine_deck(tmp_path: Path) -> None:
         animation_interval_s=0.0012,
     )
     assert _animation_interval_from_deck(engine) == pytest.approx(0.0012)
+
+
+def test_engine_validation_rejects_zero_exit_physics_termination(tmp_path: Path) -> None:
+    output = tmp_path / "assembly_0001.out"
+    output.write_text(
+        "** RUN KILLED: ENERGY ERROR LIMIT REACHED\n"
+        "NORMAL TERMINATION\n"
+        "USER BREAK\n"
+    )
+    with pytest.raises(OpenRadiossError, match="ENERGY ERROR LIMIT REACHED"):
+        _validate_engine_output(tmp_path, "assembly")
+
+
+def test_engine_validation_accepts_completed_run(tmp_path: Path) -> None:
+    (tmp_path / "assembly_0001.out").write_text(
+        "NORMAL TERMINATION\nTOTAL NUMBER OF CYCLES : 100\n"
+    )
+    _validate_engine_output(tmp_path, "assembly")
