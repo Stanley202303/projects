@@ -56,11 +56,20 @@ def _point_key(point: Vec3, tolerance_m: float = 1e-9) -> Tuple[int, int, int]:
     return tuple(round(value / tolerance_m) for value in point)  # type: ignore[return-value]
 
 
-def _component_nodes(component: AeroComponent) -> Tuple[List[Vec3], List[Tuple[int, int, int]]]:
-    """Return a locally deduplicated triangle mesh, rejecting degenerate faces."""
+def _component_nodes(
+    component: AeroComponent,
+) -> Tuple[List[Vec3], List[Tuple[int, int, int]], int]:
+    """Return a deduplicated mesh and count zero-area source facets.
+
+    A zero-area STL facet does not represent material or mass and cannot be a
+    finite element.  OpenRadioss rejects an entire contact surface when even
+    one such facet is present, so these invalid records must not become SH3N
+    elements.
+    """
     point_ids: dict[Tuple[int, int, int], int] = {}
     points: List[Vec3] = []
     faces: List[Tuple[int, int, int]] = []
+    zero_area_facets = 0
     for _normal, first, second, third in component.triangles:
         ids: List[int] = []
         for point in (first, second, third):
@@ -71,11 +80,26 @@ def _component_nodes(component: AeroComponent) -> Tuple[List[Vec3], List[Tuple[i
                 point_ids[key] = node_id
                 points.append(point)
             ids.append(node_id)
-        if len(set(ids)) == 3:
-            faces.append((ids[0], ids[1], ids[2]))
+        edge_ab = tuple(second[axis] - first[axis] for axis in range(3))
+        edge_ac = tuple(third[axis] - first[axis] for axis in range(3))
+        cross = (
+            edge_ab[1] * edge_ac[2] - edge_ab[2] * edge_ac[1],
+            edge_ab[2] * edge_ac[0] - edge_ab[0] * edge_ac[2],
+            edge_ab[0] * edge_ac[1] - edge_ab[1] * edge_ac[0],
+        )
+        cross_squared = sum(value * value for value in cross)
+        edge_scale_squared = max(
+            sum(value * value for value in edge_ab),
+            sum(value * value for value in edge_ac),
+            1e-30,
+        )
+        if len(set(ids)) < 3 or cross_squared <= edge_scale_squared * edge_scale_squared * 1e-24:
+            zero_area_facets += 1
+            continue
+        faces.append((ids[0], ids[1], ids[2]))
     if not faces:
         raise OpenRadiossError(f"{component.patch} has no non-degenerate triangles for a shell export.")
-    return points, faces
+    return points, faces, zero_area_facets
 
 
 def _radioss_name(text: str) -> str:
@@ -133,11 +157,11 @@ def write_openradioss_deck(
     element_offset = 0
     component_node_ids: List[List[int]] = []
     component_element_ids: List[List[int]] = []
-    for component, (points, faces) in zip(components, component_meshes):
+    for component, (points, faces, _zero_area_facets) in zip(components, component_meshes):
         node_ids = list(range(node_offset + 1, node_offset + len(points) + 1))
         component_node_ids.append(node_ids)
         for node_id, point in zip(node_ids, points):
-            lines.append(f"{node_id:10d}{point[0]:23.15E}{point[1]:23.15E}{point[2]:23.15E}")
+            lines.append(f"{node_id:10d}{point[0]:20.12E}{point[1]:20.12E}{point[2]:20.12E}")
         element_ids = list(range(element_offset + 1, element_offset + len(faces) + 1))
         component_element_ids.append(element_ids)
         node_offset += len(points)
@@ -154,16 +178,16 @@ def write_openradioss_deck(
         lines.extend((
             f"/MAT/ELAST/{index}",
             _radioss_name(component.material.material_name or component.name),
-            f"{density:23.15E}{0.0:23.15E}",
-            f"{young_modulus:23.15E}{poisson_ratio:23.15E}",
+            f"{density:20.12E}{0.0:20.12E}",
+            f"{young_modulus:20.12E}{poisson_ratio:20.12E}",
             f"/PART/{index}",
             _radioss_name(component.name),
             f"{index:10d}{index:10d}{0:10d}",
-            f"/SHELL/{index}",
+            f"/SH3N/{index}",
         ))
         for element_id, face in zip(component_element_ids[index - 1], component_meshes[index - 1][1]):
             a, b, c = (node + sum(len(mesh[0]) for mesh in component_meshes[:index - 1]) for node in face)
-            lines.append(f"{element_id:10d}{a:10d}{b:10d}{c:10d}{c:10d}")
+            lines.append(f"{element_id:10d}{a:10d}{b:10d}{c:10d}")
         lines.extend((
             f"/PROP/SHELL/{index}",
             _radioss_name(component.name),
@@ -196,10 +220,10 @@ def write_openradioss_deck(
                 f"/INTER/TYPE7/{interface_id}",
                 _radioss_name(f"contact_{components[secondary_index - 1].name}_{components[main_index - 1].name}"),
                 f"{secondary_group:10d}{main_surface:10d}{0:10d}{0:10d}{0:10d}{0:20d}{0:10d}{0:10d}{0:10d}",
-                "                   0                   0                   0                             0",
+                f"{0.0:20.12E}{0.0:20.12E}{1.0:20.12E}{0:30d}",
                 "                   0                   0                   0                   0         0         0",
                 f"                   0{contact_friction:20.12E}{0.0:20.12E}{0.0:20.12E}{0.0:20.12E}",
-                "       000                             0                   0                   0                   0",
+                f"       000{'':20s}{5:10d}{0.0:20.12E}{0.0:20.12E}{0.0:20.12E}",
                 "         0         0                   0         0         0         0                   0         0",
                 f"/GRNOD/PART/{secondary_group}",
                 _radioss_name(f"secondary_{components[secondary_index - 1].name}"),
@@ -231,6 +255,7 @@ def write_openradioss_deck(
         f"components={len(components)}\n"
         f"nodes={node_offset}\n"
         f"triangular_shell_elements={element_offset}\n"
+        f"discarded_zero_area_facets={sum(mesh[2] for mesh in component_meshes)}\n"
         f"pairwise_type7_contacts={len(components) * (len(components) - 1) // 2}\n"
     )
     return starter_path, engine_path

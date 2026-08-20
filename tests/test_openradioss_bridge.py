@@ -38,11 +38,17 @@ def test_shell_export_preserves_faces_materials_velocity_and_contact(tmp_path: P
     )
     starter_text = starter.read_text()
     engine_text = engine.read_text()
-    assert starter_text.count("\n/SHELL/") == 2
+    assert starter_text.count("\n/SH3N/") == 2
+    assert "         1         1         2         3         3" not in starter_text
     assert starter_text.count("/MAT/ELAST/") == 2
     assert starter_text.count("/INTER/TYPE7/") == 1
-    assert "7.850000000000000E+03" in starter_text
+    assert "7.850000000000E+03" in starter_text
     assert "1.200000000000E+01" in starter_text
+    node_lines = starter_text.split("/NODE\n", 1)[1].split("/MAT/ELAST/1", 1)[0].splitlines()
+    assert node_lines
+    assert all(len(line) == 70 for line in node_lines)
+    assert "1.000000000000E+00" in starter_text.split("/INTER/TYPE7/", 1)[1]
+    assert "       000                             5" in starter_text
     assert "/ANIM/ELEM/VONM" in engine_text
     report = (tmp_path / "openradioss_export_report.txt").read_text()
     assert "triangular_shell_elements=4" in report
@@ -53,6 +59,19 @@ def test_shell_export_rejects_empty_geometry(tmp_path: Path) -> None:
     component.triangles = []
     with pytest.raises(OpenRadiossError, match="no non-degenerate triangles"):
         write_openradioss_deck([component], tmp_path, duration_s=0.01, animation_interval_s=0.002)
+
+
+def test_shell_export_discards_only_zero_area_facets(tmp_path: Path) -> None:
+    component = _component("plate")
+    component.triangles.append(
+        ((0.0, 0.0, 1.0), (0.0, 0.0, 0.0), (0.05, 0.0, 0.0), (0.1, 0.0, 0.0))
+    )
+    starter, _engine = write_openradioss_deck(
+        [component], tmp_path, duration_s=0.01, animation_interval_s=0.002
+    )
+    shell_lines = starter.read_text().split("/SH3N/1\n", 1)[1].split("/PROP/SHELL/1", 1)[0]
+    assert len([line for line in shell_lines.splitlines() if line.strip()]) == 2
+    assert "discarded_zero_area_facets=1" in (tmp_path / "openradioss_export_report.txt").read_text()
 
 
 def test_cli_defaults_to_openradioss(monkeypatch: pytest.MonkeyPatch) -> None:
