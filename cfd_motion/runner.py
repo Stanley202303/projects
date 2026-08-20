@@ -1175,7 +1175,12 @@ def run_openradioss_sources(sources: Sequence[str]) -> int:
     case = Path.cwd() / CASE_NAME / "openradioss"
     duration_s = float(os.environ.get("OPENRADIOSS_DURATION_S", str(MOTION_DT * ASSEMBLY_DYNAMIC_STEPS)))
     animation_interval_s = float(os.environ.get("OPENRADIOSS_ANIMATION_INTERVAL_S", str(MOTION_DT)))
-    threads = int(float(os.environ.get("OPENRADIOSS_THREADS", "2")))
+    available_cpus = os.cpu_count() or 2
+    default_threads = max(2, min(8, available_cpus - 2))
+    threads = int(float(os.environ.get("OPENRADIOSS_THREADS", str(default_threads))))
+    print_cycle_interval = int(
+        float(os.environ.get("OPENRADIOSS_PRINT_CYCLE_INTERVAL", "5000"))
+    )
     try:
         with exclusive_case_lock(case), tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -1200,13 +1205,15 @@ def run_openradioss_sources(sources: Sequence[str]) -> int:
                 duration_s=duration_s,
                 animation_interval_s=animation_interval_s,
                 contact_friction=max(COLLISION_FRICTION_COEFFICIENT, 0.0),
+                print_cycle_interval=print_cycle_interval,
             )
             print(
                 "OpenRadioss timing: "
                 f"requested duration={duration_s:g}s, "
                 f"output interval={animation_interval_s:g}s; "
                 "the explicit integration timestep is selected independently "
-                "from the mesh and material stability limit.",
+                f"from the mesh and material stability limit; threads={threads}, "
+                f"solver log interval={print_cycle_interval} cycles.",
                 flush=True,
             )
             result = run_openradioss(case, starter_deck, engine_deck, threads=threads)

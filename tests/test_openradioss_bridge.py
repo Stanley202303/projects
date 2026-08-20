@@ -56,10 +56,12 @@ def test_shell_export_preserves_faces_materials_velocity_and_contact(tmp_path: P
     assert "1.000000000000E+00" in starter_text.split("/INTER/TYPE7/", 1)[1]
     assert "       000                             5" in starter_text
     assert "/ANIM/ELEM/VONM" in engine_text
+    assert "/PRINT/-5000" in engine_text
     report = (tmp_path / "openradioss_export_report.txt").read_text()
     assert "triangular_shell_elements=4" in report
     assert "requested_duration_s=0.01" in report
     assert "animation_interval_s=0.002" in report
+    assert "print_cycle_interval=5000" in report
     assert "integration_timestep=automatic_explicit_stability_limit" in report
 
 

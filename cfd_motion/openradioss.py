@@ -216,6 +216,7 @@ def write_openradioss_deck(
     duration_s: float,
     animation_interval_s: float,
     contact_friction: float = 0.15,
+    print_cycle_interval: int = 5000,
 ) -> Tuple[Path, Path]:
     """Write SI-unit shell decks and return (starter, engine) paths.
 
@@ -226,6 +227,8 @@ def write_openradioss_deck(
         raise OpenRadiossError("Cannot export an empty OpenRadioss model.")
     if duration_s <= 0.0 or animation_interval_s <= 0.0:
         raise OpenRadiossError("OpenRadioss duration and animation interval must be positive.")
+    if print_cycle_interval <= 0:
+        raise OpenRadiossError("OpenRadioss print cycle interval must be positive.")
 
     case_dir.mkdir(parents=True, exist_ok=True)
     root_name = "assembly"
@@ -341,7 +344,7 @@ def write_openradioss_deck(
         "/ANIM/ELEM/VONM",
         "/DT/NODA/CST/0",
         "0.90 0.0",
-        "/PRINT/-50",
+        f"/PRINT/-{print_cycle_interval}",
         "/END",
     )) + "\n")
     report = case_dir / "openradioss_export_report.txt"
@@ -351,6 +354,7 @@ def write_openradioss_deck(
         "model=shell-only; use a volume-mesh exporter for thick solids\n"
         f"requested_duration_s={duration_s:.15g}\n"
         f"animation_interval_s={animation_interval_s:.15g}\n"
+        f"print_cycle_interval={print_cycle_interval}\n"
         "integration_timestep=automatic_explicit_stability_limit\n"
         f"components={len(components)}\n"
         f"nodes={node_offset}\n"
