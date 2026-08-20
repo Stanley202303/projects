@@ -1270,6 +1270,9 @@ def run_openradioss_sources(sources: Sequence[str]) -> int:
         if result.paraview_series is not None:
             print(f"Partial/final ParaView series: {result.paraview_series}")
             print(f"  open -a ParaView {result.paraview_series}")
+        if result.paraview_pvd is not None:
+            print(f"ParaView PVD collection: {result.paraview_pvd}")
+            print(f"  open -a ParaView {result.paraview_pvd}")
         return 0
     except KeyboardInterrupt:
         partial_series = max(

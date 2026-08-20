@@ -132,12 +132,21 @@ def test_partial_result_updater_converts_only_stable_animation_files(
         return converted
 
     monkeypatch.setattr("cfd_motion.openradioss._convert_animation_to_vtk", fake_convert)
+
+    def fake_vtu_convert(vtk_path: Path) -> Path:
+        converted = vtk_path.with_suffix(".vtu")
+        converted.write_text("<VTKFile type=\"UnstructuredGrid\"/>\n")
+        return converted
+
+    monkeypatch.setattr("cfd_motion.openradioss._convert_vtk_to_vtu", fake_vtu_convert)
     update = partial_result_updater(tmp_path, output_dir, "assembly", 0.0012)
     assert update(False) == ()
     assert update(False) == (output_dir / "assembly_001.vtk",)
     series = (output_dir / "openradioss_partial.vtk.series").read_text()
     assert '"name": "assembly_001.vtk"' in series
     assert '"time": 0.0' in series
+    pvd = (output_dir / "case.pvd").read_text()
+    assert '<DataSet timestep="0" file="assembly_001.vtu"/>' in pvd
 
 
 def test_animation_interval_is_read_from_engine_deck(tmp_path: Path) -> None:

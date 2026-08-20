@@ -58,6 +58,7 @@ class OpenRadiossRun:
     animation_files: Tuple[Path, ...]
     partial_vtk_files: Tuple[Path, ...] = ()
     paraview_series: Path | None = None
+    paraview_pvd: Path | None = None
 
 
 def _solver_root() -> Path:
@@ -205,6 +206,74 @@ def _write_paraview_series(
     return series_path
 
 
+def _convert_vtk_to_vtu(vtk_path: Path) -> Path:
+    """Convert one legacy VTK frame to XML VTU for reliable PVD loading."""
+    configured = os.environ.get(
+        "PARAVIEW_PYTHON",
+        "/Applications/ParaView-6.1.1.app/Contents/bin/pvpython",
+    ).strip()
+    executable = Path(configured).expanduser()
+    if not executable.is_file():
+        raise OpenRadiossError(
+            f"ParaView pvpython is missing at {executable}; cannot create PVD output."
+        )
+    vtu_path = vtk_path.with_suffix(".vtu")
+    if vtu_path.exists() and vtu_path.stat().st_mtime_ns >= vtk_path.stat().st_mtime_ns:
+        return vtu_path
+    import json as _json
+    source = _json.dumps(str(vtk_path))
+    destination = _json.dumps(str(vtu_path))
+    script = (
+        "from paraview.simple import OpenDataFile, SaveData; "
+        f"reader=OpenDataFile({source}); reader.UpdatePipeline(); "
+        f"SaveData({destination}, proxy=reader)"
+    )
+    completed = subprocess.run(
+        [str(executable), "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0 or not vtu_path.is_file():
+        raise OpenRadiossError(
+            f"ParaView could not convert {vtk_path.name} to VTU: "
+            f"{completed.stderr.strip() or f'exit status {completed.returncode}'}"
+        )
+    return vtu_path
+
+
+def _write_paraview_pvd(
+    output_dir: Path,
+    vtk_files: Sequence[Path],
+    animation_interval_s: float,
+) -> Path | None:
+    if not vtk_files:
+        return None
+    try:
+        vtu_files = tuple(_convert_vtk_to_vtu(path) for path in vtk_files)
+    except OpenRadiossError as exc:
+        print(f"WARNING: {exc}", flush=True)
+        return None
+    pvd_path = output_dir / "case.pvd"
+    datasets = "\n".join(
+        f'    <DataSet timestep="{index * animation_interval_s:.15g}" file="{path.name}"/>'
+        for index, path in enumerate(vtu_files)
+    )
+    content = (
+        '<?xml version="1.0"?>\n'
+        '<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">\n'
+        "  <Collection>\n"
+        f"{datasets}\n"
+        "  </Collection>\n"
+        "</VTKFile>\n"
+    )
+    temporary_path = pvd_path.with_suffix(".pvd.tmp")
+    temporary_path.write_text(content)
+    os.replace(temporary_path, pvd_path)
+    return pvd_path
+
+
 def _convert_animation_to_vtk(
     case_dir: Path,
     output_dir: Path,
@@ -290,8 +359,11 @@ def partial_result_updater(
             series = _write_paraview_series(
                 output_dir, vtk_files, animation_interval_s
             )
+            pvd = _write_paraview_pvd(output_dir, vtk_files, animation_interval_s)
             print(
-                f"Partial OpenRadioss result updated: {series} "
+                f"Partial OpenRadioss result updated: {series}"
+                + (f" and {pvd}" if pvd is not None else "")
+                + " "
                 f"({len(vtk_files)} frame(s)).",
                 flush=True,
             )
@@ -620,6 +692,9 @@ def run_openradioss(
         partial_vtk_files,
         animation_interval_s,
     )
+    paraview_pvd = _write_paraview_pvd(
+        partial_output_dir, partial_vtk_files, animation_interval_s
+    )
     _validate_engine_output(case_dir, root_name)
     return OpenRadiossRun(
         case_dir=case_dir,
@@ -630,4 +705,5 @@ def run_openradioss(
         animation_files=tuple(sorted(case_dir.glob(f"{root_name}A*"))),
         partial_vtk_files=partial_vtk_files,
         paraview_series=paraview_series,
+        paraview_pvd=paraview_pvd,
     )
