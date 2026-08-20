@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
@@ -50,6 +51,79 @@ def _require_solver_root() -> Path:
             f"OpenRadioss engine is not available at {root / 'exec' / 'engine_linuxa64_gf'}."
         )
     return root
+
+
+def _runtime_image_name() -> str:
+    return os.environ.get(
+        "OPENRADIOSS_RUNTIME_IMAGE", "cfd-motion-openradioss-runtime:22.04"
+    ).strip()
+
+
+def _ensure_runtime_image() -> str:
+    """Build the small runtime image once instead of installing on every run."""
+    image = _runtime_image_name()
+    inspection = subprocess.run(
+        ["docker", "image", "inspect", image],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if inspection.returncode == 0:
+        return image
+    dockerfile = Path(__file__).resolve().parents[1] / "docker" / "openradioss-runtime.Dockerfile"
+    if not dockerfile.is_file():
+        raise OpenRadiossError(f"OpenRadioss runtime Dockerfile is missing: {dockerfile}")
+    print(f"Building one-time OpenRadioss runtime image {image}...", flush=True)
+    try:
+        subprocess.run(
+            [
+                "docker", "build", "--platform", "linux/arm64",
+                "-f", str(dockerfile), "-t", image, str(dockerfile.parent),
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise OpenRadiossError(
+            f"Could not build the OpenRadioss runtime image {image}; Docker exited with {exc.returncode}."
+        ) from exc
+    return image
+
+
+def _run_solver_phase(command: Sequence[str], log_path: Path, label: str) -> None:
+    """Run one solver process with a quiet log and visible elapsed-time updates."""
+    status_interval_s = max(
+        float(os.environ.get("OPENRADIOSS_STATUS_INTERVAL_S", "15")), 1.0
+    )
+    started = time.monotonic()
+    next_status = status_interval_s
+    print(f"OpenRadioss {label} started; detailed output: {log_path}", flush=True)
+    with log_path.open("w") as log_file:
+        process = subprocess.Popen(
+            list(command),
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            while True:
+                try:
+                    return_code = process.wait(timeout=1.0)
+                    break
+                except subprocess.TimeoutExpired:
+                    elapsed = time.monotonic() - started
+                    if elapsed >= next_status:
+                        print(f"OpenRadioss {label} running: {elapsed:.0f}s elapsed.", flush=True)
+                        next_status += status_interval_s
+        except KeyboardInterrupt:
+            process.terminate()
+            process.wait()
+            raise
+    elapsed = time.monotonic() - started
+    if return_code != 0:
+        raise OpenRadiossError(
+            f"OpenRadioss {label} failed with exit status {return_code}; see {log_path}."
+        )
+    print(f"OpenRadioss {label} completed in {elapsed:.1f}s.", flush=True)
 
 
 def _point_key(point: Vec3, tolerance_m: float = 1e-9) -> Tuple[int, int, int]:
@@ -271,35 +345,42 @@ def run_openradioss(
     solver_root = _require_solver_root()
     if shutil.which("docker") is None:
         raise OpenRadiossError("Docker is required to run the Linux OpenRadioss build.")
+    runtime_image = _ensure_runtime_image()
     threads = max(int(threads), 1)
     root_name = starter_deck.stem.rsplit("_", 1)[0]
-    command = [
+    docker_command = [
         "docker", "run", "--rm", "--platform", "linux/arm64",
         "-v", f"{solver_root}:/solver:ro",
         "-v", f"{case_dir.resolve()}:/work",
-        "-w", "/work", "ubuntu:22.04", "bash", "-lc",
-        " ".join((
-            "export DEBIAN_FRONTEND=noninteractive;",
-            "apt-get update -qq;",
-            "apt-get install -y -qq --no-install-recommends libgfortran5 libgomp1 libstdc++6 libgcc-s1 zlib1g >/dev/null;",
-            "export LD_LIBRARY_PATH=/solver/extlib/hm_reader/linuxa64;",
-            "export RAD_CFG_PATH=/solver/hm_cfg_files;",
-            "export OMP_STACKSIZE=400m;",
-            f"/solver/exec/starter_linuxa64_gf -i {starter_deck.name} -nt {threads} > starter.log 2>&1;",
-            f"/solver/exec/engine_linuxa64_gf -i {engine_deck.name} -nt {threads} > engine.log 2>&1",
-        )),
+        "-w", "/work",
+        "-e", "LD_LIBRARY_PATH=/solver/extlib/hm_reader/linuxa64",
+        "-e", "RAD_CFG_PATH=/solver/hm_cfg_files",
+        "-e", "OMP_STACKSIZE=400m",
+        runtime_image,
     ]
-    try:
-        subprocess.run(command, check=True, text=True)
-    except subprocess.CalledProcessError as exc:
-        raise OpenRadiossError(
-            f"OpenRadioss failed with exit status {exc.returncode}; see {case_dir / 'starter.log'} and {case_dir / 'engine.log'}."
-        ) from exc
+    starter_log = case_dir / "starter.log"
+    engine_log = case_dir / "engine.log"
+    _run_solver_phase(
+        docker_command + [
+            "/solver/exec/starter_linuxa64_gf", "-i", starter_deck.name,
+            "-nt", str(threads),
+        ],
+        starter_log,
+        "starter",
+    )
+    _run_solver_phase(
+        docker_command + [
+            "/solver/exec/engine_linuxa64_gf", "-i", engine_deck.name,
+            "-nt", str(threads),
+        ],
+        engine_log,
+        "engine",
+    )
     return OpenRadiossRun(
         case_dir=case_dir,
         starter_deck=starter_deck,
         engine_deck=engine_deck,
-        starter_log=case_dir / "starter.log",
-        engine_log=case_dir / "engine.log",
+        starter_log=starter_log,
+        engine_log=engine_log,
         animation_files=tuple(sorted(case_dir.glob(f"{root_name}A*"))),
     )

@@ -1,10 +1,15 @@
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
 
 from cfd_motion.models import AeroComponent, MaterialProperties
-from cfd_motion.openradioss import OpenRadiossError, write_openradioss_deck
+from cfd_motion.openradioss import (
+    OpenRadiossError,
+    _ensure_runtime_image,
+    write_openradioss_deck,
+)
 
 
 def _component(name: str, offset: float = 0.0) -> AeroComponent:
@@ -79,3 +84,16 @@ def test_cli_defaults_to_openradioss(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(sys, "argv", ["cfd_motion", "part1.stl", "part2.stl"])
     assert _parse_args().structural_solver == "openradioss"
+
+
+def test_runtime_image_is_built_only_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1 if command[1:3] == ["image", "inspect"] else 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _ensure_runtime_image() == "cfd-motion-openradioss-runtime:22.04"
+    assert calls[0][:3] == ["docker", "image", "inspect"]
+    assert calls[1][0:2] == ["docker", "build"]
