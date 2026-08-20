@@ -1,0 +1,21 @@
+{
+  "file-series-version": "1.0",
+  "files": [
+    {
+      "name": "assembly_001.vtk",
+      "time": 0.0
+    },
+    {
+      "name": "assembly_002.vtk",
+      "time": 0.0012
+    },
+    {
+      "name": "assembly_003.vtk",
+      "time": 0.0024
+    },
+    {
+      "name": "assembly_004.vtk",
+      "time": 0.0036
+    }
+  ]
+}
