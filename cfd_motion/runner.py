@@ -1050,6 +1050,42 @@ def refine_collision_mesh_for_deformation(component: AeroComponent) -> int:
     return len(triangles) - original_count
 
 
+def _capture_component_shape_relative_to_center(
+    components: Sequence[AeroComponent],
+) -> Dict[int, Tuple[Tuple[float, float, float], ...]]:
+    """Capture body orientation independently of its world-space translation."""
+    captured: Dict[int, Tuple[Tuple[float, float, float], ...]] = {}
+    for component in components:
+        center = component.cofr
+        captured[id(component)] = tuple(
+            tuple(round(vertex[axis] - center[axis], 12) for axis in range(3))
+            for _normal, first, second, third in component.triangles
+            for vertex in (first, second, third)
+        )
+    return captured
+
+
+def _assert_collision_placement_preserved_orientation(
+    components: Sequence[AeroComponent],
+    captured: Dict[int, Tuple[Tuple[float, float, float], ...]],
+) -> None:
+    for component in components:
+        before = captured.get(id(component))
+        if before is None:
+            continue
+        center = component.cofr
+        after = tuple(
+            tuple(round(vertex[axis] - center[axis], 12) for axis in range(3))
+            for _normal, first, second, third in component.triangles
+            for vertex in (first, second, third)
+        )
+        if before != after:
+            raise ValueError(
+                f"Collision placement changed the orientation of {component.patch}; "
+                "initial CAD orientation must be preserved."
+            )
+
+
 def build_collision_source_components(source: str, index: int, workdir: Path, client: Optional[OnshapeClient] = None) -> List[AeroComponent]:
     label = _source_label(source, index)
     patch = unique_patch_names([label])[0]
@@ -1198,7 +1234,11 @@ def run_openradioss_sources(sources: Sequence[str]) -> int:
                 pair = configure_collision_convergence_components(components)
                 if pair is None:
                     raise OpenRadiossError("Could not select the moving and stationary collision bodies.")
+                orientation_baseline = _capture_component_shape_relative_to_center(components)
                 arrange_collision_convergence_initial_gap(pair, components)
+                _assert_collision_placement_preserved_orientation(
+                    components, orientation_baseline
+                )
             starter_deck, engine_deck = write_openradioss_deck(
                 components,
                 case,

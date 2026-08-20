@@ -49,6 +49,8 @@ from cfd_motion.motion import (
     write_collision_convergence_log_header,
 )
 from cfd_motion.runner import (
+    _assert_collision_placement_preserved_orientation,
+    _capture_component_shape_relative_to_center,
     _split_unmated_component_bodies,
     collision_convergence_should_stop,
     refine_collision_mesh_for_deformation,
@@ -724,6 +726,20 @@ class CollisionConvergenceTest(TestCase):
                     ["prescribed_target_contact"],
                 )
             )
+
+    def test_collision_gap_arrangement_preserves_initial_body_orientation(self) -> None:
+        moving = rectangular_component(
+            "oriented_moving", -0.2, -0.1, -0.08, 0.02, -0.03, 0.04
+        )
+        stationary = rectangular_component(
+            "oriented_target", 0.4, 0.5, -0.3, 0.3, -0.3, 0.3
+        )
+        moving.collision_source_index = 1
+        stationary.collision_source_index = 2
+        pair = (moving, stationary)
+        baseline = _capture_component_shape_relative_to_center([moving, stationary])
+        arrange_collision_convergence_initial_gap(pair, [moving, stationary])
+        _assert_collision_placement_preserved_orientation([moving, stationary], baseline)
 
     def test_static_aabb_overlap_has_no_collision_energy_or_deformation(self) -> None:
         outer = box_component("outer", 0.0, 1.0)
