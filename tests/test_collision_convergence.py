@@ -628,6 +628,39 @@ class CollisionConvergenceTest(TestCase):
 
         self.assertEqual(candidates, [])
 
+    def test_uniform_grid_broad_phase_keeps_dense_fragment_contacts(self) -> None:
+        components = []
+        expected = set()
+        for index in range(125):
+            grid_x = index % 5
+            grid_y = (index // 5) % 5
+            grid_z = index // 25
+            components.append(
+                rectangular_component(
+                    f"fragment_{index}",
+                    0.009 * grid_x,
+                    0.009 * grid_x + 0.01,
+                    0.009 * grid_y,
+                    0.009 * grid_y + 0.01,
+                    0.009 * grid_z,
+                    0.009 * grid_z + 0.01,
+                )
+            )
+        for first in range(len(components)):
+            first_bounds = component_bounds(components[first].triangles)
+            for second in range(first + 1, len(components)):
+                second_bounds = component_bounds(components[second].triangles)
+                if all(
+                    first_bounds[2 * axis] <= second_bounds[2 * axis + 1]
+                    and second_bounds[2 * axis] <= first_bounds[2 * axis + 1]
+                    for axis in range(3)
+                ):
+                    expected.add((first, second))
+
+        candidates = set(collision_broad_phase_pairs(components, 0.0))
+
+        self.assertEqual(candidates, expected)
+
     def test_internal_collision_does_not_stop_prescribed_target_approach(self) -> None:
         moving = rectangular_component(
             "part1_main", -0.2, -0.1, -0.2, -0.05, -0.05, 0.05

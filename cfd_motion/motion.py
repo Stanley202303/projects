@@ -3914,6 +3914,8 @@ def collision_broad_phase_pairs(
     ]
     if len(indexed_bounds) < 2:
         return []
+    if len(indexed_bounds) >= 64:
+        return collision_uniform_grid_pairs(indexed_bounds)
 
     # Select the axis with the lowest interval occupancy. This retains the
     # deterministic sweep-and-prune algorithm while avoiding a poor fixed-axis
@@ -3952,6 +3954,74 @@ def collision_broad_phase_pairs(
         active.append((index, bounds))
     candidates.sort()
     return candidates
+
+
+def collision_uniform_grid_pairs(
+    indexed_bounds: Sequence[Tuple[int, TriangleBounds]],
+) -> List[Tuple[int, int]]:
+    """Conservatively pair many swept body AABBs with a uniform spatial grid.
+
+    Sweep-and-prune is efficient for a few bodies, but its active list becomes
+    nearly quadratic for a dense fragment cloud around a plate.  A uniform
+    grid is the classic broad phase for that case.  Every box is inserted into
+    every cell it spans, so overlapping swept boxes cannot be omitted.
+    """
+    body_count = len(indexed_bounds)
+    if body_count < 2:
+        return []
+
+    domain_spans = [
+        max(bounds[2 * axis + 1] for _index, bounds in indexed_bounds)
+        - min(bounds[2 * axis] for _index, bounds in indexed_bounds)
+        for axis in range(3)
+    ]
+    grid_resolution = max(1, math.ceil(body_count ** (1.0 / 3.0)))
+    cell_sizes = []
+    for axis in range(3):
+        body_spans = sorted(
+            bounds[2 * axis + 1] - bounds[2 * axis]
+            for _index, bounds in indexed_bounds
+        )
+        median_body_span = body_spans[len(body_spans) // 2]
+        cell_sizes.append(
+            max(
+                domain_spans[axis] / grid_resolution,
+                2.0 * median_body_span,
+                2.0 * COLLISION_MANIFOLD_TOLERANCE_M,
+                1e-9,
+            )
+        )
+
+    cells: Dict[Tuple[int, int, int], List[Tuple[int, TriangleBounds]]] = {}
+    for index, bounds in indexed_bounds:
+        lower = tuple(
+            math.floor(bounds[2 * axis] / cell_sizes[axis])
+            for axis in range(3)
+        )
+        upper = tuple(
+            math.floor(bounds[2 * axis + 1] / cell_sizes[axis])
+            for axis in range(3)
+        )
+        for cell_x in range(lower[0], upper[0] + 1):
+            for cell_y in range(lower[1], upper[1] + 1):
+                for cell_z in range(lower[2], upper[2] + 1):
+                    cells.setdefault((cell_x, cell_y, cell_z), []).append(
+                        (index, bounds)
+                    )
+
+    candidates: Set[Tuple[int, int]] = set()
+    for occupants in cells.values():
+        for first_offset, (first_index, first_bounds) in enumerate(occupants):
+            for second_index, second_bounds in occupants[first_offset + 1 :]:
+                pair = (
+                    min(first_index, second_index),
+                    max(first_index, second_index),
+                )
+                if pair in candidates:
+                    continue
+                if triangle_bounds_overlap(first_bounds, second_bounds):
+                    candidates.add(pair)
+    return sorted(candidates)
 
 
 def aabb_overlap_with_normal(a: AeroComponent, b: AeroComponent) -> Optional[Tuple[float, Vec3, Vec3]]:
@@ -4958,6 +5028,11 @@ def resolve_part_collisions(
         active_components = current_active_components()
         discard_separated_initial_overlaps(active_components)
         peak_active_bodies = max(peak_active_bodies, len(active_components))
+        if _outer_pass == 0 and len(active_components) >= 64:
+            print(
+                "Collision resolution: spatially partitioning "
+                f"{len(active_components)} bodies (including fragments)."
+            )
         outer_progress = False
         for collision_pass in range(COLLISION_MAX_PASSES):
             any_collision = False
