@@ -7,8 +7,10 @@ import pytest
 from cfd_motion.models import AeroComponent, MaterialProperties
 from cfd_motion.openradioss import (
     OpenRadiossError,
+    _animation_interval_from_deck,
     _ensure_runtime_image,
     exclusive_case_lock,
+    partial_result_updater,
     write_openradioss_deck,
 )
 
@@ -56,6 +58,7 @@ def test_shell_export_preserves_faces_materials_velocity_and_contact(tmp_path: P
     assert "1.000000000000E+00" in starter_text.split("/INTER/TYPE7/", 1)[1]
     assert "       000                             5" in starter_text
     assert "/ANIM/ELEM/VONM" in engine_text
+    assert "/ANIM/NODA/VEL" in engine_text
     assert "/PRINT/-5000" in engine_text
     report = (tmp_path / "openradioss_export_report.txt").read_text()
     assert "triangular_shell_elements=4" in report
@@ -110,3 +113,37 @@ def test_case_lock_rejects_a_concurrent_writer(tmp_path: Path) -> None:
         with pytest.raises(OpenRadiossError, match="already using"):
             with exclusive_case_lock(tmp_path):
                 pytest.fail("a second writer acquired the same case lock")
+
+
+def test_partial_result_updater_converts_only_stable_animation_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    animation = tmp_path / "assemblyA001"
+    animation.write_bytes(b"complete animation")
+    output_dir = tmp_path / "partial"
+
+    def fake_convert(case_dir: Path, destination: Path, source: Path) -> Path:
+        assert case_dir == tmp_path
+        destination.mkdir(parents=True, exist_ok=True)
+        converted = destination / "assembly_001.vtk"
+        converted.write_text("# vtk DataFile Version 3.0\n")
+        return converted
+
+    monkeypatch.setattr("cfd_motion.openradioss._convert_animation_to_vtk", fake_convert)
+    update = partial_result_updater(tmp_path, output_dir, "assembly", 0.0012)
+    assert update(False) == ()
+    assert update(False) == (output_dir / "assembly_001.vtk",)
+    series = (output_dir / "openradioss_partial.vtk.series").read_text()
+    assert '"name": "assembly_001.vtk"' in series
+    assert '"time": 0.0' in series
+
+
+def test_animation_interval_is_read_from_engine_deck(tmp_path: Path) -> None:
+    _starter, engine = write_openradioss_deck(
+        [_component("plate")],
+        tmp_path,
+        duration_s=0.012,
+        animation_interval_s=0.0012,
+    )
+    assert _animation_interval_from_deck(engine) == pytest.approx(0.0012)

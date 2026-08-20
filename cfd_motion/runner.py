@@ -1226,10 +1226,31 @@ def run_openradioss_sources(sources: Sequence[str]) -> int:
         print(f"Starter log: {result.starter_log}")
         print(f"Engine log: {result.engine_log}")
         print(f"Animation files retained: {len(result.animation_files)}")
-        print("Animation conversion to VTK/PVD is not enabled yet; the native A-files are retained.")
+        print(f"Partial ParaView VTK frames: {len(result.partial_vtk_files)}")
+        if result.paraview_series is not None:
+            print(f"Partial/final ParaView series: {result.paraview_series}")
+            print(f"  open -a ParaView {result.paraview_series}")
         return 0
+    except KeyboardInterrupt:
+        partial_series = max(
+            case.glob("partial_results/*/openradioss_partial.vtk.series"),
+            key=lambda path: path.stat().st_mtime_ns,
+            default=None,
+        )
+        print("\nOpenRadioss interrupted; completed native animation files were retained.")
+        if partial_series is not None:
+            print(f"Partial ParaView series: {partial_series}")
+            print(f"  open -a ParaView {partial_series}")
+        return 130
     except Exception as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
+        partial_series = max(
+            case.glob("partial_results/*/openradioss_partial.vtk.series"),
+            key=lambda path: path.stat().st_mtime_ns,
+            default=None,
+        )
+        if partial_series is not None:
+            print(f"Partial ParaView series retained: {partial_series}", file=sys.stderr)
         return 1
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import fcntl
+import json
 import os
 import shutil
 import subprocess
@@ -55,6 +56,8 @@ class OpenRadiossRun:
     starter_log: Path
     engine_log: Path
     animation_files: Tuple[Path, ...]
+    partial_vtk_files: Tuple[Path, ...] = ()
+    paraview_series: Path | None = None
 
 
 def _solver_root() -> Path:
@@ -112,7 +115,13 @@ def _ensure_runtime_image() -> str:
     return image
 
 
-def _run_solver_phase(command: Sequence[str], log_path: Path, label: str) -> None:
+def _run_solver_phase(
+    command: Sequence[str],
+    log_path: Path,
+    label: str,
+    progress_callback=None,
+    container_name: str | None = None,
+) -> None:
     """Run one solver process with a quiet log and visible elapsed-time updates."""
     status_interval_s = max(
         float(os.environ.get("OPENRADIOSS_STATUS_INTERVAL_S", "15")), 1.0
@@ -133,20 +142,173 @@ def _run_solver_phase(command: Sequence[str], log_path: Path, label: str) -> Non
                     return_code = process.wait(timeout=1.0)
                     break
                 except subprocess.TimeoutExpired:
+                    if progress_callback is not None:
+                        progress_callback(False)
                     elapsed = time.monotonic() - started
                     if elapsed >= next_status:
                         print(f"OpenRadioss {label} running: {elapsed:.0f}s elapsed.", flush=True)
                         next_status += status_interval_s
         except KeyboardInterrupt:
+            if container_name:
+                subprocess.run(
+                    ["docker", "stop", "--time", "5", container_name],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
             process.terminate()
-            process.wait()
+            try:
+                process.wait(timeout=10.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            if progress_callback is not None:
+                progress_callback(True)
             raise
+    if progress_callback is not None:
+        progress_callback(True)
     elapsed = time.monotonic() - started
     if return_code != 0:
         raise OpenRadiossError(
             f"OpenRadioss {label} failed with exit status {return_code}; see {log_path}."
         )
     print(f"OpenRadioss {label} completed in {elapsed:.1f}s.", flush=True)
+
+
+def _converter_path() -> Path:
+    configured = os.environ.get("OPENRADIOSS_ANIM_TO_VTK", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    project_root = Path(__file__).resolve().parents[1]
+    return (project_root / "OpenRadioss-Tools" / "exec" / "anim_to_vtk_linuxa64").resolve()
+
+
+def _write_paraview_series(
+    output_dir: Path,
+    vtk_files: Sequence[Path],
+    animation_interval_s: float,
+) -> Path | None:
+    if not vtk_files:
+        return None
+    output_dir.mkdir(parents=True, exist_ok=True)
+    series_path = output_dir / "openradioss_partial.vtk.series"
+    payload = {
+        "file-series-version": "1.0",
+        "files": [
+            {"name": path.name, "time": index * animation_interval_s}
+            for index, path in enumerate(vtk_files)
+        ],
+    }
+    temporary_path = series_path.with_suffix(series_path.suffix + ".tmp")
+    temporary_path.write_text(json.dumps(payload, indent=2) + "\n")
+    os.replace(temporary_path, series_path)
+    return series_path
+
+
+def _convert_animation_to_vtk(
+    case_dir: Path,
+    output_dir: Path,
+    animation_file: Path,
+) -> Path:
+    converter = _converter_path()
+    if not converter.is_file():
+        raise OpenRadiossError(
+            "OpenRadioss animation converter is missing. Expected "
+            f"{converter}; set OPENRADIOSS_ANIM_TO_VTK to override it."
+        )
+    suffix = animation_file.name.rsplit("A", 1)[-1]
+    root_name = animation_file.name[: -len(suffix) - 1]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    vtk_path = output_dir / f"{root_name}_{suffix}.vtk"
+    temporary_path = vtk_path.with_suffix(".vtk.tmp")
+    command = [
+        "docker", "run", "--rm", "--platform", "linux/arm64",
+        "-v", f"{converter.parent}:/converter:ro",
+        "-v", f"{case_dir.resolve()}:/work",
+        "-w", "/work",
+        _runtime_image_name(),
+        f"/converter/{converter.name}",
+        animation_file.name,
+    ]
+    with temporary_path.open("w") as output:
+        completed = subprocess.run(
+            command,
+            stdout=output,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    if completed.returncode != 0:
+        temporary_path.unlink(missing_ok=True)
+        raise OpenRadiossError(
+            f"Could not convert partial result {animation_file.name}: "
+            f"{completed.stderr.strip() or f'exit status {completed.returncode}'}"
+        )
+    with temporary_path.open(errors="replace") as converted:
+        header = converted.readline().strip()
+    if not header.startswith("# vtk DataFile"):
+        temporary_path.unlink(missing_ok=True)
+        raise OpenRadiossError(
+            f"Converter produced an invalid VTK file for {animation_file.name}."
+        )
+    os.replace(temporary_path, vtk_path)
+    return vtk_path
+
+
+def partial_result_updater(
+    case_dir: Path,
+    output_dir: Path,
+    root_name: str,
+    animation_interval_s: float,
+    not_before_ns: int = 0,
+):
+    """Return a callback that converts completed animation files incrementally."""
+    observed_sizes: dict[Path, int] = {}
+    converted: dict[Path, Path] = {}
+
+    def update(force: bool = False) -> Tuple[Path, ...]:
+        for animation_file in sorted(case_dir.glob(f"{root_name}A[0-9]*")):
+            if animation_file in converted:
+                continue
+            stat = animation_file.stat()
+            if stat.st_mtime_ns < not_before_ns:
+                continue
+            size = stat.st_size
+            previous_size = observed_sizes.get(animation_file)
+            observed_sizes[animation_file] = size
+            if size <= 0 or (not force and previous_size != size):
+                continue
+            try:
+                converted[animation_file] = _convert_animation_to_vtk(
+                    case_dir, output_dir, animation_file
+                )
+            except OpenRadiossError as exc:
+                if force:
+                    print(f"WARNING: {exc}", flush=True)
+                continue
+            vtk_files = tuple(converted[path] for path in sorted(converted))
+            series = _write_paraview_series(
+                output_dir, vtk_files, animation_interval_s
+            )
+            print(
+                f"Partial OpenRadioss result updated: {series} "
+                f"({len(vtk_files)} frame(s)).",
+                flush=True,
+            )
+        return tuple(converted[path] for path in sorted(converted))
+
+    return update
+
+
+def _animation_interval_from_deck(engine_deck: Path) -> float:
+    lines = engine_deck.read_text().splitlines()
+    for index, line in enumerate(lines[:-1]):
+        if line.strip().upper() != "/ANIM/DT":
+            continue
+        values = lines[index + 1].split()
+        if len(values) >= 2:
+            return float(values[1])
+    raise OpenRadiossError(f"Could not read /ANIM/DT from {engine_deck}.")
 
 
 def _point_key(point: Vec3, tolerance_m: float = 1e-9) -> Tuple[int, int, int]:
@@ -341,6 +503,7 @@ def write_openradioss_deck(
         f"{duration_s:.15E}",
         "/ANIM/DT",
         f"{0.0:.15E} {animation_interval_s:.15E}",
+        "/ANIM/NODA/VEL",
         "/ANIM/ELEM/VONM",
         "/DT/NODA/CST/0",
         "0.90 0.0",
@@ -378,6 +541,7 @@ def run_openradioss(
     runtime_image = _ensure_runtime_image()
     threads = max(int(threads), 1)
     root_name = starter_deck.stem.rsplit("_", 1)[0]
+    run_token = f"{os.getpid()}_{time.time_ns()}"
     docker_command = [
         "docker", "run", "--rm", "--platform", "linux/arm64",
         "-v", f"{solver_root}:/solver:ro",
@@ -391,20 +555,39 @@ def run_openradioss(
     starter_log = case_dir / "starter.log"
     engine_log = case_dir / "engine.log"
     _run_solver_phase(
-        docker_command + [
+        docker_command[:2] + ["--name", f"cfd_motion_radioss_starter_{run_token}"] + docker_command[2:] + [
             "/solver/exec/starter_linuxa64_gf", "-i", starter_deck.name,
             "-nt", str(threads),
         ],
         starter_log,
         "starter",
+        container_name=f"cfd_motion_radioss_starter_{run_token}",
+    )
+    animation_interval_s = _animation_interval_from_deck(engine_deck)
+    partial_output_dir = case_dir / "partial_results" / run_token
+    engine_started_ns = time.time_ns()
+    update_partial_results = partial_result_updater(
+        case_dir,
+        partial_output_dir,
+        root_name,
+        animation_interval_s,
+        not_before_ns=engine_started_ns,
     )
     _run_solver_phase(
-        docker_command + [
+        docker_command[:2] + ["--name", f"cfd_motion_radioss_engine_{run_token}"] + docker_command[2:] + [
             "/solver/exec/engine_linuxa64_gf", "-i", engine_deck.name,
             "-nt", str(threads),
         ],
         engine_log,
         "engine",
+        progress_callback=update_partial_results,
+        container_name=f"cfd_motion_radioss_engine_{run_token}",
+    )
+    partial_vtk_files = update_partial_results(True)
+    paraview_series = _write_paraview_series(
+        partial_output_dir,
+        partial_vtk_files,
+        animation_interval_s,
     )
     return OpenRadiossRun(
         case_dir=case_dir,
@@ -413,4 +596,6 @@ def run_openradioss(
         starter_log=starter_log,
         engine_log=engine_log,
         animation_files=tuple(sorted(case_dir.glob(f"{root_name}A*"))),
+        partial_vtk_files=partial_vtk_files,
+        paraview_series=paraview_series,
     )
