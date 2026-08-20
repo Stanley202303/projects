@@ -1208,10 +1208,33 @@ def advance_mpm(state: HybridFEMMPMState, dt_s: float) -> None:
     """Advance failed material points, using NumPy when it is available."""
     if not state.particles or dt_s <= 0.0:
         return
+    if all(particle.damage >= 1.0 for particle in state.particles):
+        _advance_failed_particles_ballistically(
+            state,
+            dt_s,
+            0,
+        )
+        return
     if np is None:
         _advance_mpm_scalar(state, dt_s)
     else:
         _advance_mpm_vectorized(state, dt_s)
+
+
+def _advance_failed_particles_ballistically(
+    state: HybridFEMMPMState,
+    dt_s: float,
+    first_particle: int,
+) -> None:
+    """Advance stress-free, fully failed particles without grid remapping."""
+    if dt_s <= 0.0:
+        return
+    for particle in state.particles[first_particle:]:
+        particle.position = v_add(
+            particle.position,
+            v_mul(particle.velocity, dt_s),
+        )
+        particle.stress = mat_zero()
 
 
 def project_free_body_momentum(
@@ -1304,6 +1327,10 @@ def _advance_fem_substeps_scalar(
     """Dependency-free reference implementation for explicit FEM substeps."""
     external_work = 0.0
     plastic_dissipation = 0.0
+    ballistic_particles = all(
+        particle.damage >= 1.0 for particle in state.particles
+    )
+    initial_particle_count = len(state.particles)
     for _substep in range(substeps):
         forces = [(0.0, 0.0, 0.0) for _position in state.positions]
         for element in state.elements:
@@ -1338,8 +1365,23 @@ def _advance_fem_substeps_scalar(
                 state.positions[node],
                 v_mul(state.velocities[node], substep_dt),
             )
+        particle_count_before_transfer = len(state.particles)
         transfer_failed_elements(state)
-        advance_mpm(state, substep_dt)
+        if ballistic_particles:
+            if len(state.particles) > particle_count_before_transfer:
+                _advance_failed_particles_ballistically(
+                    state,
+                    (substeps - _substep - 1) * substep_dt,
+                    particle_count_before_transfer,
+                )
+        else:
+            advance_mpm(state, substep_dt)
+    if ballistic_particles and initial_particle_count:
+        _advance_failed_particles_ballistically(
+            state,
+            substeps * substep_dt,
+            0,
+        )
     return external_work, plastic_dissipation
 
 
@@ -1382,6 +1424,10 @@ def _advance_fem_substeps_vectorized(
     )
     external_work = 0.0
     plastic_dissipation = 0.0
+    ballistic_particles = all(
+        particle.damage >= 1.0 for particle in state.particles
+    )
+    initial_particle_count = len(state.particles)
 
     for _substep in range(substeps):
         forces, plastic_increment, newly_failed = _batched_element_forces(
@@ -1406,10 +1452,28 @@ def _advance_fem_substeps_vectorized(
         if pending_transfer:
             _sync_vectorized_nodes(state, positions, velocities)
             elements.sync_to_state(state)
+            particle_count_before_transfer = len(state.particles)
             transfer_failed_elements(state)
+            if (
+                ballistic_particles
+                and len(state.particles) > particle_count_before_transfer
+            ):
+                _advance_failed_particles_ballistically(
+                    state,
+                    (substeps - _substep - 1) * substep_dt,
+                    particle_count_before_transfer,
+                )
             masses = np.asarray(state.masses_kg, dtype=np.float64)
             pending_transfer = False
-        advance_mpm(state, substep_dt)
+        if not ballistic_particles:
+            advance_mpm(state, substep_dt)
+
+    if ballistic_particles and initial_particle_count:
+        _advance_failed_particles_ballistically(
+            state,
+            substeps * substep_dt,
+            0,
+        )
 
     _sync_vectorized_nodes(state, positions, velocities)
     elements.sync_to_state(state)

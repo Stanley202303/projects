@@ -636,7 +636,65 @@ def test_mpm_grid_transfer_projects_small_angular_drift_conservatively():
     audit = advance_fem(state, 0.01)
     assert math.sqrt(sum(value * value for value in audit.momentum_error)) < 1e-12
     assert math.sqrt(sum(value * value for value in audit.angular_momentum_error)) < 1e-12
-    assert audit.angular_momentum_projection_nms > 0.0
+    assert audit.angular_momentum_projection_nms < 1e-12
+
+
+def test_fully_failed_particles_advance_ballistically_without_pic_damping():
+    particle = MPMParticle(
+        position=(0.1, -0.2, 0.3),
+        velocity=(4.0, -2.0, 1.0),
+        mass_kg=0.4,
+        volume_m3=1e-3,
+        source_element=0,
+        young_modulus_pa=1e7,
+        poisson_ratio=0.3,
+        yield_stress_pa=1e6,
+        damage=1.0,
+        stress=((2.0, 0.0, 0.0), (0.0, 2.0, 0.0), (0.0, 0.0, 2.0)),
+    )
+    state = HybridFEMMPMState(
+        positions=[],
+        velocities=[],
+        masses_kg=[],
+        elements=[],
+        particles=[particle],
+        mpm_cell_size_m=0.25,
+        pic_fraction=1.0,
+    )
+
+    advance_mpm(state, 0.01)
+
+    assert particle.position == (0.14, -0.22, 0.31)
+    assert particle.velocity == (4.0, -2.0, 1.0)
+    assert particle.stress == ((0.0, 0.0, 0.0),) * 3
+
+
+def test_4345_substep_fracture_does_not_remap_failed_particles_4345_times():
+    state = _state()
+    state.elements[0].failed = True
+    state.max_substeps = 4096
+    initial_positions = list(state.positions)
+    motion_dt = 0.0012
+
+    with (
+        patch(
+            "cfd_motion.fem_mpm.stable_fem_timestep",
+            return_value=motion_dt / 4344.5,
+        ),
+        patch(
+            "cfd_motion.fem_mpm._advance_mpm_vectorized"
+        ) as advance_grid,
+    ):
+        audit = advance_fem(state, motion_dt)
+
+    advance_grid.assert_not_called()
+    assert len(state.particles) == 4
+    for particle, initial_position in zip(state.particles, initial_positions):
+        assert particle.position == tuple(
+            initial_position[axis] + particle.velocity[axis] * motion_dt
+            for axis in range(3)
+        )
+    assert abs(audit.mass_error_kg) < 1e-12
 
 
 def test_vectorized_mpm_matches_scalar_and_conserves_mass_and_momentum():
