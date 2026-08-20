@@ -59,7 +59,8 @@ def test_shell_export_preserves_faces_materials_velocity_and_contact(tmp_path: P
     assert "1.000000000000E+00" in starter_text.split("/INTER/TYPE7/", 1)[1]
     assert "       000                             5" in starter_text
     assert "/ANIM/ELEM/VONM" in engine_text
-    assert "/ANIM/NODA/VEL" in engine_text
+    assert "/ANIM/VECT/VEL" in engine_text
+    assert "/ANIM/NODA/VEL" not in engine_text
     assert "/PRINT/-5000" in engine_text
     report = (tmp_path / "openradioss_export_report.txt").read_text()
     assert "triangular_shell_elements=4" in report

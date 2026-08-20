@@ -619,7 +619,9 @@ def write_openradioss_deck(
         f"{duration_s:.15E}",
         "/ANIM/DT",
         f"{0.0:.15E} {animation_interval_s:.15E}",
-        "/ANIM/NODA/VEL",
+        # Vector animation fields use /ANIM/VECT, not /ANIM/NODA.  The
+        # latter does not accept VEL in the OpenRadioss 2021 engine deck.
+        "/ANIM/VECT/VEL",
         "/ANIM/ELEM/VONM",
         "/DT/NODA/CST/0",
         "0.90 0.0",
