@@ -1,2 +1,0 @@
-retained_body_patches= Part_1_5 Part_1_4 Part_1_1 Part_1_2 Part_1_3 Part_1_6 Part_1_1_2
-occluded_body_patches=

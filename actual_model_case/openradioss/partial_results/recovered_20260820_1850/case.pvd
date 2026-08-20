@@ -1,9 +1,0 @@
-<?xml version="1.0"?>
-<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">
-  <Collection>
-    <DataSet timestep="0.0" file="assembly_001.vtu"/>
-    <DataSet timestep="0.0012" file="assembly_002.vtu"/>
-    <DataSet timestep="0.0024" file="assembly_003.vtu"/>
-    <DataSet timestep="0.0036" file="assembly_004.vtu"/>
-  </Collection>
-</VTKFile>
