@@ -8,6 +8,7 @@ from cfd_motion.models import AeroComponent, MaterialProperties
 from cfd_motion.openradioss import (
     OpenRadiossError,
     _ensure_runtime_image,
+    exclusive_case_lock,
     write_openradioss_deck,
 )
 
@@ -57,6 +58,9 @@ def test_shell_export_preserves_faces_materials_velocity_and_contact(tmp_path: P
     assert "/ANIM/ELEM/VONM" in engine_text
     report = (tmp_path / "openradioss_export_report.txt").read_text()
     assert "triangular_shell_elements=4" in report
+    assert "requested_duration_s=0.01" in report
+    assert "animation_interval_s=0.002" in report
+    assert "integration_timestep=automatic_explicit_stability_limit" in report
 
 
 def test_shell_export_rejects_empty_geometry(tmp_path: Path) -> None:
@@ -97,3 +101,10 @@ def test_runtime_image_is_built_only_when_missing(monkeypatch: pytest.MonkeyPatc
     assert _ensure_runtime_image() == "cfd-motion-openradioss-runtime:22.04"
     assert calls[0][:3] == ["docker", "image", "inspect"]
     assert calls[1][0:2] == ["docker", "build"]
+
+
+def test_case_lock_rejects_a_concurrent_writer(tmp_path: Path) -> None:
+    with exclusive_case_lock(tmp_path):
+        with pytest.raises(OpenRadiossError, match="already using"):
+            with exclusive_case_lock(tmp_path):
+                pytest.fail("a second writer acquired the same case lock")

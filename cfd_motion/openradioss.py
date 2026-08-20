@@ -8,6 +8,8 @@ in the deck report instead of pretending otherwise.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+import fcntl
 import os
 import shutil
 import subprocess
@@ -22,6 +24,27 @@ from .models import AeroComponent, Vec3
 
 class OpenRadiossError(RuntimeError):
     """Raised when the external explicit-dynamics solver cannot be run."""
+
+
+@contextmanager
+def exclusive_case_lock(case_dir: Path):
+    """Prevent concurrent solver runs from writing the same case directory."""
+    case_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = case_dir / ".openradioss.lock"
+    with lock_path.open("w") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise OpenRadiossError(
+                f"Another OpenRadioss run is already using {case_dir}. "
+                "Wait for it to finish or stop it before starting another run."
+            ) from exc
+        lock_file.write(f"pid={os.getpid()}\n")
+        lock_file.flush()
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 @dataclass(frozen=True)
@@ -326,6 +349,9 @@ def write_openradioss_deck(
         "OpenRadioss shell export\n"
         "units=kg,m,s\n"
         "model=shell-only; use a volume-mesh exporter for thick solids\n"
+        f"requested_duration_s={duration_s:.15g}\n"
+        f"animation_interval_s={animation_interval_s:.15g}\n"
+        "integration_timestep=automatic_explicit_stability_limit\n"
         f"components={len(components)}\n"
         f"nodes={node_offset}\n"
         f"triangular_shell_elements={element_offset}\n"

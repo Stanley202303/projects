@@ -31,7 +31,12 @@ from .openfoam import *
 from .onshape import *
 from .motion import *
 from .visualization import *
-from .openradioss import OpenRadiossError, run_openradioss, write_openradioss_deck
+from .openradioss import (
+    OpenRadiossError,
+    exclusive_case_lock,
+    run_openradioss,
+    write_openradioss_deck,
+)
 from .visualization import (
     _clear_root_view_outputs_for_streaming,
     _latest_solver_time_dir,
@@ -1172,7 +1177,7 @@ def run_openradioss_sources(sources: Sequence[str]) -> int:
     animation_interval_s = float(os.environ.get("OPENRADIOSS_ANIMATION_INTERVAL_S", str(MOTION_DT)))
     threads = int(float(os.environ.get("OPENRADIOSS_THREADS", "2")))
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with exclusive_case_lock(case), tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             client = get_onshape_client() if any(is_onshape_url(source) for source in sources) else None
             components = [
@@ -1195,6 +1200,14 @@ def run_openradioss_sources(sources: Sequence[str]) -> int:
                 duration_s=duration_s,
                 animation_interval_s=animation_interval_s,
                 contact_friction=max(COLLISION_FRICTION_COEFFICIENT, 0.0),
+            )
+            print(
+                "OpenRadioss timing: "
+                f"requested duration={duration_s:g}s, "
+                f"output interval={animation_interval_s:g}s; "
+                "the explicit integration timestep is selected independently "
+                "from the mesh and material stability limit.",
+                flush=True,
             )
             result = run_openradioss(case, starter_deck, engine_deck, threads=threads)
             for source_index in range(1, len(sources) + 1):

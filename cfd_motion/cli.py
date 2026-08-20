@@ -66,7 +66,7 @@ def _interactive_env_for_sources(sources: list[str]) -> dict[str, str]:
         collision_speed = _prompt_float("Collision impact speed (m/s)", os.environ.get("COLLISION_CONVERGENCE_SPEED_MPS", "1.0"))
         collision_gap = _prompt_float("Initial collision gap (m)", os.environ.get("COLLISION_INITIAL_GAP_M", "0.05"))
     frame_interval = _prompt_float(
-        "Frame time interval / simulation time step (s)",
+        "Frame/output interval (s; solver may use smaller internal substeps)",
         frame_interval_default,
     )
     if float(frame_interval) <= 0.0:
@@ -90,6 +90,7 @@ def _interactive_env_for_sources(sources: list[str]) -> dict[str, str]:
     print(f"  assembly dynamic steps: {dynamic_steps}")
     print(f"  frame time interval: {frame_interval} s")
     print(f"  total simulated duration: {int(dynamic_steps) * float(frame_interval):.8g} s")
+    print("  internal structural timestep: selected by the solver's stability limit")
     print(f"  surface refinement: ({surface_min}, {surface_max})")
     print(f"  region refinement: {region_refinement}")
     if len(sources) == 2:
@@ -140,7 +141,10 @@ def _parse_args() -> argparse.Namespace:
         "--frame-interval",
         type=float,
         default=None,
-        help="Simulated seconds between output frames. This also sets the motion integration time step.",
+        help=(
+            "Simulated seconds between output frames. Explicit structural solvers "
+            "use smaller internal stability-limited substeps when required."
+        ),
     )
     parser.add_argument(
         "--interactive",
