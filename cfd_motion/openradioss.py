@@ -274,6 +274,17 @@ def _write_paraview_pvd(
     return pvd_path
 
 
+def _sorted_vtk_frames(output_dir: Path, root_name: str) -> Tuple[Path, ...]:
+    """Return every converted frame on disk, in numeric frame order."""
+    frames = output_dir.glob(f"{root_name}_*.vtk")
+
+    def frame_number(path: Path) -> int:
+        suffix = path.stem.rsplit("_", 1)[-1]
+        return int(suffix) if suffix.isdigit() else 2**63 - 1
+
+    return tuple(sorted(frames, key=lambda path: (frame_number(path), path.name)))
+
+
 def _convert_animation_to_vtk(
     case_dir: Path,
     output_dir: Path,
@@ -355,7 +366,9 @@ def partial_result_updater(
                 if force:
                     print(f"WARNING: {exc}", flush=True)
                 continue
-            vtk_files = tuple(converted[path] for path in sorted(converted))
+            # Re-scan the output directory so the collection cannot lose a
+            # frame that was converted by an earlier callback invocation.
+            vtk_files = _sorted_vtk_frames(output_dir, root_name)
             series = _write_paraview_series(
                 output_dir, vtk_files, animation_interval_s
             )
@@ -687,6 +700,10 @@ def run_openradioss(
         container_name=f"cfd_motion_radioss_engine_{run_token}",
     )
     partial_vtk_files = update_partial_results(True)
+    # Build the final collection from every converted frame on disk.  This is
+    # deliberately independent of the callback's in-memory bookkeeping, so
+    # a late animation file cannot be omitted from the final PVD.
+    partial_vtk_files = _sorted_vtk_frames(partial_output_dir, root_name)
     paraview_series = _write_paraview_series(
         partial_output_dir,
         partial_vtk_files,
