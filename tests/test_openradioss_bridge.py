@@ -110,6 +110,17 @@ def test_runtime_image_is_built_only_when_missing(monkeypatch: pytest.MonkeyPatc
     assert calls[1][0:2] == ["docker", "build"]
 
 
+def test_runtime_image_check_reports_an_unresponsive_docker_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def timeout(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(["docker", "image", "inspect"], 20)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(OpenRadiossError, match="Docker did not respond"):
+        _ensure_runtime_image()
+
+
 def test_case_lock_rejects_a_concurrent_writer(tmp_path: Path) -> None:
     with exclusive_case_lock(tmp_path):
         with pytest.raises(OpenRadiossError, match="already using"):

@@ -89,12 +89,19 @@ def _runtime_image_name() -> str:
 def _ensure_runtime_image() -> str:
     """Build the small runtime image once instead of installing on every run."""
     image = _runtime_image_name()
-    inspection = subprocess.run(
-        ["docker", "image", "inspect", image],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
+    try:
+        inspection = subprocess.run(
+            ["docker", "image", "inspect", image],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise OpenRadiossError(
+            "Docker did not respond while checking the OpenRadioss runtime image. "
+            "Start or restart Docker Desktop, then free disk space before retrying."
+        ) from exc
     if inspection.returncode == 0:
         return image
     dockerfile = Path(__file__).resolve().parents[1] / "docker" / "openradioss-runtime.Dockerfile"
