@@ -1,0 +1,26 @@
+************************************************************************
+**                                                                    **
+**                                                                    **
+**                         OpenRadioss Engine                         **
+**                                                                    **
+**            Non-linear Finite Element Analysis Software             **
+**                                                                    **
+**                                                                    **
+**                                                                    **
+**               Linux 64 bits, ARM, GFortran compiler                **
+**                      Double Precision Version                      **
+**                                                                    **
+**                                                                    **
+**                                                                    **
+************************************************************************
+** OpenRadioss Software                                               **
+** COPYRIGHT (C) 2026 Siemens                                         **
+** Licensed under GNU Affero General Public License.                  **
+** See License file.                                                  **
+************************************************************************
+ 
+ ROOT: assembly  RESTART: 0001
+ NUMBER OF HMPP PROCESSES     8
+ 20/08/2026
+ NC=       0 T= 0.0000E+00 DT= 2.4259E-10 ERR=  0.0% DM/M= 0.0000E+00
+     ANIMATION FILE: assemblyA001 WRITTEN

@@ -1,0 +1,12 @@
+OpenRadioss shell export
+units=kg,m,s
+model=shell-only; use a volume-mesh exporter for thick solids
+requested_duration_s=0.011
+animation_interval_s=0.001
+print_cycle_interval=5000
+integration_timestep=automatic_explicit_stability_limit
+components=7
+nodes=3996
+triangular_shell_elements=7964
+discarded_zero_area_facets=0
+pairwise_type7_contacts=21
