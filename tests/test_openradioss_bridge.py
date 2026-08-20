@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -52,3 +53,10 @@ def test_shell_export_rejects_empty_geometry(tmp_path: Path) -> None:
     component.triangles = []
     with pytest.raises(OpenRadiossError, match="no non-degenerate triangles"):
         write_openradioss_deck([component], tmp_path, duration_s=0.01, animation_interval_s=0.002)
+
+
+def test_cli_defaults_to_openradioss(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cfd_motion.cli import _parse_args
+
+    monkeypatch.setattr(sys, "argv", ["cfd_motion", "part1.stl", "part2.stl"])
+    assert _parse_args().structural_solver == "openradioss"

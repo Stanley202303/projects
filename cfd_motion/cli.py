@@ -150,8 +150,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--structural-solver",
         choices=("current", "openradioss"),
-        default="current",
-        help="Use the current coupled CFD motion path (default) or the standalone OpenRadioss explicit structural backend.",
+        default="openradioss",
+        help="Use the OpenRadioss explicit structural backend (default) or select 'current' for the legacy coupled CFD motion path.",
     )
     return parser.parse_args()
 
