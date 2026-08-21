@@ -3,3 +3,4 @@ ai/NoughtsAndCrosses/data.json
 ai/NoughtsAndCrosses/data2.json
 a.py
 Other/
+*.out
